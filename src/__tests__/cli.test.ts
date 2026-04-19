@@ -1,13 +1,23 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CLI = join(import.meta.dir, "..", "cli.ts");
 
-async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+async function runCli(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["bun", CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, HOME: "/tmp/parachute-cli-nonexistent-home" },
+    env: {
+      ...process.env,
+      HOME: "/tmp/parachute-cli-nonexistent-home",
+      PARACHUTE_HOME: "/tmp/parachute-cli-nonexistent-home",
+      ...env,
+    },
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -57,5 +67,65 @@ describe("cli", () => {
     const { code, stderr } = await runCli(["wat"]);
     expect(code).toBe(1);
     expect(stderr).toMatch(/unknown command/);
+  });
+});
+
+describe("cli per-subcommand help", () => {
+  test("install --help shows install usage", async () => {
+    const { code, stdout } = await runCli(["install", "--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/parachute install/);
+    expect(stdout).toMatch(/bun add -g/);
+  });
+
+  test("install -h also works", async () => {
+    const { code, stdout } = await runCli(["install", "-h"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/parachute install/);
+  });
+
+  test("status --help shows status usage", async () => {
+    const { code, stdout } = await runCli(["status", "--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/parachute status/);
+    expect(stdout).toMatch(/Exit codes/);
+  });
+
+  test("expose --help shows both layers and Funnel notes", async () => {
+    const { code, stdout } = await runCli(["expose", "--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/expose tailnet/);
+    expect(stdout).toMatch(/expose public/);
+    expect(stdout).toMatch(/Funnel/);
+    expect(stdout).toMatch(/443/);
+  });
+
+  test("expose tailnet --help shows full expose help", async () => {
+    const { code, stdout } = await runCli(["expose", "tailnet", "--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/expose tailnet/);
+  });
+
+  test("vault with no args shows dispatch help", async () => {
+    const { code, stdout } = await runCli(["vault"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/parachute vault/);
+    expect(stdout).toMatch(/parachute install vault/);
+  });
+});
+
+describe("cli friendly errors", () => {
+  test("malformed services.json prints friendly error not stack trace", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pcli-bad-"));
+    try {
+      writeFileSync(join(dir, "services.json"), "this is not json{");
+      const { code, stderr } = await runCli(["status"], { PARACHUTE_HOME: dir });
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/services\.json is malformed/);
+      expect(stderr).not.toMatch(/at process\./);
+      expect(stderr).not.toMatch(/Error:.*at \//);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
