@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exposeTailnetOff, exposeTailnetUp } from "../commands/expose.ts";
+import { exposePublic, exposeTailnet } from "../commands/expose.ts";
 import { readExposeState, writeExposeState } from "../expose-state.ts";
 import { upsertService } from "../services-manifest.ts";
 import type { Runner } from "../tailscale/run.ts";
@@ -67,7 +67,7 @@ describe("expose tailnet up", () => {
       seedServices(h.manifestPath);
       const { runner, calls } = makeRunner();
       const logs: string[] = [];
-      const code = await exposeTailnetUp({
+      const code = await exposeTailnet("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
@@ -80,6 +80,7 @@ describe("expose tailnet up", () => {
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
       expect(serveCalls).toHaveLength(3);
+      expect(serveCalls.every((c) => !c.includes("--funnel"))).toBe(true);
 
       const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path="))).sort();
       expect(mounts).toEqual([
@@ -94,6 +95,7 @@ describe("expose tailnet up", () => {
       expect(wk.notes?.url).toBe("https://parachute.taildf9ce2.ts.net/notes");
 
       const state = readExposeState(h.statePath);
+      expect(state?.layer).toBe("tailnet");
       expect(state?.canonicalFqdn).toBe("parachute.taildf9ce2.ts.net");
       expect(state?.mode).toBe("path");
       expect(state?.entries).toHaveLength(3);
@@ -108,7 +110,7 @@ describe("expose tailnet up", () => {
     try {
       const { runner } = makeRunner();
       const logs: string[] = [];
-      const code = await exposeTailnetUp({
+      const code = await exposeTailnet("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
@@ -130,7 +132,7 @@ describe("expose tailnet up", () => {
         throw new Error("spawn tailscale ENOENT");
       };
       const logs: string[] = [];
-      const code = await exposeTailnetUp({
+      const code = await exposeTailnet("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
@@ -151,6 +153,7 @@ describe("expose tailnet up", () => {
       writeExposeState(
         {
           version: 1,
+          layer: "tailnet",
           mode: "path",
           canonicalFqdn: "parachute.taildf9ce2.ts.net",
           port: 443,
@@ -167,7 +170,7 @@ describe("expose tailnet up", () => {
         h.statePath,
       );
       const { runner, calls } = makeRunner();
-      const code = await exposeTailnetUp({
+      const code = await exposeTailnet("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
@@ -202,7 +205,7 @@ describe("expose tailnet up", () => {
         return { code: 0, stdout: "", stderr: "" };
       };
       const logs: string[] = [];
-      const code = await exposeTailnetUp({
+      const code = await exposeTailnet("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
@@ -223,7 +226,7 @@ describe("expose tailnet off", () => {
     try {
       const { runner, calls } = makeRunner();
       const logs: string[] = [];
-      const code = await exposeTailnetOff({
+      const code = await exposeTailnet("off", {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
@@ -243,6 +246,7 @@ describe("expose tailnet off", () => {
       writeExposeState(
         {
           version: 1,
+          layer: "tailnet",
           mode: "path",
           canonicalFqdn: "parachute.taildf9ce2.ts.net",
           port: 443,
@@ -266,7 +270,7 @@ describe("expose tailnet off", () => {
       );
       await Bun.write(h.wellKnownPath, "{}\n");
       const { runner, calls } = makeRunner();
-      const code = await exposeTailnetOff({
+      const code = await exposeTailnet("off", {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
@@ -288,6 +292,7 @@ describe("expose tailnet off", () => {
       writeExposeState(
         {
           version: 1,
+          layer: "tailnet",
           mode: "path",
           canonicalFqdn: "parachute.taildf9ce2.ts.net",
           port: 443,
@@ -305,7 +310,7 @@ describe("expose tailnet off", () => {
       );
       const runner: Runner = async () => ({ code: 5, stdout: "", stderr: "tailscale blew up" });
       const logs: string[] = [];
-      const code = await exposeTailnetOff({
+      const code = await exposeTailnet("off", {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
@@ -313,6 +318,198 @@ describe("expose tailnet off", () => {
       });
       expect(code).toBe(5);
       expect(existsSync(h.statePath)).toBe(true);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("tailnet off does not tear down public exposure", async () => {
+    const h = makeHarness();
+    try {
+      writeExposeState(
+        {
+          version: 1,
+          layer: "public",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: true,
+          entries: [
+            {
+              kind: "proxy",
+              mount: "/",
+              target: "http://127.0.0.1:1940",
+              service: "parachute-vault",
+            },
+          ],
+        },
+        h.statePath,
+      );
+      const { runner, calls } = makeRunner();
+      const logs: string[] = [];
+      const code = await exposeTailnet("off", {
+        runner,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(0);
+      expect(existsSync(h.statePath)).toBe(true);
+      expect(logs.join("\n")).toMatch(/Current exposure is Public/);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe("expose public up", () => {
+  test("adds --funnel to every serve command and records layer=public", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      const { runner, calls } = makeRunner();
+      const logs: string[] = [];
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      expect(serveCalls).toHaveLength(3);
+      expect(serveCalls.every((c) => c.includes("--funnel"))).toBe(true);
+
+      const state = readExposeState(h.statePath);
+      expect(state?.layer).toBe("public");
+      expect(state?.funnel).toBe(true);
+      expect(state?.entries).toHaveLength(3);
+
+      expect(logs.join("\n")).toMatch(/Public exposure active/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("switching from tailnet to public tears down prior state first", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      writeExposeState(
+        {
+          version: 1,
+          layer: "tailnet",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: false,
+          entries: [
+            {
+              kind: "proxy",
+              mount: "/",
+              target: "http://127.0.0.1:1940",
+              service: "parachute-vault",
+            },
+          ],
+        },
+        h.statePath,
+      );
+      const { runner, calls } = makeRunner();
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      const offs = calls.filter((c) => c[c.length - 1] === "off");
+      expect(offs).toHaveLength(1);
+      const state = readExposeState(h.statePath);
+      expect(state?.layer).toBe("public");
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe("expose public off", () => {
+  test("tears down public exposure and clears state", async () => {
+    const h = makeHarness();
+    try {
+      writeExposeState(
+        {
+          version: 1,
+          layer: "public",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: true,
+          entries: [
+            {
+              kind: "proxy",
+              mount: "/",
+              target: "http://127.0.0.1:1940",
+              service: "parachute-vault",
+            },
+          ],
+        },
+        h.statePath,
+      );
+      const { runner, calls } = makeRunner();
+      const code = await exposePublic("off", {
+        runner,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(calls.every((c) => c[c.length - 1] === "off")).toBe(true);
+      expect(existsSync(h.statePath)).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("public off does not tear down tailnet exposure", async () => {
+    const h = makeHarness();
+    try {
+      writeExposeState(
+        {
+          version: 1,
+          layer: "tailnet",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: false,
+          entries: [
+            {
+              kind: "proxy",
+              mount: "/",
+              target: "http://127.0.0.1:1940",
+              service: "parachute-vault",
+            },
+          ],
+        },
+        h.statePath,
+      );
+      const { runner, calls } = makeRunner();
+      const logs: string[] = [];
+      const code = await exposePublic("off", {
+        runner,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(0);
+      expect(existsSync(h.statePath)).toBe(true);
+      expect(logs.join("\n")).toMatch(/Current exposure is Tailnet/);
     } finally {
       h.cleanup();
     }

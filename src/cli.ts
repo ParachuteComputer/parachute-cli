@@ -12,7 +12,7 @@
  */
 
 import pkg from "../package.json" with { type: "json" };
-import { exposeTailnet } from "./commands/expose.ts";
+import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
 import { status } from "./commands/status.ts";
 import { dispatchVault } from "./commands/vault.ts";
@@ -27,14 +27,12 @@ Usage:
                                     services: ${services}
   parachute status                  show installed services and health
   parachute expose tailnet [off]    HTTPS across your tailnet
+  parachute expose public  [off]    HTTPS on the public internet (Funnel)
   parachute vault <args...>         dispatch to parachute-vault
 
 Flags:
   --help, -h                        show this help
   --version, -v                     print version
-
-Coming soon:
-  parachute expose public [off]     HTTPS on the public internet  (PR 3)
 `);
 }
 
@@ -70,21 +68,19 @@ async function main(argv: string[]): Promise<number> {
     case "expose": {
       const layer = rest[0];
       const mode = rest[1];
-      if (layer !== "tailnet") {
-        if (layer === "public") {
-          console.error("parachute expose public is coming in PR 3.");
-        } else {
-          console.error(`parachute expose: unknown layer "${layer ?? ""}"`);
-          console.error("usage: parachute expose tailnet [off]");
-        }
+      if (layer !== "tailnet" && layer !== "public") {
+        console.error(`parachute expose: unknown layer "${layer ?? ""}"`);
+        console.error("usage: parachute expose tailnet [off]");
+        console.error("       parachute expose public  [off]");
         return 1;
       }
       if (mode !== undefined && mode !== "off") {
-        console.error(`parachute expose tailnet: unknown argument "${mode}"`);
-        console.error("usage: parachute expose tailnet [off]");
+        console.error(`parachute expose ${layer}: unknown argument "${mode}"`);
+        console.error(`usage: parachute expose ${layer} [off]`);
         return 1;
       }
-      return await exposeTailnet(mode === "off" ? "off" : "up");
+      const action = mode === "off" ? "off" : "up";
+      return layer === "public" ? await exposePublic(action) : await exposeTailnet(action);
     }
 
     case "vault":

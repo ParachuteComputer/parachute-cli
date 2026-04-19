@@ -20,6 +20,7 @@ function makeTempPath(): { path: string; cleanup: () => void } {
 
 const sample: ExposeState = {
   version: 1,
+  layer: "tailnet",
   mode: "path",
   canonicalFqdn: "parachute.taildf9ce2.ts.net",
   port: 443,
