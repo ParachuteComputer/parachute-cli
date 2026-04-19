@@ -30,6 +30,15 @@ describe("cli", () => {
     expect(stdout).toMatch(/parachute install/);
     expect(stdout).toMatch(/parachute status/);
     expect(stdout).toMatch(/parachute vault/);
+    expect(stdout).toMatch(/expose tailnet/);
+    expect(stdout).toMatch(/expose public/);
+  });
+
+  test("expose with unknown layer exits 1", async () => {
+    const { code, stderr } = await runCli(["expose", "wat"]);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/unknown layer/);
+    expect(stderr).toMatch(/expose public/);
   });
 
   test("no args prints help", async () => {

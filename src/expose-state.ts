@@ -13,9 +13,11 @@ import type { ServeEntry } from "./tailscale/commands.ts";
 export const EXPOSE_STATE_PATH = join(CONFIG_DIR, "expose-state.json");
 
 export type ExposeMode = "path" | "subdomain";
+export type ExposeLayer = "tailnet" | "public";
 
 export interface ExposeState {
   version: 1;
+  layer: ExposeLayer;
   mode: ExposeMode;
   canonicalFqdn: string;
   port: number;
@@ -34,6 +36,9 @@ function validate(raw: unknown, path: string): ExposeState {
   const r = raw as Record<string, unknown>;
   if (r.version !== 1) {
     throw new ExposeStateError(`${path}: unsupported version ${String(r.version)}`);
+  }
+  if (r.layer !== "tailnet" && r.layer !== "public") {
+    throw new ExposeStateError(`${path}: layer must be "tailnet" or "public"`);
   }
   if (r.mode !== "path" && r.mode !== "subdomain") {
     throw new ExposeStateError(`${path}: mode must be "path" or "subdomain"`);
@@ -72,6 +77,7 @@ function validate(raw: unknown, path: string): ExposeState {
   });
   return {
     version: 1,
+    layer: r.layer,
     mode: r.mode,
     canonicalFqdn: r.canonicalFqdn,
     port: r.port,
