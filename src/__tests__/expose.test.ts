@@ -91,7 +91,12 @@ describe("expose tailnet up", () => {
 
       expect(existsSync(h.wellKnownPath)).toBe(true);
       const wk = JSON.parse(await Bun.file(h.wellKnownPath).text());
-      expect(wk.vault?.url).toBe("https://parachute.taildf9ce2.ts.net/");
+      expect(wk.vaults).toHaveLength(1);
+      expect(wk.vaults[0]).toEqual({
+        name: "default",
+        url: "https://parachute.taildf9ce2.ts.net/",
+        version: "0.2.4",
+      });
       expect(wk.notes?.url).toBe("https://parachute.taildf9ce2.ts.net/notes");
 
       const state = readExposeState(h.statePath);
