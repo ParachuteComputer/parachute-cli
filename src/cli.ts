@@ -12,6 +12,7 @@
  */
 
 import pkg from "../package.json" with { type: "json" };
+import { exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
 import { status } from "./commands/status.ts";
 import { dispatchVault } from "./commands/vault.ts";
@@ -25,6 +26,7 @@ Usage:
   parachute install <service>       install and register a service
                                     services: ${services}
   parachute status                  show installed services and health
+  parachute expose tailnet [off]    HTTPS across your tailnet
   parachute vault <args...>         dispatch to parachute-vault
 
 Flags:
@@ -32,8 +34,7 @@ Flags:
   --version, -v                     print version
 
 Coming soon:
-  parachute expose tailnet [off]    HTTPS across your tailnet  (PR 2)
-  parachute expose public  [off]    HTTPS on the public internet (PR 3)
+  parachute expose public [off]     HTTPS on the public internet  (PR 3)
 `);
 }
 
@@ -65,6 +66,26 @@ async function main(argv: string[]): Promise<number> {
 
     case "status":
       return await status();
+
+    case "expose": {
+      const layer = rest[0];
+      const mode = rest[1];
+      if (layer !== "tailnet") {
+        if (layer === "public") {
+          console.error("parachute expose public is coming in PR 3.");
+        } else {
+          console.error(`parachute expose: unknown layer "${layer ?? ""}"`);
+          console.error("usage: parachute expose tailnet [off]");
+        }
+        return 1;
+      }
+      if (mode !== undefined && mode !== "off") {
+        console.error(`parachute expose tailnet: unknown argument "${mode}"`);
+        console.error("usage: parachute expose tailnet [off]");
+        return 1;
+      }
+      return await exposeTailnet(mode === "off" ? "off" : "up");
+    }
 
     case "vault":
       return await dispatchVault(rest);
