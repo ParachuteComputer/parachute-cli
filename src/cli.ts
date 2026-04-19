@@ -3,12 +3,7 @@
 /**
  * parachute — the top-level CLI for the Parachute ecosystem.
  *
- * Usage:
- *   parachute install <service>     install a Parachute service
- *   parachute status                read services manifest, probe localhost
- *   parachute vault <args...>       dispatch to parachute-vault
- *   parachute --version
- *   parachute --help
+ * Run `parachute --help` or `parachute <subcommand> --help` for usage.
  */
 
 import pkg from "../package.json" with { type: "json" };
@@ -16,24 +11,14 @@ import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
 import { status } from "./commands/status.ts";
 import { dispatchVault } from "./commands/vault.ts";
+import { ExposeStateError } from "./expose-state.ts";
+import { exposeHelp, installHelp, statusHelp, topLevelHelp, vaultHelp } from "./help.ts";
 import { knownServices } from "./service-spec.ts";
+import { ServicesManifestError } from "./services-manifest.ts";
+import { TailscaleError } from "./tailscale/run.ts";
 
-function usage(): void {
-  const services = knownServices().join(" | ");
-  console.log(`parachute ${pkg.version} — top-level CLI for the Parachute ecosystem
-
-Usage:
-  parachute install <service>       install and register a service
-                                    services: ${services}
-  parachute status                  show installed services and health
-  parachute expose tailnet [off]    HTTPS across your tailnet
-  parachute expose public  [off]    HTTPS on the public internet (Funnel)
-  parachute vault <args...>         dispatch to parachute-vault
-
-Flags:
-  --help, -h                        show this help
-  --version, -v                     print version
-`);
+function isHelpFlag(arg: string | undefined): boolean {
+  return arg === "--help" || arg === "-h" || arg === "help";
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -44,7 +29,7 @@ async function main(argv: string[]): Promise<number> {
     case "help":
     case "--help":
     case "-h":
-      usage();
+      console.log(topLevelHelp());
       return 0;
 
     case "--version":
@@ -53,6 +38,10 @@ async function main(argv: string[]): Promise<number> {
       return 0;
 
     case "install": {
+      if (isHelpFlag(rest[0])) {
+        console.log(installHelp());
+        return 0;
+      }
       const service = rest[0];
       if (!service) {
         console.error("usage: parachute install <service>");
@@ -63,16 +52,29 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case "status":
+      if (isHelpFlag(rest[0])) {
+        console.log(statusHelp());
+        return 0;
+      }
       return await status();
 
     case "expose": {
       const layer = rest[0];
       const mode = rest[1];
+      if (isHelpFlag(layer)) {
+        console.log(exposeHelp());
+        return 0;
+      }
       if (layer !== "tailnet" && layer !== "public") {
         console.error(`parachute expose: unknown layer "${layer ?? ""}"`);
         console.error("usage: parachute expose tailnet [off]");
         console.error("       parachute expose public  [off]");
+        console.error("run `parachute expose --help` for details");
         return 1;
+      }
+      if (isHelpFlag(mode)) {
+        console.log(exposeHelp());
+        return 0;
       }
       if (mode !== undefined && mode !== "off") {
         console.error(`parachute expose ${layer}: unknown argument "${mode}"`);
@@ -84,6 +86,13 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case "vault":
+      // `parachute vault` alone shows CLI's dispatch help (usage hint).
+      // `parachute vault <anything>` forwards verbatim — including --help,
+      // which goes to parachute-vault itself so the user sees vault's own help.
+      if (rest.length === 0) {
+        console.log(vaultHelp());
+        return 0;
+      }
       return await dispatchVault(rest);
 
     default:
@@ -93,5 +102,27 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-const code = await main(process.argv.slice(2));
+async function run(argv: string[]): Promise<number> {
+  try {
+    return await main(argv);
+  } catch (err) {
+    if (err instanceof ServicesManifestError) {
+      console.error(`services.json is malformed: ${err.message}`);
+      console.error("Fix or remove the file, then re-run.");
+      return 1;
+    }
+    if (err instanceof ExposeStateError) {
+      console.error(`expose-state.json is malformed: ${err.message}`);
+      console.error("If you're stuck, delete ~/.parachute/expose-state.json and re-run.");
+      return 1;
+    }
+    if (err instanceof TailscaleError) {
+      console.error(`tailscale command failed: ${err.message}`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+const code = await run(process.argv.slice(2));
 process.exit(code);
