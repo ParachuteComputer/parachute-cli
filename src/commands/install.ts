@@ -1,5 +1,11 @@
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
-import { getSpec, knownServices } from "../service-spec.ts";
+import {
+  CANONICAL_PORT_MAX,
+  CANONICAL_PORT_MIN,
+  getSpec,
+  isCanonicalPort,
+  knownServices,
+} from "../service-spec.ts";
 import { findService } from "../services-manifest.ts";
 import { migrateNotice } from "./migrate.ts";
 
@@ -55,6 +61,11 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     );
   } else {
     log(`✓ ${spec.manifestName} registered on port ${entry.port}`);
+    if (!isCanonicalPort(entry.port)) {
+      log(
+        `⚠ port ${entry.port} is outside the canonical Parachute range (${CANONICAL_PORT_MIN}–${CANONICAL_PORT_MAX}); may conflict with other software.`,
+      );
+    }
   }
 
   const notice = migrateNotice(configDir, now());

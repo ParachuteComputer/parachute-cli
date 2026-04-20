@@ -95,7 +95,29 @@ describe("ensureHubRunning", () => {
     }
   });
 
-  test("falls back to next port when default is taken", async () => {
+  test("default fallback is 1 slot: fails when 1939 is taken", async () => {
+    // Canonical layout pins hub to 1939. Walking up would collide with the
+    // next service's slot, so the default is to fail and let the user unblock
+    // the port — not quietly land somewhere else.
+    const h = makeHarness();
+    try {
+      const spawner = makeSpawner(7777);
+      await expect(
+        ensureHubRunning({
+          configDir: h.configDir,
+          wellKnownDir: h.wellKnownDir,
+          spawner,
+          alive: () => true,
+          probe: probeTaken(new Set([1939])),
+          readyWaitMs: 0,
+        }),
+      ).rejects.toThrow(/lsof -iTCP:1939/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("fallback walks up when caller widens the range (debug/tests only)", async () => {
     const h = makeHarness();
     try {
       const spawner = makeSpawner(7777);
@@ -106,6 +128,7 @@ describe("ensureHubRunning", () => {
         alive: () => true,
         probe: probeTaken(new Set([1939, 1940])),
         readyWaitMs: 0,
+        fallbackRange: 5,
       });
       expect(result.port).toBe(1941);
       expect(readHubPort(h.configDir)).toBe(1941);
@@ -173,16 +196,16 @@ describe("ensureHubRunning", () => {
           readyWaitMs: 0,
           fallbackRange: 3,
         }),
-      ).rejects.toThrow(/no free port/);
+      ).rejects.toThrow(/unavailable/);
     } finally {
       h.cleanup();
     }
   });
 
-  test("skips reserved service ports during fallback", async () => {
-    // Hub defaults start at 1939 and walk up. Vault claims 1940, so without
-    // reservation the hub would steal it when vault isn't yet bound. Reserved
-    // ports must be skipped over during fallback.
+  test("skips reserved service ports during fallback (widened range)", async () => {
+    // Fallback is off by default (range=1). When a caller opens it up for
+    // debug, reservedPorts must still be honored so the hub never steals a
+    // registered service's slot even if the service isn't yet bound.
     const h = makeHarness();
     try {
       const spawner = makeSpawner(3333);
@@ -194,6 +217,7 @@ describe("ensureHubRunning", () => {
         probe: probeTaken(new Set([1939])), // default port is held
         reservedPorts: [1940], // vault's reservation
         readyWaitMs: 0,
+        fallbackRange: 5,
       });
       // 1939 is taken, 1940 is reserved → we get 1941.
       expect(result.port).toBe(1941);
