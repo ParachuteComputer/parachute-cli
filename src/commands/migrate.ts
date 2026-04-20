@@ -114,6 +114,21 @@ export function planArchive(configDir: string, now: Date): ArchivePlan {
     if (entry.name.startsWith(".")) continue;
     if (safelist.has(entry.name)) continue;
     const abs = join(configDir, entry.name);
+    // Dirent.isDirectory() follows symlinks on macOS/Linux — so a link
+    // pointing at an external tree would get sized via sizeOf() (bogus
+    // byte count, and potentially a slow walk through /mnt/... or similar).
+    // Classify the link itself as a zero-byte "file"; renameSync moves the
+    // link, not the target, which is the behavior we want.
+    if (entry.isSymbolicLink()) {
+      plan.items.push({
+        name: entry.name,
+        absPath: abs,
+        kind: "file",
+        bytes: 0,
+        annotation: annotationFor(entry.name),
+      });
+      continue;
+    }
     const bytes = sizeOf(abs);
     plan.items.push({
       name: entry.name,
