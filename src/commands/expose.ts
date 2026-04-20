@@ -89,13 +89,31 @@ function remapLegacyRoot(
   });
 }
 
+/**
+ * Compose the tailscale serve target URL for a service rooted at `mount`.
+ *
+ * `tailscale serve --set-path=<mount> <target>` strips `<mount>` from the
+ * incoming request path before forwarding. So if the backend expects
+ * requests to keep arriving at `<mount>/...` (every SPA with a configured
+ * base path, plus vault's `/vault/<name>/` API root) the target URL must
+ * include the same mount path — otherwise the backend sees requests at `/`,
+ * emits a redirect back to its real base, tailscale strips again, and the
+ * client loops on `ERR_TOO_MANY_REDIRECTS`.
+ *
+ * The rule of thumb is: mount and target path must match byte-for-byte
+ * (including trailing slash state), so tailscale's strip-then-forward is a
+ * no-op and the backend sees the full path it expects.
+ */
+function serviceProxyTarget(port: number, mount: string): string {
+  return `http://127.0.0.1:${port}${mount}`;
+}
+
 function planEntries(services: readonly ServiceEntry[], hubPort: number): ServeEntry[] {
-  const hubTarget = `http://127.0.0.1:${hubPort}`;
   const entries: ServeEntry[] = [];
   entries.push({
     kind: "proxy",
     mount: HUB_MOUNT,
-    target: hubTarget,
+    target: serviceProxyTarget(hubPort, HUB_MOUNT),
     service: "hub",
   });
   for (const s of services) {
@@ -103,14 +121,14 @@ function planEntries(services: readonly ServiceEntry[], hubPort: number): ServeE
     entries.push({
       kind: "proxy",
       mount,
-      target: `http://127.0.0.1:${s.port}`,
+      target: serviceProxyTarget(s.port, mount),
       service: s.name,
     });
   }
   entries.push({
     kind: "proxy",
     mount: WELL_KNOWN_MOUNT,
-    target: `${hubTarget}${WELL_KNOWN_MOUNT}`,
+    target: serviceProxyTarget(hubPort, WELL_KNOWN_MOUNT),
     service: "well-known",
   });
   return entries;
