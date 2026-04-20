@@ -9,6 +9,12 @@ import { CONFIG_DIR } from "./config.ts";
  * (name, tagline, icon) comes from the service, not the CLI — adding a new
  * frontend requires zero hub-page changes.
  *
+ * Card kinds (from `info.kind`, optional):
+ *   "frontend" | undefined  → whole card is an <a> that navigates to svc.url
+ *   "api" | "tool"          → card is non-navigating; click toggles a detail
+ *                             panel with OAuth/MCP/open-in-Notes links, so
+ *                             API-only services don't dead-end on raw JSON.
+ *
  * The file is fully self-contained (inline CSS + JS, no external assets)
  * so `tailscale serve` can mount it directly from disk with `--set-path=/`.
  */
@@ -188,6 +194,116 @@ const HTML = `<!doctype html>
     font-family: ui-monospace, 'SF Mono', Monaco, monospace;
     color: var(--fg-muted);
   }
+  .kind-badge {
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+  }
+  .card.interactive { cursor: pointer; }
+  .card.interactive:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .details {
+    display: none;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border);
+    font-size: 0.9rem;
+  }
+  .card.expanded .details { display: flex; }
+  .details a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.15s ease;
+    word-break: break-all;
+  }
+  .details a:hover { border-bottom-color: var(--accent-light); }
+  .details .row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .details .row .label {
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .config {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+    padding-top: 0.6rem;
+    border-top: 1px dashed var(--border);
+  }
+  .config h3 {
+    font-family: var(--serif);
+    font-size: 1.05rem;
+    font-weight: 400;
+    margin: 0;
+  }
+  .config .hint {
+    color: var(--fg-dim);
+    font-size: 0.78rem;
+    font-style: italic;
+  }
+  .config fieldset {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .config legend {
+    padding: 0 0.35rem;
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .config .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .config .field-label {
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+  .config .field-description {
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+  }
+  .config input,
+  .config select,
+  .config textarea {
+    font-family: var(--sans);
+    font-size: 0.88rem;
+    padding: 0.35rem 0.5rem;
+    background: var(--bg-soft);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    opacity: 0.85;
+    cursor: not-allowed;
+  }
+  .config input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    padding: 0;
+  }
   .empty, .error {
     text-align: center;
     color: var(--fg-muted);
@@ -264,10 +380,213 @@ const HTML = `<!doctype html>
     } catch { return null; }
   }
 
-  function renderCard(svc, info) {
+  function isInteractiveKind(kind) {
+    return kind === 'api' || kind === 'tool';
+  }
+
+  function appendDetailRow(parent, label, node) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('span');
+    lab.className = 'label';
+    lab.textContent = label;
+    row.appendChild(lab);
+    row.appendChild(node);
+    parent.appendChild(row);
+  }
+
+  function linkNode(href, text) {
     const a = document.createElement('a');
-    a.className = 'card';
-    a.href = svc.url;
+    a.href = href;
+    a.textContent = text || href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    return a;
+  }
+
+  function renderDetails(svc, info) {
+    const box = document.createElement('div');
+    box.className = 'details';
+    // OAuth discovery is served by the hub (this origin) per the Phase 0 seam.
+    appendDetailRow(
+      box,
+      'OAuth discovery',
+      linkNode('/.well-known/oauth-authorization-server'),
+    );
+    if (info && typeof info.mcpUrl === 'string' && info.mcpUrl) {
+      appendDetailRow(box, 'MCP endpoint', linkNode(info.mcpUrl));
+    }
+    if (info && typeof info.openInNotesUrl === 'string' && info.openInNotesUrl) {
+      appendDetailRow(box, 'Open in Notes', linkNode(info.openInNotesUrl, 'Open →'));
+    }
+    // Direct URL is still useful for power users even if the card doesn't navigate.
+    appendDetailRow(box, 'Service URL', linkNode(svc.url));
+    // Empty slot — config fetched + populated lazily on first expand.
+    const configSlot = document.createElement('div');
+    configSlot.className = 'config-slot';
+    box.appendChild(configSlot);
+    return { box, configSlot };
+  }
+
+  async function fetchConfig(svcUrl) {
+    // Schema endpoint may 404 for modules that haven't shipped config yet;
+    // in that case we render nothing (no error surfaced).
+    const schemaResp = await fetchWithTimeout(
+      svcUrl.replace(/\\/+$/, '') + '/.parachute/config/schema',
+      2000,
+    ).catch(() => null);
+    if (!schemaResp || !schemaResp.ok) return null;
+    const schema = await schemaResp.json().catch(() => null);
+    if (!schema || typeof schema !== 'object') return null;
+    const valuesResp = await fetchWithTimeout(
+      svcUrl.replace(/\\/+$/, '') + '/.parachute/config',
+      2000,
+    ).catch(() => null);
+    const values = valuesResp && valuesResp.ok ? await valuesResp.json().catch(() => ({})) : {};
+    return { schema, values: values && typeof values === 'object' ? values : {} };
+  }
+
+  function labelFor(name, schema) {
+    return (schema && typeof schema.title === 'string' && schema.title) || name;
+  }
+
+  function renderConfigField(name, schema, value) {
+    const field = document.createElement('div');
+    field.className = 'field';
+
+    const label = document.createElement('span');
+    label.className = 'field-label';
+    label.textContent = labelFor(name, schema);
+    field.appendChild(label);
+
+    const type = schema && typeof schema.type === 'string' ? schema.type : 'string';
+    const writeOnly = schema && schema.writeOnly === true;
+
+    let input;
+    if (type === 'string' && Array.isArray(schema.enum)) {
+      input = document.createElement('select');
+      for (const opt of schema.enum) {
+        const o = document.createElement('option');
+        o.value = String(opt);
+        o.textContent = String(opt);
+        if (String(opt) === String(value ?? '')) o.selected = true;
+        input.appendChild(o);
+      }
+    } else if (type === 'boolean') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = value === true;
+    } else if (type === 'integer' || type === 'number') {
+      input = document.createElement('input');
+      input.type = 'number';
+      if (value !== undefined && value !== null) input.value = String(value);
+    } else {
+      input = document.createElement('input');
+      input.type = schema && schema.format === 'uri' ? 'url' : 'text';
+      if (writeOnly) {
+        input.placeholder = '\u2022\u2022\u2022\u2022\u2022\u2022';
+        input.value = '';
+      } else if (value !== undefined && value !== null) {
+        input.value = String(value);
+      }
+    }
+    input.disabled = true;
+    input.setAttribute('aria-readonly', 'true');
+    field.appendChild(input);
+
+    if (schema && typeof schema.description === 'string' && schema.description) {
+      const desc = document.createElement('span');
+      desc.className = 'field-description';
+      desc.textContent = schema.description;
+      field.appendChild(desc);
+    }
+
+    return field;
+  }
+
+  function renderConfigObject(schema, values, legendText) {
+    const fs = document.createElement('fieldset');
+    if (legendText) {
+      const lg = document.createElement('legend');
+      lg.textContent = legendText;
+      fs.appendChild(lg);
+    }
+    const props =
+      schema && typeof schema.properties === 'object' && schema.properties ? schema.properties : {};
+    for (const [name, propSchema] of Object.entries(props)) {
+      const v = values && typeof values === 'object' ? values[name] : undefined;
+      if (propSchema && propSchema.type === 'object') {
+        fs.appendChild(renderConfigObject(propSchema, v || {}, labelFor(name, propSchema)));
+      } else if (propSchema && propSchema.type === 'array') {
+        // Phase 2: arrays render as a disabled textarea summary; add/remove is Phase 3.
+        const f = document.createElement('div');
+        f.className = 'field';
+        const label = document.createElement('span');
+        label.className = 'field-label';
+        label.textContent = labelFor(name, propSchema);
+        f.appendChild(label);
+        const ta = document.createElement('textarea');
+        ta.rows = 2;
+        ta.value = Array.isArray(v) ? v.join('\\n') : '';
+        ta.disabled = true;
+        ta.setAttribute('aria-readonly', 'true');
+        f.appendChild(ta);
+        fs.appendChild(f);
+      } else {
+        fs.appendChild(renderConfigField(name, propSchema, v));
+      }
+    }
+    return fs;
+  }
+
+  function renderConfigBody(schema, values) {
+    const wrap = document.createElement('div');
+    wrap.className = 'config';
+    const title = document.createElement('h3');
+    title.textContent = (schema && schema.title) || 'Configuration';
+    wrap.appendChild(title);
+    const hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent =
+      'Configuration is read-only in this launch — edit via CLI or ~/.parachute/<svc>/.env.';
+    wrap.appendChild(hint);
+    wrap.appendChild(renderConfigObject(schema, values, null));
+    return wrap;
+  }
+
+  function renderCard(svc, info) {
+    const kind = info && typeof info.kind === 'string' ? info.kind : 'frontend';
+    const interactive = isInteractiveKind(kind);
+    const root = document.createElement(interactive ? 'div' : 'a');
+    root.className = 'card' + (interactive ? ' interactive' : '');
+    if (!interactive) root.href = svc.url;
+    let configSlotRef = null;
+    let configLoaded = false;
+    if (interactive) {
+      root.setAttribute('role', 'button');
+      root.setAttribute('tabindex', '0');
+      root.setAttribute('aria-expanded', 'false');
+      const toggle = async () => {
+        const next = !root.classList.contains('expanded');
+        root.classList.toggle('expanded', next);
+        root.setAttribute('aria-expanded', next ? 'true' : 'false');
+        if (next && !configLoaded && configSlotRef) {
+          configLoaded = true;
+          const data = await fetchConfig(svc.url);
+          if (data) configSlotRef.appendChild(renderConfigBody(data.schema, data.values));
+        }
+      };
+      root.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.details')) return;
+        toggle();
+      });
+      root.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggle();
+        }
+      });
+    }
 
     const head = document.createElement('div');
     head.className = 'card-head';
@@ -291,14 +610,14 @@ const HTML = `<!doctype html>
 
     head.appendChild(icon);
     head.appendChild(title);
-    a.appendChild(head);
+    root.appendChild(head);
 
     const tag = info && info.tagline;
     if (tag) {
       const p = document.createElement('p');
       p.className = 'card-tagline';
       p.textContent = tag;
-      a.appendChild(p);
+      root.appendChild(p);
     }
 
     const meta = document.createElement('div');
@@ -306,14 +625,31 @@ const HTML = `<!doctype html>
     const path = document.createElement('span');
     path.className = 'path';
     path.textContent = svc.path;
+    const right = document.createElement('span');
+    right.style.display = 'inline-flex';
+    right.style.gap = '0.35rem';
+    right.style.alignItems = 'center';
+    if (interactive) {
+      const badge = document.createElement('span');
+      badge.className = 'kind-badge';
+      badge.textContent = kind;
+      right.appendChild(badge);
+    }
     const ver = document.createElement('span');
     ver.className = 'version';
     ver.textContent = 'v' + svc.version;
+    right.appendChild(ver);
     meta.appendChild(path);
-    meta.appendChild(ver);
-    a.appendChild(meta);
+    meta.appendChild(right);
+    root.appendChild(meta);
 
-    return a;
+    if (interactive) {
+      const d = renderDetails(svc, info);
+      configSlotRef = d.configSlot;
+      root.appendChild(d.box);
+    }
+
+    return root;
   }
 
   try {
