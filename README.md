@@ -144,6 +144,25 @@ Why path-routing and not subdomain-per-service? Two reasons:
 
 Funnel has bandwidth quotas on Tailscale's free tier. See [tailscale.com/kb/1223/funnel](https://tailscale.com/kb/1223/funnel) for current limits; for heavy traffic, the post-launch Caddy / cloudflared modes will be the answer.
 
+## Ports
+
+Parachute services reserve a block of loopback ports in the canonical range **1939–1949**. One range, one firewall rule, no surprises.
+
+| Port | Service            |
+| ---- | ------------------ |
+| 1939 | parachute-hub (internal proxy + static) |
+| 1940 | parachute-vault    |
+| 1941 | parachute-channel  |
+| 1942 | parachute-notes    |
+| 1943 | parachute-scribe   |
+| 1944 | *reserved — pendant*  |
+| 1945 | *reserved — daily-v2* |
+| 1946–1949 | *reserved* |
+
+The hub pins 1939 — no fallback. If something else is on 1939 when you run `parachute expose`, the command fails with a pointer to `lsof -iTCP:1939` rather than walking up into another service's slot. `parachute install` warns (but doesn't block) if a service's declared port lands outside the canonical range.
+
+`parachute expose` probes every service's port at bringup. A service that isn't responding still gets exposed, but you get a `⚠ parachute-<svc> (port …) is not responding` line so proxied requests never silently 502 without explanation.
+
 ## How services register
 
 Each Parachute service writes a manifest entry to `~/.parachute/services.json` on install. The CLI reads that manifest to drive `parachute status`, `parachute expose tailnet`, and `parachute expose public`.

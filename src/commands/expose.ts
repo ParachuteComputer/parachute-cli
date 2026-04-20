@@ -11,11 +11,13 @@ import {
 import {
   type EnsureHubOpts,
   type StopHubOpts,
+  defaultPortProbe,
   ensureHubRunning,
   readHubPort,
   stopHub,
 } from "../hub-control.ts";
 import { HUB_MOUNT, HUB_PATH, writeHubFile } from "../hub.ts";
+import { shortNameForManifest } from "../service-spec.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
 import { type ServeEntry, bringupCommand, teardownCommand } from "../tailscale/commands.ts";
 import { getFqdn, isTailscaleInstalled } from "../tailscale/detect.ts";
@@ -64,6 +66,13 @@ export interface ExposeOpts {
   hubStopOpts?: Omit<StopHubOpts, "configDir" | "log">;
   /** Skip spawning the hub server. Tests flip this off to verify it's called. */
   skipHub?: boolean;
+  /**
+   * Probe a port to decide whether a service is responding. Returns true when
+   * something is listening (i.e., bind-probe fails). Primarily a test seam —
+   * the default walks every service port before bringup and warns on any
+   * that don't answer.
+   */
+  servicePortProbe?: (port: number) => Promise<boolean>;
 }
 
 /**
@@ -196,6 +205,24 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   }
 
   const services = remapLegacyRoot(manifest.services, log);
+
+  /**
+   * Probe each service port before wiring tailscale up. A service that's
+   * quietly stopped would otherwise get proxied for silent 502s. Warn and
+   * continue — users sometimes expose paths ahead of starting a service,
+   * and we don't want probe flakes to block bringup.
+   */
+  const portProbe = opts.servicePortProbe ?? (async (p: number) => !(await defaultPortProbe(p)));
+  const probeResults = await Promise.all(
+    services.map(async (s) => ({ svc: s, up: await portProbe(s.port) })),
+  );
+  for (const { svc, up } of probeResults) {
+    if (up) continue;
+    const short = shortNameForManifest(svc.name) ?? svc.name;
+    log(
+      `⚠ ${svc.name} (port ${svc.port}) is not responding; its path will proxy to a dead port. Run \`parachute start ${short}\`.`,
+    );
+  }
 
   const wellKnownDoc = buildWellKnown({ services, canonicalOrigin });
   writeWellKnownFile(wellKnownDoc, wellKnownFilePath);

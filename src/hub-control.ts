@@ -27,7 +27,12 @@ import { WELL_KNOWN_DIR } from "./well-known.ts";
 
 export const HUB_SVC = "hub";
 export const HUB_DEFAULT_PORT = 1939;
-export const HUB_PORT_FALLBACK_RANGE = 20;
+/**
+ * Default fallback range is 1 — the hub binds 1939 or fails. Walking up would
+ * steal another Parachute service's slot from the canonical 1939–1949 range.
+ * Tests and debug tooling can pass a larger `fallbackRange` explicitly.
+ */
+export const HUB_PORT_FALLBACK_RANGE = 1;
 
 const HUB_SERVER_PATH = fileURLToPath(new URL("./hub-server.ts", import.meta.url));
 
@@ -160,8 +165,10 @@ export async function ensureHubRunning(opts: EnsureHubOpts = {}): Promise<Ensure
     }
   }
   if (chosenPort === undefined) {
+    const range =
+      fallbackRange === 1 ? `${startPort}` : `${startPort}..${startPort + fallbackRange - 1}`;
     throw new Error(
-      `hub: no free port in ${startPort}..${startPort + fallbackRange - 1}. Is something already bound to that range?`,
+      `hub: port ${range} unavailable. Run \`lsof -iTCP:${startPort}\` to find what's using it, or pass --hub-port to override.`,
     );
   }
 

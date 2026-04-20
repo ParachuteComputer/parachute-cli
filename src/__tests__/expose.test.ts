@@ -108,6 +108,9 @@ function seedServices(path: string): void {
   );
 }
 
+/** Default probe for tests: every service is up (nobody wants dead-service warnings polluting unrelated assertions). */
+const allServicesUp = async () => true;
+
 describe("expose tailnet up", () => {
   test("mounts hub proxy at /, one proxy per service, plus well-known proxy", async () => {
     const h = makeHarness();
@@ -125,6 +128,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -194,6 +198,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -235,6 +240,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -268,6 +274,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -301,6 +308,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -328,6 +336,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -371,12 +380,52 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: () => {},
       });
       expect(code).toBe(0);
       const offs = calls.filter((c) => c[c.length - 1] === "off");
       expect(offs).toHaveLength(1);
       expect(offs[0]).toContain("--set-path=/old-service");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("warns (but still exposes) when a service port isn't responding", async () => {
+    // Aaron hit this: vault was quietly stopped, `parachute expose tailnet`
+    // happily proxied /vault/default to a dead port, every request 502'd.
+    // Now we probe and warn — but don't fail, so users can stand up layers
+    // before starting services if they want.
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const logs: string[] = [];
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        // vault is up; notes is down.
+        servicePortProbe: async (port) => port === 1940,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/parachute-notes \(port 5173\) is not responding/);
+      expect(joined).toMatch(/parachute start notes/);
+      expect(joined).not.toMatch(/parachute-vault.*not responding/);
+      // Bringup still happened — all four entries got staged.
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      expect(serveCalls).toHaveLength(4);
     } finally {
       h.cleanup();
     }
@@ -411,6 +460,7 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(2);
@@ -622,6 +672,7 @@ describe("expose public up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -681,6 +732,7 @@ describe("expose public up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -728,6 +780,7 @@ describe("expose public up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
         log: () => {},
       });
       expect(code).toBe(0);
