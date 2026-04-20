@@ -144,13 +144,22 @@ describe("expose tailnet up", () => {
       ]);
 
       // Hub + well-known now point at localhost HTTP, not a file path.
+      // Target path mirrors mount exactly so tailscale's strip-then-forward
+      // is a no-op; otherwise SPAs at /<mount>/ redirect-loop.
       const hubCall = serveCalls.find((c) => c.includes("--set-path=/"));
-      expect(hubCall?.[hubCall.length - 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(hubCall?.[hubCall.length - 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
 
       const wkCall = serveCalls.find((c) => c.includes("--set-path=/.well-known/parachute.json"));
       expect(wkCall?.[wkCall.length - 1]).toMatch(
         /^http:\/\/127\.0\.0\.1:\d+\/\.well-known\/parachute\.json$/,
       );
+
+      // Service targets also include their mount path to prevent tailscale
+      // from stripping the prefix before forwarding to a base-aware backend.
+      const notesCall = serveCalls.find((c) => c.includes("--set-path=/notes"));
+      expect(notesCall?.[notesCall.length - 1]).toBe("http://127.0.0.1:5173/notes");
+      const vaultCall = serveCalls.find((c) => c.includes("--set-path=/vault/default"));
+      expect(vaultCall?.[vaultCall.length - 1]).toBe("http://127.0.0.1:1940/vault/default");
 
       expect(existsSync(h.wellKnownPath)).toBe(true);
       expect(existsSync(h.hubPath)).toBe(true);
@@ -192,6 +201,47 @@ describe("expose tailnet up", () => {
       expect(cmd).toContain("--port");
       expect(cmd).toContain("--well-known-dir");
       expect(cmd).toContain(h.wellKnownDir);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("trailing-slash mount preserves trailing slash in target URL", async () => {
+    // Aaron hit ERR_TOO_MANY_REDIRECTS on /notes/ because tailscale strips
+    // the prefix, Vite (base=/notes) redirects back to /notes/, tailscale
+    // strips again, loop. Pinning target = mount byte-for-byte breaks that.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "parachute-notes",
+          port: 5173,
+          paths: ["/notes/"],
+          health: "/notes/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      const notesCall = serveCalls.find((c) => c.includes("--set-path=/notes/"));
+      expect(notesCall).toBeDefined();
+      expect(notesCall?.[notesCall.length - 1]).toBe("http://127.0.0.1:5173/notes/");
     } finally {
       h.cleanup();
     }
