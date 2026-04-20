@@ -10,7 +10,7 @@ Install, inspect, and expose Parachute services with one command. Each service (
 bun add -g @openparachute/cli
 ```
 
-Prereqs: [Bun](https://bun.sh), and — for `parachute expose` — [Tailscale](https://tailscale.com/download) installed and `tailscale up` run at least once.
+Prereqs: [Bun](https://bun.sh), and — for `parachute expose` — [Tailscale](https://tailscale.com/download) **1.82 or newer** installed and `tailscale up` run at least once. (1.82 is when `tailscale funnel` was split out into its own subcommand; the CLI targets the modern shape only.)
 
 ## First 5 minutes
 
@@ -90,9 +90,9 @@ Each additive; each can be turned off without affecting the layer below.
 
 - **Local** — services on loopback. Zero config. Browsers treat `localhost` as a secure context, so OAuth, PKCE, and Web Crypto all just work out of the box.
 - **Tailnet** — `parachute expose tailnet` wraps `tailscale serve` for every registered service. HTTPS via Tailscale's MagicDNS cert. Only machines on your tailnet can reach the URL.
-- **Public** — `parachute expose public` adds `--funnel` to each handler so the same URLs become reachable from the public internet. At launch, Funnel is the only supported backend; Caddy + your-own-domain and cloudflared tunnels are planned post-launch.
+- **Public** — `parachute expose public` routes each handler through `tailscale funnel` so the same URLs become reachable from the public internet. At launch, Funnel is the only supported backend; Caddy + your-own-domain and cloudflared tunnels are planned post-launch.
 
-Under the hood, tailnet and public share a single `tailscale serve` config. The CLI records which layer is live so that `expose <other-layer> off` is a no-op rather than a surprise teardown of the active layer.
+Under the hood, tailnet mode uses `tailscale serve` and public mode uses `tailscale funnel`; both write into the same node-level serve config. The CLI records which layer is live so that `expose <other-layer> off` is a no-op rather than a surprise teardown of the active layer.
 
 ## Path-routing (and why)
 

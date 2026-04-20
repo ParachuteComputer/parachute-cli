@@ -133,7 +133,9 @@ describe("expose tailnet up", () => {
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
       expect(serveCalls).toHaveLength(4);
+      // Tailnet mode never uses funnel — neither the old flag nor the new subcommand.
       expect(serveCalls.every((c) => !c.includes("--funnel"))).toBe(true);
+      expect(calls.every((c) => c[1] !== "funnel")).toBe(true);
 
       const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path="))).sort();
       expect(mounts).toEqual([
@@ -604,7 +606,7 @@ describe("expose tailnet off", () => {
 });
 
 describe("expose public up", () => {
-  test("adds --funnel to every serve command and records layer=public", async () => {
+  test("routes every bringup through `tailscale funnel` and records layer=public", async () => {
     const h = makeHarness();
     try {
       seedServices(h.manifestPath);
@@ -624,11 +626,15 @@ describe("expose public up", () => {
       });
       expect(code).toBe(0);
 
-      const serveCalls = calls.filter(
-        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      // Modern tailscale (1.82+) rejects `serve --funnel`; public mode must use
+      // the `funnel` subcommand instead.
+      const funnelCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "funnel" && c.includes("--bg"),
       );
-      expect(serveCalls).toHaveLength(4);
-      expect(serveCalls.every((c) => c.includes("--funnel"))).toBe(true);
+      expect(funnelCalls).toHaveLength(4);
+      // Never emit the legacy `serve --funnel` shape.
+      expect(calls.every((c) => !c.includes("--funnel"))).toBe(true);
+      expect(calls.every((c) => !(c[1] === "serve" && c.includes("--bg")))).toBe(true);
 
       const state = readExposeState(h.statePath);
       expect(state?.layer).toBe("public");
@@ -636,6 +642,53 @@ describe("expose public up", () => {
       expect(state?.entries).toHaveLength(4);
 
       expect(logs.join("\n")).toMatch(/Public exposure active/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("switching from public to tailnet tears prior state down via `tailscale funnel … off`", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      writeExposeState(
+        {
+          version: 1,
+          layer: "public",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: true,
+          entries: [
+            {
+              kind: "proxy",
+              mount: "/vault/default",
+              target: "http://127.0.0.1:1940/vault/default",
+              service: "parachute-vault",
+            },
+          ],
+        },
+        h.statePath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      // Prior was public → teardown must use `tailscale funnel … off`,
+      // not `tailscale serve … off` (which wouldn't drop the funnel entry on 1.82+).
+      const offs = calls.filter((c) => c[c.length - 1] === "off");
+      expect(offs).toHaveLength(1);
+      expect(offs[0]?.[1]).toBe("funnel");
     } finally {
       h.cleanup();
     }
@@ -689,7 +742,7 @@ describe("expose public up", () => {
 });
 
 describe("expose public off", () => {
-  test("tears down public exposure and clears state", async () => {
+  test("tears down public exposure via `tailscale funnel … off` and clears state", async () => {
     const h = makeHarness();
     try {
       writeExposeState(
@@ -723,7 +776,10 @@ describe("expose public off", () => {
         log: () => {},
       });
       expect(code).toBe(0);
-      expect(calls.every((c) => c[c.length - 1] === "off")).toBe(true);
+      // Public teardown must use the funnel subcommand, matching bringup.
+      const offCalls = calls.filter((c) => c[c.length - 1] === "off");
+      expect(offCalls.length).toBeGreaterThan(0);
+      expect(offCalls.every((c) => c[1] === "funnel")).toBe(true);
       expect(existsSync(h.statePath)).toBe(false);
     } finally {
       h.cleanup();

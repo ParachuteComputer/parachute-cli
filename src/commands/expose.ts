@@ -185,7 +185,9 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   if (prior && prior.entries.length > 0) {
     const priorLabel = layerLabel(prior.layer);
     log(`Found prior ${priorLabel} exposure; tearing down ${prior.entries.length} entries first…`);
-    const teardownCmds = prior.entries.map((e) => teardownCommand(e, { port: prior.port }));
+    const teardownCmds = prior.entries.map((e) =>
+      teardownCommand(e, { port: prior.port, funnel: prior.funnel }),
+    );
     const code = await runEach(runner, teardownCmds, log);
     if (code !== 0) {
       log("Teardown of prior state failed; aborting.");
@@ -210,6 +212,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
     hubPort = existing;
   } else {
     const hub = await ensureHubRunning({
+      reservedPorts: services.map((s) => s.port),
       ...(opts.hubEnsureOpts ?? {}),
       configDir,
       wellKnownDir,
@@ -277,7 +280,9 @@ export async function exposeOff(layer: ExposeLayer, opts: ExposeOpts = {}): Prom
   }
 
   log(`Tearing down ${state.entries.length} ${layerLabel(layer)} serve entries…`);
-  const cmds = state.entries.map((e) => teardownCommand(e, { port: state.port }));
+  const cmds = state.entries.map((e) =>
+    teardownCommand(e, { port: state.port, funnel: state.funnel }),
+  );
   const code = await runEach(runner, cmds, log);
   if (code !== 0) {
     log("Teardown failed. State file left in place so you can retry.");
