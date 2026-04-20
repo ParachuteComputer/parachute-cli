@@ -9,10 +9,21 @@
 import pkg from "../package.json" with { type: "json" };
 import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
+import { logs, restart, start, stop } from "./commands/lifecycle.ts";
 import { status } from "./commands/status.ts";
 import { dispatchVault } from "./commands/vault.ts";
 import { ExposeStateError } from "./expose-state.ts";
-import { exposeHelp, installHelp, statusHelp, topLevelHelp, vaultHelp } from "./help.ts";
+import {
+  exposeHelp,
+  installHelp,
+  logsHelp,
+  restartHelp,
+  startHelp,
+  statusHelp,
+  stopHelp,
+  topLevelHelp,
+  vaultHelp,
+} from "./help.ts";
 import { knownServices } from "./service-spec.ts";
 import { ServicesManifestError } from "./services-manifest.ts";
 import { TailscaleError } from "./tailscale/run.ts";
@@ -83,6 +94,45 @@ async function main(argv: string[]): Promise<number> {
       }
       const action = mode === "off" ? "off" : "up";
       return layer === "public" ? await exposePublic(action) : await exposeTailnet(action);
+    }
+
+    case "start": {
+      if (isHelpFlag(rest[0])) {
+        console.log(startHelp());
+        return 0;
+      }
+      return await start(rest[0]);
+    }
+
+    case "stop": {
+      if (isHelpFlag(rest[0])) {
+        console.log(stopHelp());
+        return 0;
+      }
+      return await stop(rest[0]);
+    }
+
+    case "restart": {
+      if (isHelpFlag(rest[0])) {
+        console.log(restartHelp());
+        return 0;
+      }
+      return await restart(rest[0]);
+    }
+
+    case "logs": {
+      if (isHelpFlag(rest[0])) {
+        console.log(logsHelp());
+        return 0;
+      }
+      const svc = rest[0];
+      if (!svc) {
+        console.error("usage: parachute logs <service> [-f]");
+        console.error(`services: ${knownServices().join(", ")}`);
+        return 1;
+      }
+      const follow = rest.includes("-f") || rest.includes("--follow");
+      return await logs(svc, { follow });
     }
 
     case "vault":

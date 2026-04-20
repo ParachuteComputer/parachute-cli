@@ -8,7 +8,11 @@ export function topLevelHelp(): string {
 Usage:
   parachute install <service>       install and register a service
                                     services: ${services}
-  parachute status                  show installed services and health
+  parachute status                  show installed services, process state, health
+  parachute start   [service]       start all services (or one) in the background
+  parachute stop    [service]       stop all services (or one) — SIGTERM then SIGKILL
+  parachute restart [service]       stop + start
+  parachute logs <service> [-f]     print service logs; -f to tail
   parachute expose tailnet [off]    HTTPS across your tailnet
   parachute expose public  [off]    HTTPS on the public internet (Funnel)
   parachute vault <args...>         dispatch to parachute-vault
@@ -40,23 +44,30 @@ Examples:
 }
 
 export function statusHelp(): string {
-  return `parachute status — show installed services and their health
+  return `parachute status — show installed services, process state, and health
 
 Usage:
   parachute status
 
 What it does:
-  Reads ~/.parachute/services.json and probes \`http://localhost:<port><health>\`
-  for every registered service.
+  Reads ~/.parachute/services.json. For each registered service:
+    - checks PID file at ~/.parachute/<svc>/run/<svc>.pid → running/stopped
+    - probes http://localhost:<port><health> (skipped for known-stopped processes)
+
+  Stopped services show "-" for health and don't count toward the exit
+  code — they're an expected state after fresh install before \`parachute
+  start\`. Running or externally-managed services that fail health checks
+  do exit 1.
 
 Exit codes:
-  0   all services healthy (or no services installed yet)
-  1   one or more services unhealthy
+  0   all probed services healthy (or none running)
+  1   one or more probed services unhealthy
 
 Example:
   $ parachute status
-  SERVICE          PORT  VERSION  STATUS  LATENCY
-  parachute-vault  1940  0.2.4    ok      2ms
+  SERVICE          PORT  VERSION  PROCESS  PID    UPTIME  HEALTH  LATENCY
+  parachute-vault  1940  0.2.4    running  12345  2h 13m  ok      2ms
+  parachute-notes  5173  0.0.1    stopped  -      -       -       -
 `;
 }
 
@@ -92,6 +103,80 @@ Constraints (public layer / Funnel):
 Coming soon:
   parachute expose public --mode caddy        use your own domain + Caddy
   parachute expose public --mode cloudflared  use your own domain + cloudflared
+`;
+}
+
+export function startHelp(): string {
+  return `parachute start — spawn services in the background
+
+Usage:
+  parachute start                   start every installed service
+  parachute start <service>         start just that one
+
+What it does:
+  For each target service, spawns its start command detached, redirects
+  stdout+stderr to ~/.parachute/<service>/logs/<service>.log, and records
+  the child PID at ~/.parachute/<service>/run/<service>.pid.
+
+  Idempotent: if the service is already running, no-op.
+  If a stale PID file exists (process died without cleanup), it's cleared
+  and the service starts fresh.
+
+Examples:
+  parachute start                   bring everything up
+  parachute start vault             just vault
+  parachute logs vault              watch what just started
+
+Start commands by service:
+  vault     parachute-vault serve
+  scribe    parachute-scribe serve
+  channel   parachute-channel daemon
+  notes     bun <cli>/notes-serve.ts --port <configured>
+`;
+}
+
+export function stopHelp(): string {
+  return `parachute stop — stop running services cleanly
+
+Usage:
+  parachute stop                    stop every installed service
+  parachute stop <service>          stop just that one
+
+What it does:
+  Sends SIGTERM, waits up to 10s for a clean exit, then escalates to
+  SIGKILL if the process is still alive. Removes the PID file on success.
+
+  No-op if the service wasn't running.
+
+Examples:
+  parachute stop                    stop everything before sleep
+  parachute stop vault              just vault
+`;
+}
+
+export function restartHelp(): string {
+  return `parachute restart — stop then start
+
+Usage:
+  parachute restart                 restart every installed service
+  parachute restart <service>       restart just that one
+
+What it does:
+  Equivalent to \`parachute stop <svc> && parachute start <svc>\`.
+`;
+}
+
+export function logsHelp(): string {
+  return `parachute logs — print service logs
+
+Usage:
+  parachute logs <service>          print the last 200 lines
+  parachute logs <service> -f       tail the log (like \`tail -f\`)
+
+Log file:
+  ~/.parachute/<service>/logs/<service>.log
+
+If no log file exists yet, prints a hint to \`parachute start <service>\`.
 `;
 }
 
