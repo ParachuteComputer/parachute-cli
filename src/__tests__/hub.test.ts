@@ -33,6 +33,35 @@ describe("renderHub", () => {
   test("falls back to a generic icon when service has none", () => {
     expect(html).toContain("fallbackIcon");
   });
+
+  test("branches card rendering on info.kind (api/tool → interactive, else link)", () => {
+    // Script picks the element type and wires up toggling based on info.kind.
+    expect(html).toContain("isInteractiveKind");
+    expect(html).toContain("'api'");
+    expect(html).toContain("'tool'");
+    expect(html).toContain("'frontend'");
+  });
+
+  test("interactive cards get keyboard + aria affordances", () => {
+    expect(html).toContain("role");
+    expect(html).toContain("tabindex");
+    expect(html).toContain("aria-expanded");
+    expect(html).toContain("Enter");
+  });
+
+  test("detail panel surfaces OAuth discovery, MCP, open-in-Notes, service URL", () => {
+    expect(html).toContain("/.well-known/oauth-authorization-server");
+    expect(html).toContain("info.mcpUrl");
+    expect(html).toContain("info.openInNotesUrl");
+    expect(html).toContain("Service URL");
+    expect(html).toContain("OAuth discovery");
+  });
+
+  test("details panel is hidden until the card is expanded", () => {
+    expect(html).toContain(".details {");
+    expect(html).toContain("display: none");
+    expect(html).toContain(".card.expanded .details");
+  });
 });
 
 describe("writeHubFile", () => {

@@ -9,6 +9,12 @@ import { CONFIG_DIR } from "./config.ts";
  * (name, tagline, icon) comes from the service, not the CLI — adding a new
  * frontend requires zero hub-page changes.
  *
+ * Card kinds (from `info.kind`, optional):
+ *   "frontend" | undefined  → whole card is an <a> that navigates to svc.url
+ *   "api" | "tool"          → card is non-navigating; click toggles a detail
+ *                             panel with OAuth/MCP/open-in-Notes links, so
+ *                             API-only services don't dead-end on raw JSON.
+ *
  * The file is fully self-contained (inline CSS + JS, no external assets)
  * so `tailscale serve` can mount it directly from disk with `--set-path=/`.
  */
@@ -188,6 +194,49 @@ const HTML = `<!doctype html>
     font-family: ui-monospace, 'SF Mono', Monaco, monospace;
     color: var(--fg-muted);
   }
+  .kind-badge {
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+  }
+  .card.interactive { cursor: pointer; }
+  .card.interactive:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .details {
+    display: none;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border);
+    font-size: 0.9rem;
+  }
+  .card.expanded .details { display: flex; }
+  .details a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.15s ease;
+    word-break: break-all;
+  }
+  .details a:hover { border-bottom-color: var(--accent-light); }
+  .details .row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .details .row .label {
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
   .empty, .error {
     text-align: center;
     color: var(--fg-muted);
@@ -264,10 +313,76 @@ const HTML = `<!doctype html>
     } catch { return null; }
   }
 
-  function renderCard(svc, info) {
+  function isInteractiveKind(kind) {
+    return kind === 'api' || kind === 'tool';
+  }
+
+  function appendDetailRow(parent, label, node) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('span');
+    lab.className = 'label';
+    lab.textContent = label;
+    row.appendChild(lab);
+    row.appendChild(node);
+    parent.appendChild(row);
+  }
+
+  function linkNode(href, text) {
     const a = document.createElement('a');
-    a.className = 'card';
-    a.href = svc.url;
+    a.href = href;
+    a.textContent = text || href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    return a;
+  }
+
+  function renderDetails(svc, info) {
+    const box = document.createElement('div');
+    box.className = 'details';
+    // OAuth discovery is served by the hub (this origin) per the Phase 0 seam.
+    appendDetailRow(
+      box,
+      'OAuth discovery',
+      linkNode('/.well-known/oauth-authorization-server'),
+    );
+    if (info && typeof info.mcpUrl === 'string' && info.mcpUrl) {
+      appendDetailRow(box, 'MCP endpoint', linkNode(info.mcpUrl));
+    }
+    if (info && typeof info.openInNotesUrl === 'string' && info.openInNotesUrl) {
+      appendDetailRow(box, 'Open in Notes', linkNode(info.openInNotesUrl, 'Open →'));
+    }
+    // Direct URL is still useful for power users even if the card doesn't navigate.
+    appendDetailRow(box, 'Service URL', linkNode(svc.url));
+    return box;
+  }
+
+  function renderCard(svc, info) {
+    const kind = info && typeof info.kind === 'string' ? info.kind : 'frontend';
+    const interactive = isInteractiveKind(kind);
+    const root = document.createElement(interactive ? 'div' : 'a');
+    root.className = 'card' + (interactive ? ' interactive' : '');
+    if (!interactive) root.href = svc.url;
+    if (interactive) {
+      root.setAttribute('role', 'button');
+      root.setAttribute('tabindex', '0');
+      root.setAttribute('aria-expanded', 'false');
+      const toggle = () => {
+        const next = !root.classList.contains('expanded');
+        root.classList.toggle('expanded', next);
+        root.setAttribute('aria-expanded', next ? 'true' : 'false');
+      };
+      root.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.details')) return;
+        toggle();
+      });
+      root.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggle();
+        }
+      });
+    }
 
     const head = document.createElement('div');
     head.className = 'card-head';
@@ -291,14 +406,14 @@ const HTML = `<!doctype html>
 
     head.appendChild(icon);
     head.appendChild(title);
-    a.appendChild(head);
+    root.appendChild(head);
 
     const tag = info && info.tagline;
     if (tag) {
       const p = document.createElement('p');
       p.className = 'card-tagline';
       p.textContent = tag;
-      a.appendChild(p);
+      root.appendChild(p);
     }
 
     const meta = document.createElement('div');
@@ -306,14 +421,27 @@ const HTML = `<!doctype html>
     const path = document.createElement('span');
     path.className = 'path';
     path.textContent = svc.path;
+    const right = document.createElement('span');
+    right.style.display = 'inline-flex';
+    right.style.gap = '0.35rem';
+    right.style.alignItems = 'center';
+    if (interactive) {
+      const badge = document.createElement('span');
+      badge.className = 'kind-badge';
+      badge.textContent = kind;
+      right.appendChild(badge);
+    }
     const ver = document.createElement('span');
     ver.className = 'version';
     ver.textContent = 'v' + svc.version;
+    right.appendChild(ver);
     meta.appendChild(path);
-    meta.appendChild(ver);
-    a.appendChild(meta);
+    meta.appendChild(right);
+    root.appendChild(meta);
 
-    return a;
+    if (interactive) root.appendChild(renderDetails(svc, info));
+
+    return root;
   }
 
   try {
