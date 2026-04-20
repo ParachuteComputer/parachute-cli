@@ -10,6 +10,7 @@ import pkg from "../package.json" with { type: "json" };
 import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
 import { logs, restart, start, stop } from "./commands/lifecycle.ts";
+import { migrate } from "./commands/migrate.ts";
 import { status } from "./commands/status.ts";
 import { dispatchVault } from "./commands/vault.ts";
 import { ExposeStateError } from "./expose-state.ts";
@@ -17,6 +18,7 @@ import {
   exposeHelp,
   installHelp,
   logsHelp,
+  migrateHelp,
   restartHelp,
   startHelp,
   statusHelp,
@@ -133,6 +135,22 @@ async function main(argv: string[]): Promise<number> {
       }
       const follow = rest.includes("-f") || rest.includes("--follow");
       return await logs(svc, { follow });
+    }
+
+    case "migrate": {
+      if (isHelpFlag(rest[0])) {
+        console.log(migrateHelp());
+        return 0;
+      }
+      const dryRun = rest.includes("--dry-run");
+      const yes = rest.includes("--yes") || rest.includes("-y");
+      const unknown = rest.find((a) => a !== "--dry-run" && a !== "--yes" && a !== "-y");
+      if (unknown !== undefined) {
+        console.error(`parachute migrate: unknown argument "${unknown}"`);
+        console.error("usage: parachute migrate [--dry-run] [--yes]");
+        return 1;
+      }
+      return await migrate({ dryRun, yes });
     }
 
     case "vault":

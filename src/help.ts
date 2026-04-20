@@ -15,6 +15,7 @@ Usage:
   parachute logs <service> [-f]     print service logs; -f to tail
   parachute expose tailnet [off]    HTTPS across your tailnet
   parachute expose public  [off]    HTTPS on the public internet (Funnel)
+  parachute migrate [--dry-run]     archive legacy files at ecosystem root
   parachute vault <args...>         dispatch to parachute-vault
 
 Flags:
@@ -177,6 +178,34 @@ Log file:
   ~/.parachute/<service>/logs/<service>.log
 
 If no log file exists yet, prints a hint to \`parachute start <service>\`.
+`;
+}
+
+export function migrateHelp(): string {
+  return `parachute migrate — archive legacy files at the ecosystem root
+
+Usage:
+  parachute migrate [--dry-run] [--yes]
+
+What it does:
+  Scans ~/.parachute/ for files and directories that don't belong to the
+  post-restructure layout. Recognized entries — per-service dirs
+  (vault/, notes/, scribe/, channel/, hub/), services.json,
+  expose-state.json, well-known/ — stay in place. Anything else (plus
+  known legacy cruft like daily.db, server.yaml) is moved under
+  ~/.parachute/.archive-<YYYY-MM-DD>/, never deleted.
+
+  Dotfiles at the root (.env, .DS_Store, prior .archive-* dirs) are left
+  alone.
+
+Flags:
+  --dry-run     print the plan; make no changes
+  --yes, -y     skip the confirmation prompt
+
+Examples:
+  parachute migrate --dry-run       see what would move, without touching anything
+  parachute migrate                 interactive sweep (prompts before acting)
+  parachute migrate --yes           sweep without prompting
 `;
 }
 

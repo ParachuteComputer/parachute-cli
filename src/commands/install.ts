@@ -1,12 +1,15 @@
-import { SERVICES_MANIFEST_PATH } from "../config.ts";
+import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import { getSpec, knownServices } from "../service-spec.ts";
 import { findService } from "../services-manifest.ts";
+import { migrateNotice } from "./migrate.ts";
 
 export type Runner = (cmd: readonly string[]) => Promise<number>;
 
 export interface InstallOpts {
   runner?: Runner;
   manifestPath?: string;
+  configDir?: string;
+  now?: () => Date;
   log?: (line: string) => void;
 }
 
@@ -18,6 +21,8 @@ async function defaultRunner(cmd: readonly string[]): Promise<number> {
 export async function install(service: string, opts: InstallOpts = {}): Promise<number> {
   const runner = opts.runner ?? defaultRunner;
   const manifestPath = opts.manifestPath ?? SERVICES_MANIFEST_PATH;
+  const configDir = opts.configDir ?? CONFIG_DIR;
+  const now = opts.now ?? (() => new Date());
   const log = opts.log ?? ((line) => console.log(line));
 
   const spec = getSpec(service);
@@ -51,5 +56,9 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   } else {
     log(`✓ ${spec.manifestName} registered on port ${entry.port}`);
   }
+
+  const notice = migrateNotice(configDir, now());
+  if (notice) log(notice);
+
   return 0;
 }
