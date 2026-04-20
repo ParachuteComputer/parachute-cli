@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { install } from "../commands/install.ts";
-import { upsertService } from "../services-manifest.ts";
+import { findService, upsertService } from "../services-manifest.ts";
 
 function makeTempPath(): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "pcli-install-"));
@@ -21,6 +21,7 @@ describe("install", () => {
       const code = await install("mystery", {
         runner: async () => 0,
         manifestPath: path,
+        isLinked: () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -30,7 +31,7 @@ describe("install", () => {
     }
   });
 
-  test("runs bun add -g then init, warns when manifest stays empty", async () => {
+  test("runs bun add -g then init; seeds manifest when service didn't write one", async () => {
     const { path, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
@@ -41,18 +42,22 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        isLinked: () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
       expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/vault"]);
       expect(calls[1]).toEqual(["parachute-vault", "init"]);
-      expect(logs.join("\n")).toMatch(/no services\.json entry/);
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for parachute-vault/);
+      const seeded = findService("parachute-vault", path);
+      expect(seeded?.port).toBe(1940);
+      expect(seeded?.version).toBe("0.0.0-linked");
     } finally {
       cleanup();
     }
   });
 
-  test("confirms registration when manifest entry exists after init", async () => {
+  test("confirms registration when manifest entry exists after init (no seeding)", async () => {
     const { path, cleanup } = makeTempPath();
     try {
       const logs: string[] = [];
@@ -73,10 +78,14 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        isLinked: () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
       expect(logs.join("\n")).toMatch(/registered on port 1940/);
+      expect(logs.join("\n")).not.toMatch(/Seeded/);
+      const entry = findService("parachute-vault", path);
+      expect(entry?.version).toBe("0.2.4");
     } finally {
       cleanup();
     }
@@ -92,6 +101,7 @@ describe("install", () => {
           return 42;
         },
         manifestPath: path,
+        isLinked: () => false,
         log: () => {},
       });
       expect(code).toBe(42);
@@ -102,7 +112,7 @@ describe("install", () => {
   });
 
   test("warns when manifest entry lands outside the canonical port range", async () => {
-    // Notes historically wrote 5173 (Vite's dev default). Canonical is
+    // Historically notes wrote 5173 (Vite's dev default). Canonical is
     // 1939–1949; warn so integrators know their service could conflict with
     // other software on the box, but don't block — forks may intentionally
     // deviate.
@@ -126,6 +136,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        isLinked: () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -157,6 +168,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        isLinked: () => false,
         log: (l) => logs.push(l),
       });
       expect(logs.join("\n")).not.toMatch(/outside the canonical/);
@@ -165,21 +177,90 @@ describe("install", () => {
     }
   });
 
-  test("skips init when spec has none", async () => {
+  test("skips init when spec has none (scribe)", async () => {
     const { path, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
+      const logs: string[] = [];
       const code = await install("scribe", {
         runner: async (cmd) => {
           calls.push([...cmd]);
           return 0;
         },
         manifestPath: path,
-        log: () => {},
+        isLinked: () => false,
+        log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
       expect(calls).toHaveLength(1);
       expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/scribe"]);
+      // scribe has no init, so seedEntry fires — no authoritative entry to defer to.
+      const seeded = findService("parachute-scribe", path);
+      expect(seeded?.port).toBe(1943);
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for parachute-scribe/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("skips `bun add -g` when the package is already bun-linked", async () => {
+    // The scribe motivator: package isn't published to npm yet, so `bun add -g`
+    // 404s. If bun link already points the global node_modules at a local
+    // checkout, detect that and proceed to init + seeding.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install("scribe", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        isLinked: (pkg) => pkg === "@openparachute/scribe",
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(0);
+      expect(logs.join("\n")).toMatch(/already linked globally/);
+      const seeded = findService("parachute-scribe", path);
+      expect(seeded?.port).toBe(1943);
+      expect(seeded?.paths).toEqual(["/scribe"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("linked vault still runs init and defers to init's manifest write", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          if (cmd[0] === "parachute-vault") {
+            upsertService(
+              {
+                name: "parachute-vault",
+                port: 1940,
+                paths: ["/vault/default"],
+                health: "/vault/default/health",
+                version: "0.3.0",
+              },
+              path,
+            );
+          }
+          return 0;
+        },
+        manifestPath: path,
+        isLinked: () => true,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(calls).toEqual([["parachute-vault", "init"]]);
+      expect(logs.join("\n")).not.toMatch(/Seeded/);
+      expect(findService("parachute-vault", path)?.version).toBe("0.3.0");
     } finally {
       cleanup();
     }

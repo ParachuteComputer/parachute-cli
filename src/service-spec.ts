@@ -65,9 +65,29 @@ export interface ServiceSpec {
    * shouldn't be managed by `parachute start`.
    */
   readonly startCmd?: (entry: ServiceEntry) => readonly string[] | undefined;
+  /**
+   * Canonical initial services.json entry used when the service hasn't
+   * written its own entry yet. Fires post-install only if `findService`
+   * returns undefined — normal npm installs hit this almost never (the
+   * service's init or first boot writes the authoritative entry first).
+   *
+   * Main use case: `bun link` local-dev installs where the service hasn't
+   * run yet but `parachute expose` / `parachute start` need an entry to
+   * plan against. First service boot overwrites the seed with its own
+   * authoritative version.
+   */
+  readonly seedEntry?: () => ServiceEntry;
 }
 
 const NOTES_SERVE_PATH = fileURLToPath(new URL("./notes-serve.ts", import.meta.url));
+
+/**
+ * Seed entries land in services.json as placeholder rows when a freshly
+ * installed service hasn't written its own. Version `"0.0.0-linked"`
+ * telegraphs the state: the row is a stopgap, and the service's first boot
+ * will overwrite with its own authoritative write.
+ */
+const SEED_VERSION = "0.0.0-linked";
 
 export const SERVICE_SPECS: Record<string, ServiceSpec> = {
   vault: {
@@ -75,21 +95,49 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     manifestName: "parachute-vault",
     init: ["parachute-vault", "init"],
     startCmd: () => ["parachute-vault", "serve"],
+    seedEntry: () => ({
+      name: "parachute-vault",
+      port: 1940,
+      paths: ["/vault/default"],
+      health: "/vault/default/health",
+      version: SEED_VERSION,
+    }),
   },
   notes: {
     package: "@openparachute/notes",
     manifestName: "parachute-notes",
     startCmd: (entry) => ["bun", NOTES_SERVE_PATH, "--port", String(entry.port)],
+    seedEntry: () => ({
+      name: "parachute-notes",
+      port: 1942,
+      paths: ["/notes"],
+      health: "/notes/health",
+      version: SEED_VERSION,
+    }),
   },
   scribe: {
     package: "@openparachute/scribe",
     manifestName: "parachute-scribe",
     startCmd: () => ["parachute-scribe", "serve"],
+    seedEntry: () => ({
+      name: "parachute-scribe",
+      port: 1943,
+      paths: ["/scribe"],
+      health: "/scribe/health",
+      version: SEED_VERSION,
+    }),
   },
   channel: {
     package: "@openparachute/channel",
     manifestName: "parachute-channel",
     startCmd: () => ["parachute-channel", "daemon"],
+    seedEntry: () => ({
+      name: "parachute-channel",
+      port: 1941,
+      paths: ["/channel"],
+      health: "/channel/health",
+      version: SEED_VERSION,
+    }),
   },
 };
 

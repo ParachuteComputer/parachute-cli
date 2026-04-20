@@ -1,3 +1,6 @@
+import { lstatSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import {
   CANONICAL_PORT_MAX,
@@ -6,7 +9,7 @@ import {
   isCanonicalPort,
   knownServices,
 } from "../service-spec.ts";
-import { findService } from "../services-manifest.ts";
+import { findService, upsertService } from "../services-manifest.ts";
 import { migrateNotice } from "./migrate.ts";
 
 export type Runner = (cmd: readonly string[]) => Promise<number>;
@@ -17,11 +20,38 @@ export interface InstallOpts {
   configDir?: string;
   now?: () => Date;
   log?: (line: string) => void;
+  /**
+   * True when the package is already globally linked (via `bun link`) so
+   * `bun add -g` would be redundant — or worse, fail with a 404 for a
+   * package that isn't published to npm yet (the scribe case on 2026-04-19).
+   * Defaults to a symlink check against bun's global node_modules prefix.
+   */
+  isLinked?: (pkg: string) => boolean;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
   const proc = Bun.spawn([...cmd], { stdio: ["inherit", "inherit", "inherit"] });
   return await proc.exited;
+}
+
+function bunGlobalPrefixes(): string[] {
+  const prefixes: string[] = [];
+  const fromEnv = process.env.BUN_INSTALL;
+  if (fromEnv) prefixes.push(join(fromEnv, "install", "global", "node_modules"));
+  prefixes.push(join(homedir(), ".bun", "install", "global", "node_modules"));
+  return prefixes;
+}
+
+function defaultIsLinked(pkg: string): boolean {
+  for (const prefix of bunGlobalPrefixes()) {
+    const path = join(prefix, ...pkg.split("/"));
+    try {
+      if (lstatSync(path).isSymbolicLink()) return true;
+    } catch {
+      // Not present at this prefix; try the next.
+    }
+  }
+  return false;
 }
 
 export async function install(service: string, opts: InstallOpts = {}): Promise<number> {
@@ -30,6 +60,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   const configDir = opts.configDir ?? CONFIG_DIR;
   const now = opts.now ?? (() => new Date());
   const log = opts.log ?? ((line) => console.log(line));
+  const isLinked = opts.isLinked ?? defaultIsLinked;
 
   const spec = getSpec(service);
   if (!spec) {
@@ -38,11 +69,15 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     return 1;
   }
 
-  log(`Installing ${spec.package}…`);
-  const addCode = await runner(["bun", "add", "-g", spec.package]);
-  if (addCode !== 0) {
-    log(`bun add -g ${spec.package} failed (exit ${addCode})`);
-    return addCode;
+  if (isLinked(spec.package)) {
+    log(`${spec.package} is already linked globally (bun link) — skipping bun add.`);
+  } else {
+    log(`Installing ${spec.package}…`);
+    const addCode = await runner(["bun", "add", "-g", spec.package]);
+    if (addCode !== 0) {
+      log(`bun add -g ${spec.package} failed (exit ${addCode})`);
+      return addCode;
+    }
   }
 
   if (spec.init) {
@@ -54,7 +89,15 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     }
   }
 
-  const entry = findService(spec.manifestName, manifestPath);
+  let entry = findService(spec.manifestName, manifestPath);
+  if (!entry && spec.seedEntry) {
+    entry = spec.seedEntry();
+    upsertService(entry, manifestPath);
+    log(
+      `Seeded services.json entry for ${spec.manifestName} (placeholder; service's own boot will overwrite).`,
+    );
+  }
+
   if (!entry) {
     log(
       `Installed, but no services.json entry for "${spec.manifestName}" yet. Run \`parachute status\` after the service has started.`,
