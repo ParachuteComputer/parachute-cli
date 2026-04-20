@@ -11,6 +11,7 @@ interface Harness {
   manifestPath: string;
   statePath: string;
   wellKnownPath: string;
+  hubPath: string;
   cleanup: () => void;
 }
 
@@ -20,6 +21,7 @@ function makeHarness(): Harness {
     manifestPath: join(dir, "services.json"),
     statePath: join(dir, "expose-state.json"),
     wellKnownPath: join(dir, "well-known", "parachute.json"),
+    hubPath: join(dir, "well-known", "hub.html"),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -45,7 +47,13 @@ function makeRunner(): { runner: Runner; calls: string[][] } {
 
 function seedServices(path: string): void {
   upsertService(
-    { name: "parachute-vault", port: 1940, paths: ["/"], health: "/health", version: "0.2.4" },
+    {
+      name: "parachute-vault",
+      port: 1940,
+      paths: ["/vault/default"],
+      health: "/vault/default/health",
+      version: "0.2.4",
+    },
     path,
   );
   upsertService(
@@ -61,7 +69,7 @@ function seedServices(path: string): void {
 }
 
 describe("expose tailnet up", () => {
-  test("generates one tailscale serve per service plus well-known", async () => {
+  test("mounts hub at /, one proxy per service, plus well-known", async () => {
     const h = makeHarness();
     try {
       seedServices(h.manifestPath);
@@ -72,6 +80,7 @@ describe("expose tailnet up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -79,7 +88,7 @@ describe("expose tailnet up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      expect(serveCalls).toHaveLength(3);
+      expect(serveCalls).toHaveLength(4);
       expect(serveCalls.every((c) => !c.includes("--funnel"))).toBe(true);
 
       const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path="))).sort();
@@ -87,24 +96,67 @@ describe("expose tailnet up", () => {
         "--set-path=/",
         "--set-path=/.well-known/parachute.json",
         "--set-path=/notes",
+        "--set-path=/vault/default",
       ]);
 
+      const hubCall = serveCalls.find((c) => c.includes("--set-path=/"));
+      expect(hubCall?.[hubCall.length - 1]).toBe(h.hubPath);
+
       expect(existsSync(h.wellKnownPath)).toBe(true);
+      expect(existsSync(h.hubPath)).toBe(true);
       const wk = JSON.parse(await Bun.file(h.wellKnownPath).text());
       expect(wk.vaults).toHaveLength(1);
       expect(wk.vaults[0]).toEqual({
         name: "default",
-        url: "https://parachute.taildf9ce2.ts.net/",
+        url: "https://parachute.taildf9ce2.ts.net/vault/default",
         version: "0.2.4",
       });
       expect(wk.notes?.url).toBe("https://parachute.taildf9ce2.ts.net/notes");
+      expect(wk.services).toHaveLength(2);
+      expect(wk.services.map((s: { name: string }) => s.name).sort()).toEqual([
+        "parachute-notes",
+        "parachute-vault",
+      ]);
 
       const state = readExposeState(h.statePath);
       expect(state?.layer).toBe("tailnet");
       expect(state?.canonicalFqdn).toBe("parachute.taildf9ce2.ts.net");
       expect(state?.mode).toBe("path");
-      expect(state?.entries).toHaveLength(3);
+      expect(state?.entries).toHaveLength(4);
       expect(state?.funnel).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("legacy paths:[/] entry is remapped to /<shortname> with warning", async () => {
+    const h = makeHarness();
+    try {
+      upsertService(
+        { name: "parachute-vault", port: 1940, paths: ["/"], health: "/health", version: "0.2.4" },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const logs: string[] = [];
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path="))).sort();
+      expect(mounts).toContain("--set-path=/vault");
+      expect(mounts).toContain("--set-path=/");
+      expect(mounts.filter((m) => m === "--set-path=/")).toHaveLength(1);
+
+      expect(logs.join("\n")).toMatch(/parachute-vault claims "\/"; hub page lives there/);
     } finally {
       h.cleanup();
     }
@@ -120,6 +172,7 @@ describe("expose tailnet up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -142,6 +195,7 @@ describe("expose tailnet up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -180,6 +234,7 @@ describe("expose tailnet up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -215,6 +270,7 @@ describe("expose tailnet up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(2);
@@ -235,6 +291,7 @@ describe("expose tailnet off", () => {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -274,11 +331,13 @@ describe("expose tailnet off", () => {
         h.statePath,
       );
       await Bun.write(h.wellKnownPath, "{}\n");
+      await Bun.write(h.hubPath, "<html/>\n");
       const { runner, calls } = makeRunner();
       const code = await exposeTailnet("off", {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -286,6 +345,7 @@ describe("expose tailnet off", () => {
       expect(calls).toHaveLength(2);
       expect(existsSync(h.statePath)).toBe(false);
       expect(existsSync(h.wellKnownPath)).toBe(false);
+      expect(existsSync(h.hubPath)).toBe(false);
     } finally {
       h.cleanup();
     }
@@ -319,6 +379,7 @@ describe("expose tailnet off", () => {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(5);
@@ -356,6 +417,7 @@ describe("expose tailnet off", () => {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -380,6 +442,7 @@ describe("expose public up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -387,13 +450,13 @@ describe("expose public up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      expect(serveCalls).toHaveLength(3);
+      expect(serveCalls).toHaveLength(4);
       expect(serveCalls.every((c) => c.includes("--funnel"))).toBe(true);
 
       const state = readExposeState(h.statePath);
       expect(state?.layer).toBe("public");
       expect(state?.funnel).toBe(true);
-      expect(state?.entries).toHaveLength(3);
+      expect(state?.entries).toHaveLength(4);
 
       expect(logs.join("\n")).toMatch(/Public exposure active/);
     } finally {
@@ -430,6 +493,7 @@ describe("expose public up", () => {
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -471,6 +535,7 @@ describe("expose public off", () => {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -509,6 +574,7 @@ describe("expose public off", () => {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);

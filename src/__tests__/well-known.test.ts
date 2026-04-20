@@ -92,22 +92,63 @@ describe("vaultInstanceName", () => {
 });
 
 describe("buildWellKnown", () => {
-  test("vaults is always an array, other services are flat entries", () => {
+  test("vaults is always an array, other services are flat entries, services[] includes all", () => {
     const doc = buildWellKnown({
       services: [vault, notes, scribe],
       canonicalOrigin: "https://parachute.taildf9ce2.ts.net",
     });
-    expect(doc).toEqual({
-      vaults: [
-        {
-          name: "default",
-          url: "https://parachute.taildf9ce2.ts.net/vault/default",
-          version: "0.2.4",
-        },
-      ],
-      notes: { url: "https://parachute.taildf9ce2.ts.net/notes", version: "0.0.1" },
-      scribe: { url: "https://parachute.taildf9ce2.ts.net/scribe", version: "0.1.0" },
+    expect(doc.vaults).toEqual([
+      {
+        name: "default",
+        url: "https://parachute.taildf9ce2.ts.net/vault/default",
+        version: "0.2.4",
+      },
+    ]);
+    expect(doc.notes).toEqual({
+      url: "https://parachute.taildf9ce2.ts.net/notes",
+      version: "0.0.1",
     });
+    expect(doc.scribe).toEqual({
+      url: "https://parachute.taildf9ce2.ts.net/scribe",
+      version: "0.1.0",
+    });
+    expect(doc.services.map((s) => s.name)).toEqual([
+      "parachute-vault",
+      "parachute-notes",
+      "parachute-scribe",
+    ]);
+  });
+
+  test("services[] entries include infoUrl pointing at /.parachute/info", () => {
+    const doc = buildWellKnown({
+      services: [vault, notes],
+      canonicalOrigin: "https://x.example",
+    });
+    expect(doc.services).toEqual([
+      {
+        name: "parachute-vault",
+        url: "https://x.example/vault/default",
+        path: "/vault/default",
+        version: "0.2.4",
+        infoUrl: "https://x.example/vault/default/.parachute/info",
+      },
+      {
+        name: "parachute-notes",
+        url: "https://x.example/notes",
+        path: "/notes",
+        version: "0.0.1",
+        infoUrl: "https://x.example/notes/.parachute/info",
+      },
+    ]);
+  });
+
+  test("infoUrl for root-mounted service has no double slash", () => {
+    const rootSvc: ServiceEntry = { ...notes, paths: ["/"] };
+    const doc = buildWellKnown({
+      services: [rootSvc],
+      canonicalOrigin: "https://x.example",
+    });
+    expect(doc.services[0]?.infoUrl).toBe("https://x.example/.parachute/info");
   });
 
   test("vaults array is present even when no vault is installed", () => {
@@ -116,6 +157,7 @@ describe("buildWellKnown", () => {
       canonicalOrigin: "https://x.example",
     });
     expect(doc.vaults).toEqual([]);
+    expect(doc.services).toHaveLength(1);
     expect(doc.notes).toEqual({ url: "https://x.example/notes", version: "0.0.1" });
   });
 

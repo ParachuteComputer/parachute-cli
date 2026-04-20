@@ -15,22 +15,40 @@ export interface WellKnownVaultEntry {
 }
 
 /**
+ * Flat service descriptor — one per installed service, used by the hub page
+ * to iterate without having to know every service's shortName ahead of time.
+ * `infoUrl` points at the service's `/.parachute/info` endpoint (relative to
+ * its mount path) which the hub fetches client-side for displayName/tagline.
+ */
+export interface WellKnownServicesEntry {
+  name: string;
+  url: string;
+  path: string;
+  version: string;
+  infoUrl: string;
+}
+
+/**
  * Canonical `/.well-known/parachute.json` shape.
  *
- * `vaults` is always an array — even for the single-default-vault case —
- * because vault is the only multi-tenant service in the ecosystem. Other
- * services are single-entry objects keyed by their short name.
- *
- * Example (launch-grade):
- * {
- *   "vaults": [{ "name": "default", "url": "https://host/vault/default", "version": "0.2.4" }],
- *   "notes":  { "url": "https://host/notes",  "version": "0.3.0" },
- *   "scribe": { "url": "https://host/scribe", "version": "0.1.0" }
- * }
+ * Three parts, all additive so old clients keep working:
+ *   - `vaults: []` — always an array; vault is the ecosystem's only
+ *     multi-tenant service.
+ *   - `services: []` — flat list the hub page iterates. Scales to N frontends
+ *     without the consumer needing to know every shortName.
+ *   - Top-level flat keys (`notes`, `scribe`, …) — kept for back-compat with
+ *     clients that predate `services[]`.
  */
 export type WellKnownDocument = {
   vaults: WellKnownVaultEntry[];
-} & { [shortName: string]: WellKnownVaultEntry[] | WellKnownServiceEntry | undefined };
+  services: WellKnownServicesEntry[];
+} & {
+  [shortName: string]:
+    | WellKnownVaultEntry[]
+    | WellKnownServicesEntry[]
+    | WellKnownServiceEntry
+    | undefined;
+};
 
 export const WELL_KNOWN_DIR = join(CONFIG_DIR, "well-known");
 export const WELL_KNOWN_PATH = join(WELL_KNOWN_DIR, "parachute.json");
@@ -74,12 +92,21 @@ export interface BuildWellKnownOpts {
   canonicalOrigin: string;
 }
 
+/** Join a base origin and a path without double slashes — "/" stays "/". */
+function joinInfoPath(path: string): string {
+  const trimmed = path.replace(/\/$/, "");
+  return `${trimmed}/.parachute/info`;
+}
+
 export function buildWellKnown(opts: BuildWellKnownOpts): WellKnownDocument {
   const base = opts.canonicalOrigin.replace(/\/$/, "");
-  const doc: WellKnownDocument = { vaults: [] };
+  const doc: WellKnownDocument = { vaults: [], services: [] };
   for (const s of opts.services) {
     const path = s.paths[0] ?? "/";
     const url = new URL(path, `${base}/`).toString();
+    const infoPath = joinInfoPath(path);
+    const infoUrl = new URL(infoPath, `${base}/`).toString();
+    doc.services.push({ name: s.name, url, path, version: s.version, infoUrl });
     if (isVaultEntry(s)) {
       doc.vaults.push({ name: vaultInstanceName(s), url, version: s.version });
     } else {

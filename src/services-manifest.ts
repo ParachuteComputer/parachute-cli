@@ -8,6 +8,10 @@ export interface ServiceEntry {
   paths: string[];
   health: string;
   version: string;
+  /** Human-readable name for the hub page. Falls back to the short manifest name. */
+  displayName?: string;
+  /** One-line subtitle for the hub page card. */
+  tagline?: string;
 }
 
 export interface ServicesManifest {
@@ -45,7 +49,18 @@ function validateEntry(raw: unknown, where: string): ServiceEntry {
   if (typeof version !== "string") {
     throw new ServicesManifestError(`${where}: "version" must be a string`);
   }
-  return { name, port, paths: paths as string[], health, version };
+  const displayName = e.displayName;
+  const tagline = e.tagline;
+  if (displayName !== undefined && typeof displayName !== "string") {
+    throw new ServicesManifestError(`${where}: "displayName" must be a string if present`);
+  }
+  if (tagline !== undefined && typeof tagline !== "string") {
+    throw new ServicesManifestError(`${where}: "tagline" must be a string if present`);
+  }
+  const entry: ServiceEntry = { name, port, paths: paths as string[], health, version };
+  if (displayName !== undefined) entry.displayName = displayName;
+  if (tagline !== undefined) entry.tagline = tagline;
+  return entry;
 }
 
 function validateManifest(raw: unknown, where: string): ServicesManifest {

@@ -148,4 +148,30 @@ describe("services-manifest", () => {
       cleanup();
     }
   });
+
+  test("round-trips optional displayName and tagline", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const full: ServiceEntry = {
+        ...vault,
+        displayName: "Vault",
+        tagline: "Your notes, sovereign",
+      };
+      upsertService(full, path);
+      expect(readManifest(path).services[0]).toEqual(full);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rejects non-string displayName", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      expect(() => upsertService({ ...vault, displayName: 42 as unknown as string }, path)).toThrow(
+        /displayName/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
 });
