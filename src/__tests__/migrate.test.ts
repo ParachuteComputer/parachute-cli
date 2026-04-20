@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, migrateNotice, planArchive, safelistEntries } from "../commands/migrate.ts";
@@ -122,6 +131,35 @@ describe("planArchive", () => {
       h.cleanup();
     }
   });
+
+  test("symlinks at root are not followed when sizing", () => {
+    // Regression guard: Dirent.isDirectory() returns true for a symlink to a
+    // directory on macOS/Linux, so the pre-fix planner would descend sizeOf()
+    // into the link's target. A user pointing ~/.parachute/external-backup
+    // at a multi-GB external volume would see absurd byte totals and pay
+    // the cost of walking that tree.
+    const targetHarness = makeHarness();
+    const h = makeHarness();
+    try {
+      seedSafelist(h.configDir);
+      // Populate the target with a much-bigger-than-plausible file so if the
+      // planner does descend, the assertion on bytes=0 would obviously fail.
+      touch(join(targetHarness.configDir, "huge.bin"), "X".repeat(10_000));
+      touch(join(targetHarness.configDir, "more.bin"), "Y".repeat(5_000));
+      const linkPath = join(h.configDir, "external-backup");
+      symlinkSync(targetHarness.configDir, linkPath);
+
+      const plan = planArchive(h.configDir, APRIL_19);
+      const item = plan.items.find((i) => i.name === "external-backup");
+      expect(item).toBeDefined();
+      expect(item?.bytes).toBe(0);
+      expect(item?.kind).toBe("file");
+      expect(plan.totalBytes).toBe(0);
+    } finally {
+      h.cleanup();
+      targetHarness.cleanup();
+    }
+  });
 });
 
 describe("migrate", () => {
@@ -209,6 +247,37 @@ describe("migrate", () => {
       expect(existsSync(join(h.configDir, "logs"))).toBe(false);
     } finally {
       h.cleanup();
+    }
+  });
+
+  test("--yes archives a symlink by moving the link, not the target", async () => {
+    const targetHarness = makeHarness();
+    const h = makeHarness();
+    try {
+      seedSafelist(h.configDir);
+      touch(join(targetHarness.configDir, "huge.bin"), "X".repeat(10_000));
+      const linkPath = join(h.configDir, "external-backup");
+      symlinkSync(targetHarness.configDir, linkPath);
+
+      const code = await migrate({
+        configDir: h.configDir,
+        now: () => APRIL_19,
+        log: () => {},
+        prompt: async () => {
+          throw new Error("prompt must not be called");
+        },
+        yes: true,
+      });
+      expect(code).toBe(0);
+      const archivedLink = join(h.configDir, ".archive-2026-04-19", "external-backup");
+      expect(lstatSync(archivedLink).isSymbolicLink()).toBe(true);
+      // Target tree untouched
+      expect(existsSync(join(targetHarness.configDir, "huge.bin"))).toBe(true);
+      // Original link site is empty
+      expect(existsSync(linkPath)).toBe(false);
+    } finally {
+      h.cleanup();
+      targetHarness.cleanup();
     }
   });
 
