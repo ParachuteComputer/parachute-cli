@@ -21,21 +21,56 @@ bun add -g @openparachute/cli
 # 2. Install a service (runs `bun add -g @openparachute/vault` + `parachute-vault init`)
 parachute install vault
 
-# 3. Check it landed — reads ~/.parachute/services.json, probes health
-parachute status
-# SERVICE          PORT  VERSION  STATUS  LATENCY
-# parachute-vault  1940  0.2.4    ok      2ms
+# 3. Start the service in the background (PID + logs tracked under ~/.parachute/vault/)
+parachute start vault
 
-# 4. Expose across your tailnet (HTTPS via Tailscale MagicDNS)
+# 4. Check it landed — reads ~/.parachute/services.json, shows process state + probes health
+parachute status
+# SERVICE          PORT  VERSION  PROCESS  PID    UPTIME  HEALTH  LATENCY
+# parachute-vault  1940  0.2.4    running  12345  12s     ok      2ms
+
+# 5. Expose across your tailnet (HTTPS via Tailscale MagicDNS)
 parachute expose tailnet
 # ✓ Tailnet exposure active. Open: https://parachute.<tailnet>.ts.net/
 
-# 5. Go public (Tailscale Funnel — same URL, now reachable from the internet)
+# 6. Go public (Tailscale Funnel — same URL, now reachable from the internet)
 parachute expose public
 # ✓ Public exposure active (Funnel). Open: https://parachute.<tailnet>.ts.net/
 ```
 
 Tear down with `parachute expose tailnet off` or `parachute expose public off`. Layers are independent — `off` only affects the layer you name.
+
+## Service lifecycle
+
+`parachute start`, `stop`, `restart`, and `logs` manage services as background processes — no launchd, no manual `bun serve`, no hunting for PIDs.
+
+```sh
+parachute start               # start every installed service
+parachute start vault         # just one
+parachute stop                # SIGTERM, then SIGKILL after 10s if stuck
+parachute restart vault       # stop + start
+parachute logs vault          # last 200 lines
+parachute logs vault -f       # tail (like `tail -f`)
+```
+
+State lives under `~/.parachute/<service>/`:
+
+- `run/<service>.pid` — child PID; `parachute status` uses this to report running/stopped + uptime
+- `logs/<service>.log` — stdout + stderr (appended)
+
+`parachute start` is idempotent: if the service is already running, it's a no-op. Stale PID files (process died without cleanup) are cleared on the next start. Services whose PID file is absent are treated as *unknown* — status still probes their port, so externally-managed services (e.g. you ran `parachute-vault serve` directly) aren't misreported as stopped.
+
+### Migrating from launchd (pre-launch beta)
+
+If you previously ran vault under launchd, switch to `parachute start`:
+
+```sh
+launchctl unload ~/Library/LaunchAgents/computer.parachute.vault.plist
+rm ~/Library/LaunchAgents/computer.parachute.vault.plist
+parachute start vault
+```
+
+An at-login auto-start mode (`parachute start --boot`) is on the post-launch roadmap.
 
 ## Three layers of addressability
 
@@ -130,8 +165,14 @@ parachute install vault
 # Manifest should now exist
 cat ~/.parachute/services.json
 
-# Status should show vault as healthy
+# Start it in the background
+parachute start vault
+
+# Status should show vault as running + healthy
 parachute status
+
+# Peek at the service's logs
+parachute logs vault
 
 # Expose across your tailnet (requires tailscale + `tailscale up`)
 parachute expose tailnet
@@ -154,7 +195,11 @@ Run `parachute --help` for the top-level list, and `parachute <subcommand> --hel
 
 ```
 parachute install <service>       install and register a service
-parachute status                  show installed services and health
+parachute status                  show installed services, process state, health
+parachute start   [service]       start services in the background
+parachute stop    [service]       stop services (SIGTERM → 10s → SIGKILL)
+parachute restart [service]       stop + start
+parachute logs <service> [-f]     print/tail service logs
 parachute expose tailnet [off]    HTTPS across your tailnet
 parachute expose public  [off]    HTTPS on the public internet (Funnel)
 parachute vault <args...>         dispatch to parachute-vault
