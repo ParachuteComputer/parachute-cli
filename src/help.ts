@@ -86,6 +86,10 @@ Layers:
 Both layers share a single tailscale-serve config on this node. Switching
 layers is idempotent — the prior layer tears down before the new one comes up.
 
+Flags:
+  --hub-origin <url>    override the OAuth issuer URL advertised to clients
+                        (default: https://<fqdn> when exposed, else http://127.0.0.1:<hub-port>)
+
 Examples:
   parachute expose tailnet          # bring every service up inside your tailnet
   parachute expose public           # also reachable from the public internet
@@ -122,6 +126,10 @@ What it does:
   Idempotent: if the service is already running, no-op.
   If a stale PID file exists (process died without cleanup), it's cleared
   and the service starts fresh.
+
+Flags:
+  --hub-origin <url>    override PARACHUTE_HUB_ORIGIN passed to services
+                        (default: current expose-state hub origin, else loopback)
 
 Examples:
   parachute start                   bring everything up

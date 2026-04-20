@@ -136,7 +136,8 @@ describe("expose tailnet up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      expect(serveCalls).toHaveLength(4);
+      // 4 baseline (hub + wk + vault + notes) + 4 OAuth proxies (vault present).
+      expect(serveCalls).toHaveLength(8);
       // Tailnet mode never uses funnel — neither the old flag nor the new subcommand.
       expect(serveCalls.every((c) => !c.includes("--funnel"))).toBe(true);
       expect(calls.every((c) => c[1] !== "funnel")).toBe(true);
@@ -144,8 +145,12 @@ describe("expose tailnet up", () => {
       const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path="))).sort();
       expect(mounts).toEqual([
         "--set-path=/",
+        "--set-path=/.well-known/oauth-authorization-server",
         "--set-path=/.well-known/parachute.json",
         "--set-path=/notes",
+        "--set-path=/oauth/authorize",
+        "--set-path=/oauth/register",
+        "--set-path=/oauth/token",
         "--set-path=/vault/default",
       ]);
 
@@ -175,8 +180,8 @@ describe("expose tailnet up", () => {
       const state = readExposeState(h.statePath);
       expect(state?.layer).toBe("tailnet");
       expect(state?.mode).toBe("path");
-      expect(state?.entries).toHaveLength(4);
-      // All four entries are proxy now — no file-backed tailscale serve.
+      expect(state?.entries).toHaveLength(8);
+      // All entries are proxy now — no file-backed tailscale serve.
       expect(state?.entries.every((e) => e.kind === "proxy")).toBe(true);
     } finally {
       h.cleanup();
@@ -421,11 +426,11 @@ describe("expose tailnet up", () => {
       expect(joined).toMatch(/parachute-notes \(port 5173\) is not responding/);
       expect(joined).toMatch(/parachute start notes/);
       expect(joined).not.toMatch(/parachute-vault.*not responding/);
-      // Bringup still happened — all four entries got staged.
+      // Bringup still happened — 4 service entries + 4 OAuth proxies got staged.
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      expect(serveCalls).toHaveLength(4);
+      expect(serveCalls).toHaveLength(8);
     } finally {
       h.cleanup();
     }
@@ -465,6 +470,128 @@ describe("expose tailnet up", () => {
       });
       expect(code).toBe(2);
       expect(logs.join("\n")).toMatch(/Bringup failed/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("emits 4 OAuth proxies targeting vault when vault is installed", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      const oauthTargets = new Map<string, string>();
+      for (const c of serveCalls) {
+        const mount = c.find((a) => a.startsWith("--set-path="))?.slice("--set-path=".length);
+        if (
+          mount &&
+          (mount.startsWith("/oauth/") || mount === "/.well-known/oauth-authorization-server")
+        ) {
+          oauthTargets.set(mount, c[c.length - 1] ?? "");
+        }
+      }
+      expect(oauthTargets.get("/.well-known/oauth-authorization-server")).toBe(
+        "http://127.0.0.1:1940/vault/default/.well-known/oauth-authorization-server",
+      );
+      expect(oauthTargets.get("/oauth/authorize")).toBe(
+        "http://127.0.0.1:1940/vault/default/oauth/authorize",
+      );
+      expect(oauthTargets.get("/oauth/token")).toBe(
+        "http://127.0.0.1:1940/vault/default/oauth/token",
+      );
+      expect(oauthTargets.get("/oauth/register")).toBe(
+        "http://127.0.0.1:1940/vault/default/oauth/register",
+      );
+
+      const state = readExposeState(h.statePath);
+      expect(state?.hubOrigin).toBe("https://parachute.taildf9ce2.ts.net");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("skips OAuth proxies when no vault is installed", async () => {
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "parachute-notes",
+          port: 5173,
+          paths: ["/notes"],
+          health: "/notes/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      // No vault → no OAuth proxies. Hub + well-known + notes = 3.
+      expect(serveCalls).toHaveLength(3);
+      const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path=")));
+      expect(mounts.every((m) => m !== undefined && !m.includes("/oauth/"))).toBe(true);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("--hub-origin override wins over derived origin and lands in state", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      const { runner } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        hubOrigin: "https://hub.example.com/",
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      const state = readExposeState(h.statePath);
+      // Trailing slash stripped by deriveHubOrigin.
+      expect(state?.hubOrigin).toBe("https://hub.example.com");
     } finally {
       h.cleanup();
     }
@@ -682,7 +809,8 @@ describe("expose public up", () => {
       const funnelCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "funnel" && c.includes("--bg"),
       );
-      expect(funnelCalls).toHaveLength(4);
+      // 4 baseline mounts + 4 OAuth proxies (vault seeded).
+      expect(funnelCalls).toHaveLength(8);
       // Never emit the legacy `serve --funnel` shape.
       expect(calls.every((c) => !c.includes("--funnel"))).toBe(true);
       expect(calls.every((c) => !(c[1] === "serve" && c.includes("--bg")))).toBe(true);
@@ -690,7 +818,7 @@ describe("expose public up", () => {
       const state = readExposeState(h.statePath);
       expect(state?.layer).toBe("public");
       expect(state?.funnel).toBe(true);
-      expect(state?.entries).toHaveLength(4);
+      expect(state?.entries).toHaveLength(8);
 
       expect(logs.join("\n")).toMatch(/Public exposure active/);
     } finally {

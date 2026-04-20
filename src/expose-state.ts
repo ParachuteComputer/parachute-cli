@@ -23,6 +23,13 @@ export interface ExposeState {
   port: number;
   funnel: boolean;
   entries: ServeEntry[];
+  /**
+   * Hub origin emitted when this exposure was brought up — the URL OAuth
+   * clients will see as the issuer. `parachute start vault` reads it to set
+   * PARACHUTE_HUB_ORIGIN so vault's OAuth metadata matches reality. Optional
+   * for pre-Phase-0 state files; writers always populate it.
+   */
+  hubOrigin?: string;
 }
 
 export class ExposeStateError extends Error {
@@ -55,6 +62,9 @@ function validate(raw: unknown, path: string): ExposeState {
   if (!Array.isArray(r.entries)) {
     throw new ExposeStateError(`${path}: entries must be an array`);
   }
+  if (r.hubOrigin !== undefined && typeof r.hubOrigin !== "string") {
+    throw new ExposeStateError(`${path}: hubOrigin must be a string if present`);
+  }
   const entries: ServeEntry[] = r.entries.map((e, i) => {
     if (!e || typeof e !== "object") {
       throw new ExposeStateError(`${path} entries[${i}]: expected object`);
@@ -75,7 +85,7 @@ function validate(raw: unknown, path: string): ExposeState {
     }
     return { kind, mount: entry.mount, target: entry.target, service: entry.service };
   });
-  return {
+  const state: ExposeState = {
     version: 1,
     layer: r.layer,
     mode: r.mode,
@@ -84,6 +94,8 @@ function validate(raw: unknown, path: string): ExposeState {
     funnel: r.funnel,
     entries,
   };
+  if (typeof r.hubOrigin === "string") state.hubOrigin = r.hubOrigin;
+  return state;
 }
 
 export function readExposeState(path: string = EXPOSE_STATE_PATH): ExposeState | undefined {
