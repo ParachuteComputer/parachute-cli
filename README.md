@@ -72,6 +72,18 @@ parachute start vault
 
 An at-login auto-start mode (`parachute start --boot`) is on the post-launch roadmap.
 
+### Migrating from pre-CLI installs
+
+If you've been running Parachute services by hand for a while, `~/.parachute/` may contain files from before the per-service restructure — top-level `daily.db`, `server.yaml`, a stray `logs/` directory, and so on. `parachute install` will print a one-line notice when it sees anything like that; run `parachute migrate` to sweep them:
+
+```sh
+parachute migrate --dry-run       # see the plan
+parachute migrate                 # interactive (prompts before moving)
+parachute migrate --yes           # unattended
+```
+
+Anything swept goes to `~/.parachute/.archive-<YYYY-MM-DD>/` with its original name — nothing is deleted. Recognized entries (per-service dirs, `services.json`, `expose-state.json`, `well-known/`) are left in place, and so is anything starting with a dot (so `.env` and prior `.archive-*` dirs are safe).
+
 ## Three layers of addressability
 
 Each additive; each can be turned off without affecting the layer below.
@@ -231,6 +243,7 @@ parachute restart [service]       stop + start
 parachute logs <service> [-f]     print/tail service logs
 parachute expose tailnet [off]    HTTPS across your tailnet
 parachute expose public  [off]    HTTPS on the public internet (Funnel)
+parachute migrate [--dry-run]     archive legacy files at ecosystem root
 parachute vault <args...>         dispatch to parachute-vault
 ```
 
