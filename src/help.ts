@@ -31,19 +31,28 @@ export function installHelp(): string {
   return `parachute install — install and register a Parachute service
 
 Usage:
-  parachute install <service>
+  parachute install <service> [--tag <name>]
+  parachute install all       [--tag <name>]
 
 Services:
   ${knownServices().join(", ")}
+  all                               install every known service in turn
 
 What it does:
-  1. bun add -g @openparachute/<service>
+  1. bun add -g @openparachute/<service>[@<tag>]
   2. run any service-specific init (e.g. \`parachute-vault init\`)
   3. verify the service registered itself in ~/.parachute/services.json
+
+Flags:
+  --tag <name>      npm dist-tag or exact version to install
+                    (e.g. \`--tag rc\` → \`bun add -g @openparachute/vault@rc\`)
+                    Skipped if the package is already \`bun link\`-ed locally.
 
 Examples:
   parachute install vault           # installs + runs \`parachute-vault init\`
   parachute install notes           # installs notes (no init required)
+  parachute install vault --tag rc  # pin to the rc dist-tag for pre-release testing
+  parachute install all --tag rc    # bootstrap the whole ecosystem to rc
 `;
 }
 

@@ -65,6 +65,37 @@ function extractHubOrigin(args: string[]): {
   return { hubOrigin, rest };
 }
 
+/**
+ * Extract `--tag=<value>` / `--tag <value>` from argv. Same shape as
+ * `extractHubOrigin` so the install command can layer the two flags
+ * uniformly. `error` is set on missing value.
+ */
+function extractTag(args: string[]): {
+  tag?: string;
+  rest: string[];
+  error?: string;
+} {
+  const rest: string[] = [];
+  let tag: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--tag") {
+      const v = args[i + 1];
+      if (!v) return { rest, error: "--tag requires a value (dist-tag or version)" };
+      tag = v;
+      i++;
+      continue;
+    }
+    if (a?.startsWith("--tag=")) {
+      tag = a.slice("--tag=".length);
+      if (!tag) return { rest, error: "--tag requires a value (dist-tag or version)" };
+      continue;
+    }
+    if (a !== undefined) rest.push(a);
+  }
+  return { tag, rest };
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
@@ -86,13 +117,29 @@ async function main(argv: string[]): Promise<number> {
         console.log(installHelp());
         return 0;
       }
-      const service = rest[0];
+      const tagExtract = extractTag(rest);
+      if (tagExtract.error) {
+        console.error(`parachute install: ${tagExtract.error}`);
+        return 1;
+      }
+      const installArgs = tagExtract.rest;
+      const service = installArgs[0];
       if (!service) {
-        console.error("usage: parachute install <service>");
+        console.error("usage: parachute install <service|all> [--tag <name>]");
         console.error(`services: ${knownServices().join(", ")}`);
         return 1;
       }
-      return await install(service);
+      const installOpts = tagExtract.tag ? { tag: tagExtract.tag } : {};
+      if (service === "all") {
+        // Bootstrap the whole ecosystem to one dist-tag — the RC-testing payload.
+        // Bail on first failure so a broken channel doesn't mask a working tag.
+        for (const svc of knownServices()) {
+          const code = await install(svc, installOpts);
+          if (code !== 0) return code;
+        }
+        return 0;
+      }
+      return await install(service, installOpts);
     }
 
     case "status":

@@ -27,6 +27,13 @@ export interface InstallOpts {
    * Defaults to a symlink check against bun's global node_modules prefix.
    */
   isLinked?: (pkg: string) => boolean;
+  /**
+   * Optional npm dist-tag or exact version to install. When set, the
+   * `bun add -g` call is composed as `<package>@<tag>` so RC testers can
+   * pin a pre-release channel. `isLinked` still short-circuits — if the
+   * package is bun-linked locally, the tag is moot.
+   */
+  tag?: string;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -72,10 +79,11 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   if (isLinked(spec.package)) {
     log(`${spec.package} is already linked globally (bun link) — skipping bun add.`);
   } else {
-    log(`Installing ${spec.package}…`);
-    const addCode = await runner(["bun", "add", "-g", spec.package]);
+    const addSpec = opts.tag ? `${spec.package}@${opts.tag}` : spec.package;
+    log(`Installing ${addSpec}…`);
+    const addCode = await runner(["bun", "add", "-g", addSpec]);
     if (addCode !== 0) {
-      log(`bun add -g ${spec.package} failed (exit ${addCode})`);
+      log(`bun add -g ${addSpec} failed (exit ${addCode})`);
       return addCode;
     }
   }
