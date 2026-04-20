@@ -1,5 +1,9 @@
 import { existsSync, openSync } from "node:fs";
+import { join } from "node:path";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
+import { readExposeState } from "../expose-state.ts";
+import { readHubPort } from "../hub-control.ts";
+import { HUB_ORIGIN_ENV, deriveHubOrigin } from "../hub-origin.ts";
 import {
   type AliveFn,
   clearPid,
@@ -17,15 +21,22 @@ import { type ServiceEntry, readManifest } from "../services-manifest.ts";
  * Tiny seam over `Bun.spawn` for lifecycle tests. The real spawner opens the
  * log file, appends stdout+stderr to it, and `unref()`s the child so parent
  * exit doesn't bring it down.
+ *
+ * `env`, when provided, is merged into the child's environment on top of the
+ * parent's — today's only caller is `start`, which injects
+ * PARACHUTE_HUB_ORIGIN so vault's OAuth issuer matches the hub URL.
  */
 export interface Spawner {
-  spawn(cmd: readonly string[], logFile: string): number;
+  spawn(cmd: readonly string[], logFile: string, env?: Record<string, string>): number;
 }
 
 export const defaultSpawner: Spawner = {
-  spawn(cmd, logFile) {
+  spawn(cmd, logFile, env) {
     const fd = openSync(logFile, "a");
-    const proc = Bun.spawn([...cmd], { stdio: ["ignore", fd, fd] });
+    const proc = Bun.spawn([...cmd], {
+      stdio: ["ignore", fd, fd],
+      env: env ? { ...process.env, ...env } : undefined,
+    });
     proc.unref();
     return proc.pid;
   },
@@ -53,6 +64,13 @@ export interface LifecycleOpts {
   killWaitMs?: number;
   /** Poll interval while waiting for SIGTERM to land. */
   pollIntervalMs?: number;
+  /**
+   * Override the hub origin passed to services as PARACHUTE_HUB_ORIGIN. If
+   * unset, `start` derives it from `expose-state.json` (when exposed) or
+   * the hub.port file (local dev). Undefined → no env var is set at all,
+   * and the service advertises its own default issuer.
+   */
+  hubOrigin?: string;
 }
 
 interface Resolved {
@@ -66,9 +84,11 @@ interface Resolved {
   log: (line: string) => void;
   killWaitMs: number;
   pollIntervalMs: number;
+  hubOrigin: string | undefined;
 }
 
 function resolve(opts: LifecycleOpts): Resolved {
+  const configDir = opts.configDir ?? CONFIG_DIR;
   return {
     spawner: opts.spawner ?? defaultSpawner,
     kill: opts.kill ?? defaultKill,
@@ -76,11 +96,27 @@ function resolve(opts: LifecycleOpts): Resolved {
     sleep: opts.sleep ?? defaultSleep,
     now: opts.now ?? Date.now,
     manifestPath: opts.manifestPath ?? SERVICES_MANIFEST_PATH,
-    configDir: opts.configDir ?? CONFIG_DIR,
+    configDir,
     log: opts.log ?? ((line) => console.log(line)),
     killWaitMs: opts.killWaitMs ?? 10_000,
     pollIntervalMs: opts.pollIntervalMs ?? 200,
+    hubOrigin: resolveHubOrigin(opts.hubOrigin, configDir),
   };
+}
+
+/**
+ * Source of truth order for `PARACHUTE_HUB_ORIGIN`:
+ *   1. explicit override (flag / opt)
+ *   2. live exposure's hubOrigin / canonicalFqdn (what clients actually see)
+ *   3. hub.port when the hub is running locally (local-dev loopback)
+ *   4. undefined — don't set the env, let the service self-advertise
+ */
+function resolveHubOrigin(override: string | undefined, configDir: string): string | undefined {
+  if (override) return deriveHubOrigin({ override });
+  const state = readExposeState(join(configDir, "expose-state.json"));
+  if (state?.hubOrigin) return state.hubOrigin;
+  const exposeFqdn = state?.canonicalFqdn;
+  return deriveHubOrigin({ exposeFqdn, hubPort: readHubPort(configDir) });
 }
 
 /**
@@ -154,10 +190,12 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
     }
 
     const logFile = ensureLogPath(short, r.configDir);
+    const env = r.hubOrigin ? { [HUB_ORIGIN_ENV]: r.hubOrigin } : undefined;
     try {
-      const pid = r.spawner.spawn(cmd, logFile);
+      const pid = r.spawner.spawn(cmd, logFile, env);
       writePid(short, pid, r.configDir);
       r.log(`✓ ${short} started (pid ${pid}); logs: ${logFile}`);
+      if (env) r.log(`  ${HUB_ORIGIN_ENV}=${r.hubOrigin}`);
     } catch (err) {
       failures++;
       const msg = err instanceof Error ? err.message : String(err);

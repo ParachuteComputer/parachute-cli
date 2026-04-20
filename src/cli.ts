@@ -34,6 +34,37 @@ function isHelpFlag(arg: string | undefined): boolean {
   return arg === "--help" || arg === "-h" || arg === "help";
 }
 
+/**
+ * Extract `--hub-origin=<url>` / `--hub-origin <url>` from argv. Returns the
+ * URL and the remaining args (so callers can keep validating positionals
+ * without the flag in the way). `error` is set on missing value.
+ */
+function extractHubOrigin(args: string[]): {
+  hubOrigin?: string;
+  rest: string[];
+  error?: string;
+} {
+  const rest: string[] = [];
+  let hubOrigin: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--hub-origin") {
+      const v = args[i + 1];
+      if (!v) return { rest, error: "--hub-origin requires a URL argument" };
+      hubOrigin = v;
+      i++;
+      continue;
+    }
+    if (a?.startsWith("--hub-origin=")) {
+      hubOrigin = a.slice("--hub-origin=".length);
+      if (!hubOrigin) return { rest, error: "--hub-origin requires a URL argument" };
+      continue;
+    }
+    if (a !== undefined) rest.push(a);
+  }
+  return { hubOrigin, rest };
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
@@ -72,8 +103,14 @@ async function main(argv: string[]): Promise<number> {
       return await status();
 
     case "expose": {
-      const layer = rest[0];
-      const mode = rest[1];
+      const hubExtract = extractHubOrigin(rest);
+      if (hubExtract.error) {
+        console.error(`parachute expose: ${hubExtract.error}`);
+        return 1;
+      }
+      const exposeArgs = hubExtract.rest;
+      const layer = exposeArgs[0];
+      const mode = exposeArgs[1];
       if (isHelpFlag(layer)) {
         console.log(exposeHelp());
         return 0;
@@ -95,7 +132,10 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       const action = mode === "off" ? "off" : "up";
-      return layer === "public" ? await exposePublic(action) : await exposeTailnet(action);
+      const exposeOpts = hubExtract.hubOrigin ? { hubOrigin: hubExtract.hubOrigin } : {};
+      return layer === "public"
+        ? await exposePublic(action, exposeOpts)
+        : await exposeTailnet(action, exposeOpts);
     }
 
     case "start": {
@@ -103,7 +143,13 @@ async function main(argv: string[]): Promise<number> {
         console.log(startHelp());
         return 0;
       }
-      return await start(rest[0]);
+      const hubExtract = extractHubOrigin(rest);
+      if (hubExtract.error) {
+        console.error(`parachute start: ${hubExtract.error}`);
+        return 1;
+      }
+      const startOpts = hubExtract.hubOrigin ? { hubOrigin: hubExtract.hubOrigin } : {};
+      return await start(hubExtract.rest[0], startOpts);
     }
 
     case "stop": {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { logs, restart, start, stop } from "../commands/lifecycle.ts";
+import { writeHubPort } from "../hub-control.ts";
 import { ensureLogPath, logPath, readPid, writePid } from "../process-state.ts";
 import { upsertService } from "../services-manifest.ts";
 
@@ -48,17 +49,25 @@ function seedNotes(manifestPath: string): void {
 }
 
 interface SpawnerStub {
-  spawn: (cmd: readonly string[], logFile: string) => number;
-  calls: Array<{ cmd: readonly string[]; logFile: string }>;
+  spawn: (cmd: readonly string[], logFile: string, env?: Record<string, string>) => number;
+  calls: Array<{
+    cmd: readonly string[];
+    logFile: string;
+    env?: Record<string, string>;
+  }>;
 }
 
 function makeSpawner(pidSequence: number[]): SpawnerStub {
-  const calls: Array<{ cmd: readonly string[]; logFile: string }> = [];
+  const calls: Array<{
+    cmd: readonly string[];
+    logFile: string;
+    env?: Record<string, string>;
+  }> = [];
   let i = 0;
   return {
     calls,
-    spawn(cmd, logFile) {
-      calls.push({ cmd: [...cmd], logFile });
+    spawn(cmd, logFile, env) {
+      calls.push({ cmd: [...cmd], logFile, env });
       return pidSequence[i++] ?? 99999;
     },
   };
@@ -203,6 +212,112 @@ describe("parachute start", () => {
       expect(spawner.calls).toHaveLength(2);
       expect(readPid("vault", h.configDir)).toBe(4242);
       expect(readPid("notes", h.configDir)).toBe(5151);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("passes PARACHUTE_HUB_ORIGIN from expose-state when set", async () => {
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      writeFileSync(
+        join(h.configDir, "expose-state.json"),
+        JSON.stringify({
+          version: 1,
+          layer: "tailnet",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: false,
+          entries: [],
+          hubOrigin: "https://parachute.taildf9ce2.ts.net",
+        }),
+      );
+      const spawner = makeSpawner([4242]);
+      const code = await start("vault", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls[0]?.env).toEqual({
+        PARACHUTE_HUB_ORIGIN: "https://parachute.taildf9ce2.ts.net",
+      });
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("falls back to loopback origin from hub.port when not exposed", async () => {
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      writeHubPort(1939, h.configDir);
+      const spawner = makeSpawner([4242]);
+      const code = await start("vault", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls[0]?.env).toEqual({
+        PARACHUTE_HUB_ORIGIN: "http://127.0.0.1:1939",
+      });
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("--hub-origin override wins over expose-state", async () => {
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      writeFileSync(
+        join(h.configDir, "expose-state.json"),
+        JSON.stringify({
+          version: 1,
+          layer: "tailnet",
+          mode: "path",
+          canonicalFqdn: "parachute.taildf9ce2.ts.net",
+          port: 443,
+          funnel: false,
+          entries: [],
+          hubOrigin: "https://parachute.taildf9ce2.ts.net",
+        }),
+      );
+      const spawner = makeSpawner([4242]);
+      const code = await start("vault", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        hubOrigin: "https://override.example.com/",
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls[0]?.env).toEqual({
+        PARACHUTE_HUB_ORIGIN: "https://override.example.com",
+      });
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("omits env when no override, no exposure, no hub port", async () => {
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      const spawner = makeSpawner([4242]);
+      const code = await start("vault", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls[0]?.env).toBeUndefined();
     } finally {
       h.cleanup();
     }
