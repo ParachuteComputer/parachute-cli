@@ -39,6 +39,7 @@ describe("cli", () => {
     expect(code).toBe(0);
     expect(stdout).toMatch(/parachute install/);
     expect(stdout).toMatch(/parachute status/);
+    expect(stdout).toMatch(/parachute auth/);
     expect(stdout).toMatch(/parachute vault/);
     expect(stdout).toMatch(/expose tailnet/);
     expect(stdout).toMatch(/expose public/);

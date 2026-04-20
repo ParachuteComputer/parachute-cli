@@ -7,6 +7,7 @@
  */
 
 import pkg from "../package.json" with { type: "json" };
+import { auth } from "./commands/auth.ts";
 import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
 import { logs, restart, start, stop } from "./commands/lifecycle.ts";
@@ -197,6 +198,9 @@ async function main(argv: string[]): Promise<number> {
       }
       return await migrate({ dryRun, yes });
     }
+
+    case "auth":
+      return await auth(rest);
 
     case "vault":
       // `parachute vault` with no args forwards --help to parachute-vault so
