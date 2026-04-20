@@ -1,4 +1,5 @@
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
+import { HUB_SVC, readHubPort } from "../hub-control.ts";
 import { type AliveFn, defaultAlive, formatUptime, processState } from "../process-state.ts";
 import { shortNameForManifest } from "../service-spec.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
@@ -61,6 +62,42 @@ function formatRow(cells: string[], widths: number[]): string {
     .trimEnd();
 }
 
+interface StatusRow {
+  service: string;
+  port: string;
+  version: string;
+  processLabel: string;
+  pidLabel: string;
+  uptimeLabel: string;
+  healthLabel: string;
+  latencyLabel: string;
+  healthy: boolean;
+  skipped: boolean;
+}
+
+function hubRow(configDir: string, alive: AliveFn, nowDate: Date): StatusRow | undefined {
+  const proc = processState(HUB_SVC, configDir, alive);
+  if (proc.status === "unknown") return undefined;
+  const port = readHubPort(configDir);
+  const portLabel = port !== undefined ? String(port) : "-";
+  const processLabel = proc.status === "running" ? "running" : "stopped";
+  const pidLabel = proc.status === "running" && proc.pid !== undefined ? String(proc.pid) : "-";
+  const uptimeLabel =
+    proc.status === "running" && proc.startedAt ? formatUptime(proc.startedAt, nowDate) : "-";
+  return {
+    service: "parachute-hub (internal)",
+    port: portLabel,
+    version: "-",
+    processLabel,
+    pidLabel,
+    uptimeLabel,
+    healthLabel: "-",
+    latencyLabel: "-",
+    healthy: true,
+    skipped: true,
+  };
+}
+
 export async function status(opts: StatusOpts = {}): Promise<number> {
   const manifestPath = opts.manifestPath ?? SERVICES_MANIFEST_PATH;
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -87,7 +124,7 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
    * Third-party services we don't know about fall back to probing and show
    * "-" for process columns.
    */
-  const rows = await Promise.all(
+  const rows: StatusRow[] = await Promise.all(
     manifest.services.map(async (entry) => {
       const short = shortNameForManifest(entry.name);
       const proc = short ? processState(short, configDir, alive) : undefined;
@@ -104,7 +141,9 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
       // still probes — externally-managed services should report health.
       if (proc?.status === "stopped") {
         return {
-          entry,
+          service: entry.name,
+          port: String(entry.port),
+          version: entry.version,
           processLabel,
           pidLabel,
           uptimeLabel,
@@ -122,7 +161,9 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
           ? `http ${p.statusCode}`
           : (p.error ?? "down");
       return {
-        entry,
+        service: entry.name,
+        port: String(entry.port),
+        version: entry.version,
         processLabel,
         pidLabel,
         uptimeLabel,
@@ -134,11 +175,16 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
     }),
   );
 
+  // Hub is an internal service — not in services.json, but users notice
+  // when it's dead. Only show it if we've seen it run.
+  const hub = hubRow(configDir, alive, nowDate);
+  if (hub) rows.push(hub);
+
   const header = ["SERVICE", "PORT", "VERSION", "PROCESS", "PID", "UPTIME", "HEALTH", "LATENCY"];
   const textRows = rows.map((r) => [
-    r.entry.name,
-    String(r.entry.port),
-    r.entry.version,
+    r.service,
+    r.port,
+    r.version,
     r.processLabel,
     r.pidLabel,
     r.uptimeLabel,

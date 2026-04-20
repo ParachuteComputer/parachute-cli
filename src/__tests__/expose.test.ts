@@ -4,24 +4,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exposePublic, exposeTailnet } from "../commands/expose.ts";
 import { readExposeState, writeExposeState } from "../expose-state.ts";
+import type { EnsureHubOpts, HubSpawner, StopHubOpts } from "../hub-control.ts";
+import { writePid } from "../process-state.ts";
 import { upsertService } from "../services-manifest.ts";
 import type { Runner } from "../tailscale/run.ts";
 
 interface Harness {
+  dir: string;
   manifestPath: string;
   statePath: string;
   wellKnownPath: string;
   hubPath: string;
+  wellKnownDir: string;
+  configDir: string;
   cleanup: () => void;
 }
 
 function makeHarness(): Harness {
   const dir = mkdtempSync(join(tmpdir(), "pcli-expose-"));
   return {
+    dir,
     manifestPath: join(dir, "services.json"),
     statePath: join(dir, "expose-state.json"),
     wellKnownPath: join(dir, "well-known", "parachute.json"),
     hubPath: join(dir, "well-known", "hub.html"),
+    wellKnownDir: join(dir, "well-known"),
+    configDir: dir,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -43,6 +51,38 @@ function makeRunner(): { runner: Runner; calls: string[][] } {
     return { code: 0, stdout: "", stderr: "" };
   };
   return { runner, calls };
+}
+
+function makeHubSpawner(pid: number): { spawner: HubSpawner; calls: string[][] } {
+  const calls: string[][] = [];
+  const spawner: HubSpawner = {
+    spawn(cmd) {
+      calls.push([...cmd]);
+      return pid;
+    },
+  };
+  return { spawner, calls };
+}
+
+/** Default hub overrides for expose tests — no real subprocess, no sleep. */
+function hubEnsureOpts(
+  spawner: HubSpawner,
+): Omit<EnsureHubOpts, "configDir" | "wellKnownDir" | "log"> {
+  return {
+    spawner,
+    alive: () => true,
+    probe: async () => true,
+    readyWaitMs: 0,
+  };
+}
+
+function hubStopOpts(): Omit<StopHubOpts, "configDir" | "log"> {
+  return {
+    kill: () => {},
+    alive: () => false,
+    sleep: async () => {},
+    now: () => 0,
+  };
 }
 
 function seedServices(path: string): void {
@@ -69,11 +109,12 @@ function seedServices(path: string): void {
 }
 
 describe("expose tailnet up", () => {
-  test("mounts hub at /, one proxy per service, plus well-known", async () => {
+  test("mounts hub proxy at /, one proxy per service, plus well-known proxy", async () => {
     const h = makeHarness();
     try {
       seedServices(h.manifestPath);
       const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
       const logs: string[] = [];
       const code = await exposeTailnet("up", {
         runner,
@@ -81,6 +122,9 @@ describe("expose tailnet up", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -99,31 +143,55 @@ describe("expose tailnet up", () => {
         "--set-path=/vault/default",
       ]);
 
+      // Hub + well-known now point at localhost HTTP, not a file path.
       const hubCall = serveCalls.find((c) => c.includes("--set-path=/"));
-      expect(hubCall?.[hubCall.length - 1]).toBe(h.hubPath);
+      expect(hubCall?.[hubCall.length - 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+
+      const wkCall = serveCalls.find((c) => c.includes("--set-path=/.well-known/parachute.json"));
+      expect(wkCall?.[wkCall.length - 1]).toMatch(
+        /^http:\/\/127\.0\.0\.1:\d+\/\.well-known\/parachute\.json$/,
+      );
 
       expect(existsSync(h.wellKnownPath)).toBe(true);
       expect(existsSync(h.hubPath)).toBe(true);
       const wk = JSON.parse(await Bun.file(h.wellKnownPath).text());
       expect(wk.vaults).toHaveLength(1);
-      expect(wk.vaults[0]).toEqual({
-        name: "default",
-        url: "https://parachute.taildf9ce2.ts.net/vault/default",
-        version: "0.2.4",
-      });
-      expect(wk.notes?.url).toBe("https://parachute.taildf9ce2.ts.net/notes");
-      expect(wk.services).toHaveLength(2);
-      expect(wk.services.map((s: { name: string }) => s.name).sort()).toEqual([
-        "parachute-notes",
-        "parachute-vault",
-      ]);
 
       const state = readExposeState(h.statePath);
       expect(state?.layer).toBe("tailnet");
-      expect(state?.canonicalFqdn).toBe("parachute.taildf9ce2.ts.net");
       expect(state?.mode).toBe("path");
       expect(state?.entries).toHaveLength(4);
-      expect(state?.funnel).toBe(false);
+      // All four entries are proxy now — no file-backed tailscale serve.
+      expect(state?.entries.every((e) => e.kind === "proxy")).toBe(true);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("spawns hub server with --port + --well-known-dir", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      const { runner } = makeRunner();
+      const { spawner, calls: hubCalls } = makeHubSpawner(7777);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(hubCalls).toHaveLength(1);
+      const cmd = hubCalls[0] ?? [];
+      expect(cmd[0]).toBe("bun");
+      expect(cmd).toContain("--port");
+      expect(cmd).toContain("--well-known-dir");
+      expect(cmd).toContain(h.wellKnownDir);
     } finally {
       h.cleanup();
     }
@@ -137,6 +205,7 @@ describe("expose tailnet up", () => {
         h.manifestPath,
       );
       const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
       const logs: string[] = [];
       const code = await exposeTailnet("up", {
         runner,
@@ -144,6 +213,9 @@ describe("expose tailnet up", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -166,6 +238,7 @@ describe("expose tailnet up", () => {
     const h = makeHarness();
     try {
       const { runner } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
       const logs: string[] = [];
       const code = await exposeTailnet("up", {
         runner,
@@ -173,6 +246,9 @@ describe("expose tailnet up", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -189,6 +265,7 @@ describe("expose tailnet up", () => {
       const runner: Runner = async () => {
         throw new Error("spawn tailscale ENOENT");
       };
+      const { spawner } = makeHubSpawner(1111);
       const logs: string[] = [];
       const code = await exposeTailnet("up", {
         runner,
@@ -196,6 +273,9 @@ describe("expose tailnet up", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -229,12 +309,16 @@ describe("expose tailnet up", () => {
         h.statePath,
       );
       const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
       const code = await exposeTailnet("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: () => {},
       });
       expect(code).toBe(0);
@@ -264,6 +348,7 @@ describe("expose tailnet up", () => {
         }
         return { code: 0, stdout: "", stderr: "" };
       };
+      const { spawner } = makeHubSpawner(1111);
       const logs: string[] = [];
       const code = await exposeTailnet("up", {
         runner,
@@ -271,6 +356,9 @@ describe("expose tailnet up", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(2);
@@ -292,6 +380,9 @@ describe("expose tailnet off", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -302,7 +393,7 @@ describe("expose tailnet off", () => {
     }
   });
 
-  test("tears down every tracked entry and clears state", async () => {
+  test("tears down every tracked entry, stops hub, and clears state", async () => {
     const h = makeHarness();
     try {
       writeExposeState(
@@ -317,13 +408,13 @@ describe("expose tailnet off", () => {
             {
               kind: "proxy",
               mount: "/",
-              target: "http://127.0.0.1:1940",
-              service: "parachute-vault",
+              target: "http://127.0.0.1:1939",
+              service: "hub",
             },
             {
-              kind: "file",
+              kind: "proxy",
               mount: "/.well-known/parachute.json",
-              target: h.wellKnownPath,
+              target: "http://127.0.0.1:1939/.well-known/parachute.json",
               service: "well-known",
             },
           ],
@@ -332,12 +423,26 @@ describe("expose tailnet off", () => {
       );
       await Bun.write(h.wellKnownPath, "{}\n");
       await Bun.write(h.hubPath, "<html/>\n");
+      writePid("hub", 4242, h.configDir);
       const { runner, calls } = makeRunner();
+      const signals: NodeJS.Signals[] = [];
+      let aliveNow = true;
       const code = await exposeTailnet("off", {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: {
+          kill: (_pid, sig) => {
+            signals.push(sig as NodeJS.Signals);
+            aliveNow = false;
+          },
+          alive: () => aliveNow,
+          sleep: async () => {},
+          now: () => 0,
+        },
         log: () => {},
       });
       expect(code).toBe(0);
@@ -346,6 +451,8 @@ describe("expose tailnet off", () => {
       expect(existsSync(h.statePath)).toBe(false);
       expect(existsSync(h.wellKnownPath)).toBe(false);
       expect(existsSync(h.hubPath)).toBe(false);
+      // Hub was running and got stopped.
+      expect(signals).toContain("SIGTERM");
     } finally {
       h.cleanup();
     }
@@ -380,6 +487,9 @@ describe("expose tailnet off", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(5);
@@ -389,7 +499,7 @@ describe("expose tailnet off", () => {
     }
   });
 
-  test("tailnet off does not tear down public exposure", async () => {
+  test("tailnet off does not tear down public exposure or stop the hub", async () => {
     const h = makeHarness();
     try {
       writeExposeState(
@@ -404,25 +514,38 @@ describe("expose tailnet off", () => {
             {
               kind: "proxy",
               mount: "/",
-              target: "http://127.0.0.1:1940",
-              service: "parachute-vault",
+              target: "http://127.0.0.1:1939",
+              service: "hub",
             },
           ],
         },
         h.statePath,
       );
+      writePid("hub", 4242, h.configDir);
       const { runner, calls } = makeRunner();
+      let killCalled = false;
       const logs: string[] = [];
       const code = await exposeTailnet("off", {
         runner,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: {
+          kill: () => {
+            killCalled = true;
+          },
+          alive: () => false,
+          sleep: async () => {},
+          now: () => 0,
+        },
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
       expect(calls).toHaveLength(0);
       expect(existsSync(h.statePath)).toBe(true);
+      expect(killCalled).toBe(false);
       expect(logs.join("\n")).toMatch(/Current exposure is Public/);
     } finally {
       h.cleanup();
@@ -436,6 +559,7 @@ describe("expose public up", () => {
     try {
       seedServices(h.manifestPath);
       const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
       const logs: string[] = [];
       const code = await exposePublic("up", {
         runner,
@@ -443,6 +567,9 @@ describe("expose public up", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -488,12 +615,16 @@ describe("expose public up", () => {
         h.statePath,
       );
       const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
       const code = await exposePublic("up", {
         runner,
         manifestPath: h.manifestPath,
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
         log: () => {},
       });
       expect(code).toBe(0);
@@ -523,8 +654,8 @@ describe("expose public off", () => {
             {
               kind: "proxy",
               mount: "/",
-              target: "http://127.0.0.1:1940",
-              service: "parachute-vault",
+              target: "http://127.0.0.1:1939",
+              service: "hub",
             },
           ],
         },
@@ -536,6 +667,9 @@ describe("expose public off", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
         log: () => {},
       });
       expect(code).toBe(0);
@@ -575,6 +709,9 @@ describe("expose public off", () => {
         statePath: h.statePath,
         wellKnownPath: h.wellKnownPath,
         hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);

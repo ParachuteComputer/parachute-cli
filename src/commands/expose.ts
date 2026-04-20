@@ -1,5 +1,5 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { SERVICES_MANIFEST_PATH } from "../config.ts";
+import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import {
   EXPOSE_STATE_PATH,
   type ExposeLayer,
@@ -8,12 +8,20 @@ import {
   readExposeState,
   writeExposeState,
 } from "../expose-state.ts";
+import {
+  type EnsureHubOpts,
+  type StopHubOpts,
+  ensureHubRunning,
+  readHubPort,
+  stopHub,
+} from "../hub-control.ts";
 import { HUB_MOUNT, HUB_PATH, writeHubFile } from "../hub.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
 import { type ServeEntry, bringupCommand, teardownCommand } from "../tailscale/commands.ts";
 import { getFqdn, isTailscaleInstalled } from "../tailscale/detect.ts";
 import { type Runner, defaultRunner } from "../tailscale/run.ts";
 import {
+  WELL_KNOWN_DIR,
   WELL_KNOWN_MOUNT,
   WELL_KNOWN_PATH,
   buildWellKnown,
@@ -31,6 +39,11 @@ import {
  * `/vault`, `/notes`, etc. rather than giving each service its own port or
  * subdomain. Subdomain-per-service requires the Tailscale Services feature
  * (virtual-IP advertisement) and is deferred.
+ *
+ * Hub + well-known entries are HTTP proxies to an internal Bun.serve (see
+ * `hub-control.ts`). They used to be `--set-path=<mount> <file>` entries but
+ * macOS `tailscaled` runs sandboxed and can't read arbitrary files; proxy
+ * mode is the only reliable shape.
  */
 
 export interface ExposeOpts {
@@ -39,10 +52,18 @@ export interface ExposeOpts {
   statePath?: string;
   wellKnownPath?: string;
   hubPath?: string;
+  /** Directory holding hub.html + parachute.json (passed to the hub server). */
+  wellKnownDir?: string;
+  configDir?: string;
   port?: number;
   log?: (line: string) => void;
   /** Override detected FQDN — primarily for tests. */
   fqdnOverride?: string;
+  /** Overrides for the hub lifecycle — primarily for tests. */
+  hubEnsureOpts?: Omit<EnsureHubOpts, "configDir" | "wellKnownDir" | "log">;
+  hubStopOpts?: Omit<StopHubOpts, "configDir" | "log">;
+  /** Skip spawning the hub server. Tests flip this off to verify it's called. */
+  skipHub?: boolean;
 }
 
 /**
@@ -68,16 +89,13 @@ function remapLegacyRoot(
   });
 }
 
-function planEntries(
-  services: readonly ServiceEntry[],
-  wellKnownFilePath: string,
-  hubFilePath: string,
-): ServeEntry[] {
+function planEntries(services: readonly ServiceEntry[], hubPort: number): ServeEntry[] {
+  const hubTarget = `http://127.0.0.1:${hubPort}`;
   const entries: ServeEntry[] = [];
   entries.push({
-    kind: "file",
+    kind: "proxy",
     mount: HUB_MOUNT,
-    target: hubFilePath,
+    target: hubTarget,
     service: "hub",
   });
   for (const s of services) {
@@ -90,9 +108,9 @@ function planEntries(
     });
   }
   entries.push({
-    kind: "file",
+    kind: "proxy",
     mount: WELL_KNOWN_MOUNT,
-    target: wellKnownFilePath,
+    target: `${hubTarget}${WELL_KNOWN_MOUNT}`,
     service: "well-known",
   });
   return entries;
@@ -124,6 +142,8 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   const statePath = opts.statePath ?? EXPOSE_STATE_PATH;
   const wellKnownFilePath = opts.wellKnownPath ?? WELL_KNOWN_PATH;
   const hubFilePath = opts.hubPath ?? HUB_PATH;
+  const wellKnownDir = opts.wellKnownDir ?? WELL_KNOWN_DIR;
+  const configDir = opts.configDir ?? CONFIG_DIR;
   const port = opts.port ?? 443;
   const log = opts.log ?? ((line) => console.log(line));
   const funnel = layer === "public";
@@ -163,7 +183,26 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   writeHubFile(hubFilePath);
   log(`Wrote ${hubFilePath}`);
 
-  const entries = planEntries(services, wellKnownFilePath, hubFilePath);
+  let hubPort: number;
+  if (opts.skipHub) {
+    const existing = readHubPort(configDir);
+    if (existing === undefined) {
+      throw new Error("skipHub set but no hub.port on disk — tests must seed one");
+    }
+    hubPort = existing;
+  } else {
+    const hub = await ensureHubRunning({
+      ...(opts.hubEnsureOpts ?? {}),
+      configDir,
+      wellKnownDir,
+      log,
+    });
+    hubPort = hub.port;
+    if (hub.started) log(`✓ hub started (pid ${hub.pid}, port ${hub.port}).`);
+    else log(`✓ hub already running (pid ${hub.pid}, port ${hub.port}).`);
+  }
+
+  const entries = planEntries(services, hubPort);
   log(`Exposing under ${canonicalOrigin} (${layerLabel(layer)}, path-routing, port ${port}):`);
   for (const e of entries) {
     const suffix = e.kind === "proxy" ? `→ ${e.target}  (${e.service})` : `→ ${e.target}`;
@@ -204,6 +243,7 @@ export async function exposeOff(layer: ExposeLayer, opts: ExposeOpts = {}): Prom
   const statePath = opts.statePath ?? EXPOSE_STATE_PATH;
   const wellKnownFilePath = opts.wellKnownPath ?? WELL_KNOWN_PATH;
   const hubFilePath = opts.hubPath ?? HUB_PATH;
+  const configDir = opts.configDir ?? CONFIG_DIR;
   const log = opts.log ?? ((line) => console.log(line));
 
   const state = readExposeState(statePath);
@@ -233,6 +273,15 @@ export async function exposeOff(layer: ExposeLayer, opts: ExposeOpts = {}): Prom
   if (existsSync(hubFilePath)) {
     unlinkSync(hubFilePath);
   }
+
+  // Hub lives only as long as some layer is exposed. State was just cleared,
+  // so no layer is active — stop the hub. (Layer switch doesn't go through
+  // here; that path reuses the running hub.)
+  if (!opts.skipHub) {
+    const stopped = await stopHub({ ...(opts.hubStopOpts ?? {}), configDir, log });
+    if (stopped) log("✓ hub stopped.");
+  }
+
   log(`✓ ${layerLabel(layer)} exposure removed.`);
   return 0;
 }
