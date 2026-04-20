@@ -179,6 +179,30 @@ describe("ensureHubRunning", () => {
     }
   });
 
+  test("skips reserved service ports during fallback", async () => {
+    // Hub defaults start at 1939 and walk up. Vault claims 1940, so without
+    // reservation the hub would steal it when vault isn't yet bound. Reserved
+    // ports must be skipped over during fallback.
+    const h = makeHarness();
+    try {
+      const spawner = makeSpawner(3333);
+      const result = await ensureHubRunning({
+        configDir: h.configDir,
+        wellKnownDir: h.wellKnownDir,
+        spawner,
+        alive: () => true,
+        probe: probeTaken(new Set([1939])), // default port is held
+        reservedPorts: [1940], // vault's reservation
+        readyWaitMs: 0,
+      });
+      // 1939 is taken, 1940 is reserved → we get 1941.
+      expect(result.port).toBe(1941);
+      expect(readHubPort(h.configDir)).toBe(1941);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test("honors startPort override", async () => {
     const h = makeHarness();
     try {

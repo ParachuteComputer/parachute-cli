@@ -56,12 +56,13 @@ describe("tailscale commands", () => {
     ]);
   });
 
-  test("bringup adds --funnel when funnel=true", () => {
+  test("bringup uses `tailscale funnel` subcommand when funnel=true", () => {
+    // Modern tailscale (1.82+) split funnel out of serve. Public mode must
+    // route through `tailscale funnel`, not `tailscale serve --funnel`.
     expect(bringupCommand(proxyEntry, { funnel: true })).toEqual([
       "tailscale",
-      "serve",
+      "funnel",
       "--bg",
-      "--funnel",
       "--https=443",
       "--set-path=/",
       "http://127.0.0.1:1940",
@@ -92,6 +93,18 @@ describe("tailscale commands", () => {
       "serve",
       "--https=443",
       "--set-path=/.well-known/parachute.json",
+      "off",
+    ]);
+  });
+
+  test("teardown routes through `tailscale funnel` when funnel=true", () => {
+    // Same subcommand split applies to teardown — `serve … off` doesn't
+    // remove a funnel-mounted entry on 1.82+.
+    expect(teardownCommand(proxyEntry, { funnel: true })).toEqual([
+      "tailscale",
+      "funnel",
+      "--https=443",
+      "--set-path=/",
       "off",
     ]);
   });

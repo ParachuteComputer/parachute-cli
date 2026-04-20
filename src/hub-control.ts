@@ -109,6 +109,13 @@ export interface EnsureHubOpts {
   startPort?: number;
   /** How many ports to try before giving up (default 20). */
   fallbackRange?: number;
+  /**
+   * Ports to skip during fallback — typically service ports from services.json
+   * so the hub doesn't steal a port a registered service will bind later.
+   * Probed ports that happen to be listening still fail the probe on their own;
+   * this guards the case where the service isn't running yet.
+   */
+  reservedPorts?: Iterable<number>;
   /** How long to wait after spawn before claiming readiness. Short — tests set to 0. */
   readyWaitMs?: number;
   log?: (line: string) => void;
@@ -130,6 +137,7 @@ export async function ensureHubRunning(opts: EnsureHubOpts = {}): Promise<Ensure
   const sleep = opts.sleep ?? defaultSleep;
   const startPort = opts.startPort ?? HUB_DEFAULT_PORT;
   const fallbackRange = opts.fallbackRange ?? HUB_PORT_FALLBACK_RANGE;
+  const reservedPorts = new Set(opts.reservedPorts ?? []);
   const readyWaitMs = opts.readyWaitMs ?? 150;
   const log = opts.log ?? (() => {});
 
@@ -145,6 +153,7 @@ export async function ensureHubRunning(opts: EnsureHubOpts = {}): Promise<Ensure
   let chosenPort: number | undefined;
   for (let i = 0; i < fallbackRange; i++) {
     const candidate = startPort + i;
+    if (reservedPorts.has(candidate)) continue;
     if (await probe(candidate)) {
       chosenPort = candidate;
       break;
