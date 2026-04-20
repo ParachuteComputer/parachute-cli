@@ -24,7 +24,6 @@ import {
   statusHelp,
   stopHelp,
   topLevelHelp,
-  vaultHelp,
 } from "./help.ts";
 import { knownServices } from "./service-spec.ts";
 import { ServicesManifestError } from "./services-manifest.ts";
@@ -200,14 +199,10 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case "vault":
-      // `parachute vault` alone shows CLI's dispatch help (usage hint).
-      // `parachute vault <anything>` forwards verbatim — including --help,
-      // which goes to parachute-vault itself so the user sees vault's own help.
-      if (rest.length === 0) {
-        console.log(vaultHelp());
-        return 0;
-      }
-      return await dispatchVault(rest);
+      // `parachute vault` with no args forwards --help to parachute-vault so
+      // users see the actual vault surface, not a CLI-side stub. Anything
+      // after `vault` (including --help) is passed through verbatim.
+      return await dispatchVault(rest.length === 0 ? ["--help"] : rest);
 
     default:
       console.error(`parachute: unknown command "${command}"`);

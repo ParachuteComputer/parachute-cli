@@ -16,7 +16,9 @@ Usage:
   parachute expose tailnet [off]    HTTPS across your tailnet
   parachute expose public  [off]    HTTPS on the public internet (Funnel)
   parachute migrate [--dry-run]     archive legacy files at ecosystem root
-  parachute vault <args...>         dispatch to parachute-vault
+  parachute vault <args...>         vault-specific ops (tokens, 2fa, config, init,
+                                    etc.) — forwards to parachute-vault.
+                                    For lifecycle, use \`parachute start|stop|restart|logs vault\`.
 
 Flags:
   --help, -h                        show this help (also per-subcommand: \`parachute <cmd> --help\`)
@@ -214,22 +216,5 @@ Examples:
   parachute migrate --dry-run       see what would move, without touching anything
   parachute migrate                 interactive sweep (prompts before acting)
   parachute migrate --yes           sweep without prompting
-`;
-}
-
-export function vaultHelp(): string {
-  return `parachute vault — dispatch to parachute-vault
-
-Usage:
-  parachute vault <args...>
-
-Everything after \`parachute vault\` is forwarded verbatim to the installed
-parachute-vault binary. If you get "not found on PATH", install it with:
-
-  parachute install vault
-
-Examples:
-  parachute vault init              # same as running \`parachute-vault init\`
-  parachute vault --help            # forwards --help to parachute-vault
 `;
 }

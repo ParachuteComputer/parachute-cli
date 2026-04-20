@@ -106,11 +106,24 @@ describe("cli per-subcommand help", () => {
     expect(stdout).toMatch(/expose tailnet/);
   });
 
-  test("vault with no args shows dispatch help", async () => {
-    const { code, stdout } = await runCli(["vault"]);
-    expect(code).toBe(0);
-    expect(stdout).toMatch(/parachute vault/);
-    expect(stdout).toMatch(/parachute install vault/);
+  test("vault with no args forwards --help to parachute-vault", async () => {
+    // Clear PATH so the dispatcher reliably hits the ENOENT branch — that
+    // proves the CLI is forwarding rather than printing local help. Spawn
+    // bun by absolute path so the outer shell-out isn't affected by PATH=''.
+    const proc = Bun.spawn([process.execPath, CLI, "vault"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        PATH: "",
+        HOME: "/tmp/parachute-cli-nonexistent-home",
+        PARACHUTE_HOME: "/tmp/parachute-cli-nonexistent-home",
+      },
+    });
+    const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+    expect(code).toBe(127);
+    expect(stderr).toMatch(/parachute-vault not found on PATH/);
+    expect(stderr).toMatch(/parachute install vault/);
   });
 });
 
