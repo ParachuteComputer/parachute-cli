@@ -62,6 +62,41 @@ describe("renderHub", () => {
     expect(html).toContain("display: none");
     expect(html).toContain(".card.expanded .details");
   });
+
+  test("lazy-fetches /.parachute/config/schema + /.parachute/config on first expand", () => {
+    expect(html).toContain("fetchConfig");
+    expect(html).toContain("/.parachute/config/schema");
+    expect(html).toContain("/.parachute/config");
+    // Lazy: fetch happens inside the toggle, guarded by configLoaded.
+    expect(html).toContain("configLoaded");
+  });
+
+  test("renders config form fields with disabled inputs (read-only in this launch)", () => {
+    expect(html).toContain("renderConfigField");
+    expect(html).toContain("input.disabled = true");
+    expect(html).toContain("aria-readonly");
+    // Hint text tells users where to edit instead.
+    expect(html).toContain("read-only in this launch");
+  });
+
+  test("config field types: enum→select, boolean→checkbox, number→number, uri→url", () => {
+    expect(html).toContain("schema.enum");
+    expect(html).toContain("'checkbox'");
+    expect(html).toContain("'number'");
+    expect(html).toContain("'url'");
+  });
+
+  test("writeOnly fields render a bullet placeholder instead of the raw value", () => {
+    expect(html).toContain("writeOnly");
+    // Six bullets as the placeholder (template literal resolves \u2022 → •).
+    expect(html).toContain("\u2022\u2022\u2022\u2022\u2022\u2022");
+  });
+
+  test("schema 404 path renders nothing (no error surfaced)", () => {
+    // fetchConfig returns null on non-ok; caller skips render.
+    expect(html).toContain("if (!schemaResp || !schemaResp.ok) return null");
+    expect(html).toContain("if (data)");
+  });
 });
 
 describe("writeHubFile", () => {
