@@ -84,21 +84,42 @@ Under the hood, tailnet and public share a single `tailscale serve` config. The 
 
 ## Path-routing (and why)
 
-Every service mounts under a path on a single canonical hostname:
+Every service mounts under a path on a single canonical hostname. The root `/` is a hub page that auto-discovers everything installed on this node:
 
 ```
-https://parachute.<tailnet>.ts.net/           → parachute-vault
-https://parachute.<tailnet>.ts.net/notes      → parachute-notes
-https://parachute.<tailnet>.ts.net/scribe     → parachute-scribe
-https://parachute.<tailnet>.ts.net/.well-known/parachute.json   ← discovery
+https://parachute.<tailnet>.ts.net/                              → hub (service directory)
+https://parachute.<tailnet>.ts.net/vault/default                 → parachute-vault API
+https://parachute.<tailnet>.ts.net/notes                         → parachute-notes
+https://parachute.<tailnet>.ts.net/scribe                        → parachute-scribe
+https://parachute.<tailnet>.ts.net/.well-known/parachute.json    ← discovery
 ```
 
-The `/.well-known/parachute.json` document maps short names to absolute URLs so clients can discover each other without knowing install-local ports:
+The hub page fetches the discovery doc at load, then each service's `/.parachute/info` endpoint for display name, tagline, and icon. Adding a new service is zero CLI code — drop in its manifest entry and the hub picks it up.
+
+The `/.well-known/parachute.json` document is an always-present descriptor — flat `services[]` array that the hub iterates, plus top-level keys for legacy clients:
 
 ```json
 {
-  "vault":  { "url": "https://parachute.taildf9ce2.ts.net/",       "version": "0.2.4" },
-  "notes":  { "url": "https://parachute.taildf9ce2.ts.net/notes",  "version": "0.0.1" }
+  "vaults": [
+    { "name": "default", "url": "https://parachute.taildf9ce2.ts.net/vault/default", "version": "0.2.4" }
+  ],
+  "services": [
+    {
+      "name": "parachute-vault",
+      "url":  "https://parachute.taildf9ce2.ts.net/vault/default",
+      "path": "/vault/default",
+      "version": "0.2.4",
+      "infoUrl": "https://parachute.taildf9ce2.ts.net/vault/default/.parachute/info"
+    },
+    {
+      "name": "parachute-notes",
+      "url":  "https://parachute.taildf9ce2.ts.net/notes",
+      "path": "/notes",
+      "version": "0.0.1",
+      "infoUrl": "https://parachute.taildf9ce2.ts.net/notes/.parachute/info"
+    }
+  ],
+  "notes": { "url": "https://parachute.taildf9ce2.ts.net/notes", "version": "0.0.1" }
 }
 ```
 
@@ -119,15 +140,21 @@ Each Parachute service writes a manifest entry to `~/.parachute/services.json` o
     {
       "name":    "parachute-vault",
       "port":    1940,
-      "paths":   ["/"],
-      "health":  "/health",
+      "paths":   ["/vault/default"],
+      "health":  "/vault/default/health",
       "version": "0.2.4"
     }
   ]
 }
 ```
 
+Optional `displayName` and `tagline` may be added to personalize the hub-page card; if absent, the hub falls back to the short name and the service's own `/.parachute/info` response.
+
 The schema is a bit-for-bit contract shared between the CLI and every service. Services own their write side; the CLI owns the read + exposure side.
+
+### Claiming `/` — legacy manifests
+
+Pre-hub services wrote `paths: ["/"]` (when there was only one service at `/`). On `parachute expose`, any such entry is remapped in-memory to `/<shortname>` with a one-line warning; re-running `parachute install <svc>` updates the on-disk manifest permanently. The hub always owns `/`.
 
 If you want the CLI (and every service you install) to use a config directory other than `~/.parachute`, set `PARACHUTE_HOME`:
 
