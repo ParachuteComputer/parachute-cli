@@ -16,6 +16,7 @@ Usage:
   parachute expose tailnet [off]    HTTPS across your tailnet
   parachute expose public  [off]    HTTPS on the public internet (Funnel)
   parachute migrate [--dry-run]     archive legacy files at ecosystem root
+  parachute auth <cmd>              identity (set password, manage 2FA)
   parachute vault <args...>         vault-specific ops (tokens, 2fa, config, init,
                                     etc.) — forwards to parachute-vault.
                                     For lifecycle, use \`parachute start|stop|restart|logs vault\`.
