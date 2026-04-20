@@ -96,6 +96,8 @@ https://parachute.<tailnet>.ts.net/.well-known/parachute.json    ← discovery
 
 The hub page fetches the discovery doc at load, then each service's `/.parachute/info` endpoint for display name, tagline, and icon. Adding a new service is zero CLI code — drop in its manifest entry and the hub picks it up.
 
+Under the hood, `/` and `/.well-known/parachute.json` are proxied by a tiny internal HTTP server (`parachute-hub`) that `parachute expose` spawns on the loopback interface. Tailscale's file-serve mode is sandbox-restricted on macOS, so a localhost proxy is the portable shape. The hub process is stopped automatically when the last exposure layer is torn down; `parachute status` lists it under `(internal)`.
+
 The `/.well-known/parachute.json` document is an always-present descriptor — flat `services[]` array that the hub iterates, plus top-level keys for legacy clients:
 
 ```json
