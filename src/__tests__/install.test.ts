@@ -231,6 +231,95 @@ describe("install", () => {
     }
   });
 
+  test("--tag composes `<package>@<tag>` for the bun add call", async () => {
+    // RC testers pin a pre-release channel via dist-tag (e.g. `--tag rc`).
+    // The composed name shows up in logs so the operator knows which channel
+    // they're on — no surprise upgrades when the tag rolls forward.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+        tag: "rc",
+      });
+      expect(code).toBe(0);
+      expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/vault@rc"]);
+      expect(logs.join("\n")).toMatch(/Installing @openparachute\/vault@rc/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("--tag accepts an exact version string", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const code = await install("vault", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        isLinked: () => false,
+        log: () => {},
+        tag: "0.3.0-rc.1",
+      });
+      expect(code).toBe(0);
+      expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/vault@0.3.0-rc.1"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("--tag is moot when the package is already bun-linked", async () => {
+    // The link short-circuit beats the tag — local checkout wins, no fetch.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install("scribe", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        isLinked: () => true,
+        log: (l) => logs.push(l),
+        tag: "rc",
+      });
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(0);
+      expect(logs.join("\n")).toMatch(/already linked globally/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("error log on non-zero bun add includes the tagged spec", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async () => 1,
+        manifestPath: path,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+        tag: "rc",
+      });
+      expect(code).toBe(1);
+      expect(logs.join("\n")).toMatch(/bun add -g @openparachute\/vault@rc failed/);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("linked vault still runs init and defers to init's manifest write", async () => {
     const { path, cleanup } = makeTempPath();
     try {
