@@ -4,7 +4,7 @@ import { CONFIG_DIR } from "./config.ts";
 
 /**
  * Per-service state lives under `<configDir>/<svc>/...`. `svc` is the
- * short name (`vault`, `notes`, `scribe`, `channel`) so paths stay tidy —
+ * short name (`vault`, `lens`, `scribe`, `channel`) so paths stay tidy —
  * `~/.parachute/vault/run/vault.pid` rather than `parachute-vault/run/…`.
  *
  * The single source of truth for whether a service is running is

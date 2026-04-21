@@ -17,9 +17,9 @@ const fileEntry: ServeEntry = {
 
 const subpathEntry: ServeEntry = {
   kind: "proxy",
-  mount: "/notes",
+  mount: "/lens",
   target: "http://127.0.0.1:5173",
-  service: "parachute-notes",
+  service: "parachute-lens",
 };
 
 describe("tailscale commands", () => {
@@ -40,7 +40,7 @@ describe("tailscale commands", () => {
       "serve",
       "--bg",
       "--https=443",
-      "--set-path=/notes",
+      "--set-path=/lens",
       "http://127.0.0.1:5173",
     ]);
   });

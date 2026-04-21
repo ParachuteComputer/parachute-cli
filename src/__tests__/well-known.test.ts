@@ -19,11 +19,11 @@ const vault: ServiceEntry = {
   version: "0.2.4",
 };
 
-const notes: ServiceEntry = {
-  name: "parachute-notes",
+const lens: ServiceEntry = {
+  name: "parachute-lens",
   port: 5173,
-  paths: ["/notes"],
-  health: "/notes/health",
+  paths: ["/lens"],
+  health: "/lens/health",
   version: "0.0.1",
 };
 
@@ -38,7 +38,7 @@ const scribe: ServiceEntry = {
 describe("shortName", () => {
   test("strips parachute- prefix", () => {
     expect(shortName("parachute-vault")).toBe("vault");
-    expect(shortName("parachute-notes")).toBe("notes");
+    expect(shortName("parachute-lens")).toBe("lens");
     expect(shortName("custom-service")).toBe("custom-service");
   });
 });
@@ -54,7 +54,7 @@ describe("isVaultEntry", () => {
   });
 
   test("rejects non-vault services", () => {
-    expect(isVaultEntry(notes)).toBe(false);
+    expect(isVaultEntry(lens)).toBe(false);
     expect(isVaultEntry(scribe)).toBe(false);
   });
 
@@ -94,7 +94,7 @@ describe("vaultInstanceName", () => {
 describe("buildWellKnown", () => {
   test("vaults is always an array, other services are flat entries, services[] includes all", () => {
     const doc = buildWellKnown({
-      services: [vault, notes, scribe],
+      services: [vault, lens, scribe],
       canonicalOrigin: "https://parachute.taildf9ce2.ts.net",
     });
     expect(doc.vaults).toEqual([
@@ -104,8 +104,8 @@ describe("buildWellKnown", () => {
         version: "0.2.4",
       },
     ]);
-    expect(doc.notes).toEqual({
-      url: "https://parachute.taildf9ce2.ts.net/notes",
+    expect(doc.lens).toEqual({
+      url: "https://parachute.taildf9ce2.ts.net/lens",
       version: "0.0.1",
     });
     expect(doc.scribe).toEqual({
@@ -114,14 +114,14 @@ describe("buildWellKnown", () => {
     });
     expect(doc.services.map((s) => s.name)).toEqual([
       "parachute-vault",
-      "parachute-notes",
+      "parachute-lens",
       "parachute-scribe",
     ]);
   });
 
   test("services[] entries include infoUrl pointing at /.parachute/info", () => {
     const doc = buildWellKnown({
-      services: [vault, notes],
+      services: [vault, lens],
       canonicalOrigin: "https://x.example",
     });
     expect(doc.services).toEqual([
@@ -133,17 +133,17 @@ describe("buildWellKnown", () => {
         infoUrl: "https://x.example/vault/default/.parachute/info",
       },
       {
-        name: "parachute-notes",
-        url: "https://x.example/notes",
-        path: "/notes",
+        name: "parachute-lens",
+        url: "https://x.example/lens",
+        path: "/lens",
         version: "0.0.1",
-        infoUrl: "https://x.example/notes/.parachute/info",
+        infoUrl: "https://x.example/lens/.parachute/info",
       },
     ]);
   });
 
   test("infoUrl for root-mounted service has no double slash", () => {
-    const rootSvc: ServiceEntry = { ...notes, paths: ["/"] };
+    const rootSvc: ServiceEntry = { ...lens, paths: ["/"] };
     const doc = buildWellKnown({
       services: [rootSvc],
       canonicalOrigin: "https://x.example",
@@ -153,12 +153,12 @@ describe("buildWellKnown", () => {
 
   test("vaults array is present even when no vault is installed", () => {
     const doc = buildWellKnown({
-      services: [notes],
+      services: [lens],
       canonicalOrigin: "https://x.example",
     });
     expect(doc.vaults).toEqual([]);
     expect(doc.services).toHaveLength(1);
-    expect(doc.notes).toEqual({ url: "https://x.example/notes", version: "0.0.1" });
+    expect(doc.lens).toEqual({ url: "https://x.example/lens", version: "0.0.1" });
   });
 
   test("multiple vault instances all land in the vaults array", () => {

@@ -15,6 +15,17 @@ import { migrateNotice } from "./migrate.ts";
 
 export type Runner = (cmd: readonly string[]) => Promise<number>;
 
+/**
+ * Transition aliases for services that were renamed. Accepted for one
+ * release cycle with a rename notice, then removed. `notes → lens`
+ * landed 2026-04 as part of the Lens rebrand; remove after launch
+ * sinks in and `parachute install notes` has stopped appearing in
+ * support threads.
+ */
+const SERVICE_ALIASES: Record<string, string> = {
+  notes: "lens",
+};
+
 export interface InstallOpts {
   runner?: Runner;
   manifestPath?: string;
@@ -75,9 +86,15 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   const log = opts.log ?? ((line) => console.log(line));
   const isLinked = opts.isLinked ?? defaultIsLinked;
 
-  const spec = getSpec(service);
+  const aliased = SERVICE_ALIASES[service];
+  if (aliased !== undefined) {
+    log(`"${service}" has been renamed to "${aliased}"; installing ${aliased}.`);
+  }
+  const resolvedService = aliased ?? service;
+
+  const spec = getSpec(resolvedService);
   if (!spec) {
-    log(`unknown service: "${service}"`);
+    log(`unknown service: "${resolvedService}"`);
     log(`known services: ${knownServices().join(", ")}`);
     return 1;
   }

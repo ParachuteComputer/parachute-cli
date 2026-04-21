@@ -2,7 +2,7 @@
 
 `parachute` — the top-level command for the [Parachute](https://parachute.computer) ecosystem.
 
-Install, inspect, and expose Parachute services with one command. Each service (vault, notes, scribe, channel, …) stays a standalone package; this CLI is the coordinator.
+Install, inspect, and expose Parachute services with one command. Each service (vault, lens, scribe, channel, …) stays a standalone package; this CLI is the coordinator.
 
 ## Install
 
@@ -101,7 +101,7 @@ Every service mounts under a path on a single canonical hostname. The root `/` i
 ```
 https://parachute.<tailnet>.ts.net/                              → hub (service directory)
 https://parachute.<tailnet>.ts.net/vault/default                 → parachute-vault API
-https://parachute.<tailnet>.ts.net/notes                         → parachute-notes
+https://parachute.<tailnet>.ts.net/lens                          → parachute-lens
 https://parachute.<tailnet>.ts.net/scribe                        → parachute-scribe
 https://parachute.<tailnet>.ts.net/.well-known/parachute.json    ← discovery
 ```
@@ -126,14 +126,14 @@ The `/.well-known/parachute.json` document is an always-present descriptor — f
       "infoUrl": "https://parachute.taildf9ce2.ts.net/vault/default/.parachute/info"
     },
     {
-      "name": "parachute-notes",
-      "url":  "https://parachute.taildf9ce2.ts.net/notes",
-      "path": "/notes",
+      "name": "parachute-lens",
+      "url":  "https://parachute.taildf9ce2.ts.net/lens",
+      "path": "/lens",
       "version": "0.0.1",
-      "infoUrl": "https://parachute.taildf9ce2.ts.net/notes/.parachute/info"
+      "infoUrl": "https://parachute.taildf9ce2.ts.net/lens/.parachute/info"
     }
   ],
-  "notes": { "url": "https://parachute.taildf9ce2.ts.net/notes", "version": "0.0.1" }
+  "lens": { "url": "https://parachute.taildf9ce2.ts.net/lens", "version": "0.0.1" }
 }
 ```
 
@@ -153,7 +153,7 @@ Parachute services reserve a block of loopback ports in the canonical range **19
 | 1939 | parachute-hub (internal proxy + static) |
 | 1940 | parachute-vault    |
 | 1941 | parachute-channel  |
-| 1942 | parachute-notes    |
+| 1942 | parachute-lens     |
 | 1943 | parachute-scribe   |
 | 1944 | *reserved — pendant*  |
 | 1945 | *reserved — daily-v2* |
