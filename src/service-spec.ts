@@ -51,6 +51,16 @@ export function isCanonicalPort(port: number): boolean {
   return port >= CANONICAL_PORT_MIN && port <= CANONICAL_PORT_MAX;
 }
 
+/**
+ * Broad shape of a service. Matches the hub's card-kind taxonomy.
+ *   "frontend"  a user-facing UI (notes). Safe to expose by default.
+ *   "api"       a programmatic surface (vault, channel, scribe). Whether
+ *               it's safe to expose depends on `hasAuth`.
+ *   "tool"      like "api" but specifically MCP-shaped / agent-callable.
+ *               Treated the same as "api" for exposure defaults.
+ */
+export type ServiceKind = "api" | "tool" | "frontend";
+
 export interface ServiceSpec {
   readonly package: string;
   readonly manifestName: string;
@@ -77,6 +87,19 @@ export interface ServiceSpec {
    * authoritative version.
    */
   readonly seedEntry?: () => ServiceEntry;
+  /**
+   * Declares the service's broad shape. Drives exposure defaults: api/tool
+   * services without auth fall back to `publicExposure: "auth-required"`
+   * (treated as loopback at launch); frontends default to "allowed".
+   */
+  readonly kind?: ServiceKind;
+  /**
+   * Does the service gate its endpoints behind auth today? Used together with
+   * `kind` to pick a safe default when the services.json entry omits
+   * `publicExposure`. True for vault/channel (owner-authenticated);
+   * conservatively false for scribe until its auth-gate ships.
+   */
+  readonly hasAuth?: boolean;
 }
 
 const NOTES_SERVE_PATH = fileURLToPath(new URL("./notes-serve.ts", import.meta.url));
@@ -95,6 +118,8 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     manifestName: "parachute-vault",
     init: ["parachute-vault", "init"],
     startCmd: () => ["parachute-vault", "serve"],
+    kind: "api",
+    hasAuth: true,
     seedEntry: () => ({
       name: "parachute-vault",
       port: 1940,
@@ -107,6 +132,7 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     package: "@openparachute/notes",
     manifestName: "parachute-notes",
     startCmd: (entry) => ["bun", NOTES_SERVE_PATH, "--port", String(entry.port)],
+    kind: "frontend",
     seedEntry: () => ({
       name: "parachute-notes",
       port: 1942,
@@ -119,6 +145,11 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     package: "@openparachute/scribe",
     manifestName: "parachute-scribe",
     startCmd: () => ["parachute-scribe", "serve"],
+    // No auth gate today. Scribe's launch PR adds optional SCRIBE_AUTH_TOKEN;
+    // once it lands and scribe writes `publicExposure: "allowed"` when a token
+    // is configured, that explicit declaration overrides this default.
+    kind: "api",
+    hasAuth: false,
     seedEntry: () => ({
       name: "parachute-scribe",
       port: 1943,
@@ -131,6 +162,8 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     package: "@openparachute/channel",
     manifestName: "parachute-channel",
     startCmd: () => ["parachute-channel", "daemon"],
+    kind: "api",
+    hasAuth: true,
     seedEntry: () => ({
       name: "parachute-channel",
       port: 1941,
@@ -140,6 +173,26 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     }),
   },
 };
+
+/**
+ * Effective publicExposure for a service, given what's on its services.json
+ * entry. Explicit wins. If absent, derive from the spec: known api/tool
+ * services without declared auth fall back to "auth-required" (treated as
+ * loopback at launch); everything else defaults to "allowed" — so vault,
+ * notes, channel and unknown third-party services continue to be exposed
+ * without needing to opt in.
+ */
+export function effectivePublicExposure(
+  entry: ServiceEntry,
+): "allowed" | "loopback" | "auth-required" {
+  if (entry.publicExposure !== undefined) return entry.publicExposure;
+  const short = shortNameForManifest(entry.name);
+  const spec = short !== undefined ? SERVICE_SPECS[short] : undefined;
+  if (spec && (spec.kind === "api" || spec.kind === "tool") && spec.hasAuth === false) {
+    return "auth-required";
+  }
+  return "allowed";
+}
 
 export function knownServices(): string[] {
   return Object.keys(SERVICE_SPECS);

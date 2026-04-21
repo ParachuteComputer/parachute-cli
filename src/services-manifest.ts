@@ -2,6 +2,26 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
 
+/**
+ * Whether the service is safe to mount on public-facing expose layers.
+ *
+ *   "allowed"       mount on every layer (tailnet + public). Use when the
+ *                   service gates its own endpoints with auth.
+ *   "loopback"      never mount on tailnet/funnel — only reachable at
+ *                   http://127.0.0.1:<port>. For internal services that
+ *                   shouldn't leave the box.
+ *   "auth-required" the service wants auth but isn't guaranteed to have it
+ *                   configured (e.g., scribe without SCRIBE_AUTH_TOKEN set).
+ *                   At launch this is treated the same as "loopback"; future
+ *                   work can flip to "allowed" once the service reports its
+ *                   auth state over `/.parachute/info`.
+ *
+ * Absent field: the CLI derives a safe default from the service's ServiceSpec
+ * (known api/tool services without declared auth → "auth-required"; everything
+ * else → "allowed"). Unknown services default to "allowed" for back-compat.
+ */
+export type PublicExposure = "allowed" | "loopback" | "auth-required";
+
 export interface ServiceEntry {
   name: string;
   port: number;
@@ -12,6 +32,8 @@ export interface ServiceEntry {
   displayName?: string;
   /** One-line subtitle for the hub page card. */
   tagline?: string;
+  /** Opt-in or opt-out of public-facing expose layers. See PublicExposure. */
+  publicExposure?: PublicExposure;
 }
 
 export interface ServicesManifest {
@@ -51,15 +73,27 @@ function validateEntry(raw: unknown, where: string): ServiceEntry {
   }
   const displayName = e.displayName;
   const tagline = e.tagline;
+  const publicExposure = e.publicExposure;
   if (displayName !== undefined && typeof displayName !== "string") {
     throw new ServicesManifestError(`${where}: "displayName" must be a string if present`);
   }
   if (tagline !== undefined && typeof tagline !== "string") {
     throw new ServicesManifestError(`${where}: "tagline" must be a string if present`);
   }
+  if (
+    publicExposure !== undefined &&
+    publicExposure !== "allowed" &&
+    publicExposure !== "loopback" &&
+    publicExposure !== "auth-required"
+  ) {
+    throw new ServicesManifestError(
+      `${where}: "publicExposure" must be "allowed" | "loopback" | "auth-required" if present`,
+    );
+  }
   const entry: ServiceEntry = { name, port, paths: paths as string[], health, version };
   if (displayName !== undefined) entry.displayName = displayName;
   if (tagline !== undefined) entry.tagline = tagline;
+  if (publicExposure !== undefined) entry.publicExposure = publicExposure as PublicExposure;
   return entry;
 }
 
