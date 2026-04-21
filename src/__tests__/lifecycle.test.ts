@@ -217,6 +217,40 @@ describe("parachute start", () => {
     }
   });
 
+  test("legacy parachute-notes manifest entry still starts under the lens spec", async () => {
+    // v0.x users upgraded into the lens rename will still have
+    // `parachute-notes` in services.json until their lens package next
+    // boots and rewrites the row. Without the manifest alias,
+    // shortNameForManifest returns undefined, resolveTargets skips the
+    // entry, and they get "No manageable services" with no hint.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "parachute-notes",
+          port: 5173,
+          paths: ["/notes"],
+          health: "/notes/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      const spawner = makeSpawner([5151]);
+      const code = await start(undefined, {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls).toHaveLength(1);
+      expect(spawner.calls[0]?.cmd.some((a) => a.endsWith("lens-serve.ts"))).toBe(true);
+      expect(readPid("lens", h.configDir)).toBe(5151);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test("passes PARACHUTE_HUB_ORIGIN from expose-state when set", async () => {
     const h = makeHarness();
     try {

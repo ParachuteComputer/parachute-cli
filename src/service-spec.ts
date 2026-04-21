@@ -204,11 +204,24 @@ export function getSpec(service: string): ServiceSpec | undefined {
   return SERVICE_SPECS[service];
 }
 
+/**
+ * Legacy manifest names kept so `parachute start` / `stop` / `logs` keep
+ * working on an already-installed services.json that still carries the
+ * old name. v0.x users who installed before the rename will have
+ * `"parachute-notes"` in their manifest until the lens package next
+ * boots and rewrites the entry; without this alias, lifecycle commands
+ * silently skip those rows. Remove after launch, alongside the
+ * `notes → lens` install alias.
+ */
+const LEGACY_MANIFEST_ALIASES: Record<string, string> = {
+  "parachute-notes": "lens",
+};
+
 /** Short name (the key into SERVICE_SPECS) for a given manifest name, e.g.
  *  `parachute-vault` → `vault`. Returns undefined for unknown manifests. */
 export function shortNameForManifest(manifestName: string): string | undefined {
   for (const [short, spec] of Object.entries(SERVICE_SPECS)) {
     if (spec.manifestName === manifestName) return short;
   }
-  return undefined;
+  return LEGACY_MANIFEST_ALIASES[manifestName];
 }
