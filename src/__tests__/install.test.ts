@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { install } from "../commands/install.ts";
@@ -350,6 +350,188 @@ describe("install", () => {
       expect(calls).toEqual([["parachute-vault", "init"]]);
       expect(logs.join("\n")).not.toMatch(/Seeded/);
       expect(findService("parachute-vault", path)?.version).toBe("0.3.0");
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Auto-wire: when `parachute install` lands a service that completes the
+  // vault↔scribe pair, generate a shared secret and persist to both sides.
+  // Covered in detail by auto-wire.test.ts; these tests assert the install
+  // command actually invokes the helper at the right moment.
+  test("installing scribe with vault already present auto-wires the shared secret", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      // Pretend vault was installed previously — entry already in services.json.
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+        },
+        path,
+      );
+      const logs: string[] = [];
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+        randomToken: () => "test-token-value",
+      });
+      expect(code).toBe(0);
+
+      const envPath = join(configDir, "vault", ".env");
+      const scribeCfgPath = join(configDir, "scribe", "config.json");
+      expect(existsSync(envPath)).toBe(true);
+      expect(existsSync(scribeCfgPath)).toBe(true);
+
+      const envText = readFileSync(envPath, "utf8");
+      expect(envText).toContain("SCRIBE_AUTH_TOKEN=test-token-value");
+      const cfg = JSON.parse(readFileSync(scribeCfgPath, "utf8"));
+      expect(cfg.auth.required_token).toBe("test-token-value");
+
+      expect(logs.join("\n")).toMatch(/Auto-wired shared secret for vault → scribe/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("installing scribe without vault does NOT auto-wire (nothing to wire against)", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      const logs: string[] = [];
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+        randomToken: () => "should-not-fire",
+      });
+      expect(code).toBe(0);
+      // No vault/.env, no scribe/config.json written by auto-wire.
+      expect(existsSync(join(configDir, "vault", ".env"))).toBe(false);
+      expect(existsSync(join(configDir, "scribe", "config.json"))).toBe(false);
+      expect(logs.join("\n")).not.toMatch(/Auto-wired shared secret/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("installing vault with scribe already present auto-wires (either-order)", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      upsertService(
+        {
+          name: "parachute-scribe",
+          port: 1943,
+          paths: ["/scribe"],
+          health: "/scribe/health",
+          version: "0.1.0",
+        },
+        path,
+      );
+      const code = await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        isLinked: () => false,
+        log: () => {},
+        randomToken: () => "install-vault-side-token",
+      });
+      expect(code).toBe(0);
+      const envText = readFileSync(join(configDir, "vault", ".env"), "utf8");
+      expect(envText).toContain("SCRIBE_AUTH_TOKEN=install-vault-side-token");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("repeat install preserves an existing SCRIBE_AUTH_TOKEN (idempotent)", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+        },
+        path,
+      );
+      // First install: mints a token.
+      await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        isLinked: () => false,
+        log: () => {},
+        randomToken: () => "first-token",
+      });
+      // Second install: must preserve the first token — churning it would
+      // break an already-running vault worker that's holding the old one.
+      await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        isLinked: () => false,
+        log: () => {},
+        randomToken: () => "should-not-replace",
+      });
+      const envText = readFileSync(join(configDir, "vault", ".env"), "utf8");
+      expect(envText).toContain("SCRIBE_AUTH_TOKEN=first-token");
+      expect(envText).not.toContain("should-not-replace");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("installing notes doesn't trigger auto-wire even if vault + scribe are present", async () => {
+    // Defense: auto-wire should only fire from the scribe or vault install
+    // path. A parallel install of a different service shouldn't touch the
+    // shared-secret files.
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+        },
+        path,
+      );
+      upsertService(
+        {
+          name: "parachute-scribe",
+          port: 1943,
+          paths: ["/scribe"],
+          health: "/scribe/health",
+          version: "0.1.0",
+        },
+        path,
+      );
+      await install("notes", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        isLinked: () => false,
+        log: () => {},
+        randomToken: () => "should-not-fire",
+      });
+      expect(existsSync(join(configDir, "vault", ".env"))).toBe(false);
+      expect(existsSync(join(configDir, "scribe", "config.json"))).toBe(false);
     } finally {
       cleanup();
     }

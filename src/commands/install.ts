@@ -1,6 +1,7 @@
 import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { autoWireScribeAuth } from "../auto-wire.ts";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import {
   CANONICAL_PORT_MAX,
@@ -34,6 +35,11 @@ export interface InstallOpts {
    * package is bun-linked locally, the tag is moot.
    */
   tag?: string;
+  /**
+   * Override the random-token source for the vault↔scribe auto-wire.
+   * Tests pass a deterministic string; production uses crypto.randomBytes.
+   */
+  randomToken?: () => string;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -116,6 +122,19 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
       log(
         `⚠ port ${entry.port} is outside the canonical Parachute range (${CANONICAL_PORT_MIN}–${CANONICAL_PORT_MAX}); may conflict with other software.`,
       );
+    }
+  }
+
+  // Auto-wire the vault↔scribe shared secret when both services end up
+  // installed. Fires from either install order (scribe then vault, or vault
+  // then scribe). Idempotent — preserves any pre-existing token in vault .env.
+  if (spec.manifestName === "parachute-vault" || spec.manifestName === "parachute-scribe") {
+    const vaultPresent = !!findService("parachute-vault", manifestPath);
+    const scribePresent = !!findService("parachute-scribe", manifestPath);
+    if (vaultPresent && scribePresent) {
+      const autoWireOpts: Parameters<typeof autoWireScribeAuth>[0] = { configDir, log };
+      if (opts.randomToken) autoWireOpts.randomToken = opts.randomToken;
+      autoWireScribeAuth(autoWireOpts);
     }
   }
 

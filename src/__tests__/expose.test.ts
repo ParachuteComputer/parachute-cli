@@ -1010,3 +1010,248 @@ describe("expose public off", () => {
     }
   });
 });
+
+describe("expose publicExposure filter", () => {
+  // Launch-blocker: services without auth should never be mounted on
+  // tailnet/funnel. The filter reads `publicExposure` from each entry (or
+  // derives a safe default from the service spec) and withholds non-"allowed"
+  // services from the tailscale serve plan.
+  test("explicit loopback keeps the service off the serve plan", async () => {
+    const h = makeHarness();
+    try {
+      // Vault is mounted as usual; scribe declares loopback and is withheld.
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+          publicExposure: "allowed",
+        },
+        h.manifestPath,
+      );
+      upsertService(
+        {
+          name: "parachute-scribe",
+          port: 1943,
+          paths: ["/scribe"],
+          health: "/scribe/health",
+          version: "0.1.0",
+          publicExposure: "loopback",
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const logs: string[] = [];
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+
+      const serveCalls = calls.filter(
+        (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
+      );
+      const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path=")));
+      // Vault + its 4 OAuth proxies + hub + well-known — but no /scribe.
+      expect(mounts).toContain("--set-path=/vault/default");
+      expect(mounts).not.toContain("--set-path=/scribe");
+
+      // Operator-visible notice explaining the withhold.
+      expect(logs.join("\n")).toMatch(
+        /parachute-scribe is loopback-only — loopback-only by service declaration/,
+      );
+
+      // State file reflects the reduced plan so teardown doesn't trip on
+      // entries that were never brought up.
+      const state = readExposeState(h.statePath);
+      expect(state?.entries.some((e) => e.mount === "/scribe")).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("explicit auth-required behaves like loopback at launch", async () => {
+    // auth-required is the future-looking declaration for a service that
+    // wants auth but hasn't confirmed it's configured. Today the CLI treats
+    // it identically to loopback — still no funnel/tailnet exposure.
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath); // vault + notes, both allowed by default
+      upsertService(
+        {
+          name: "parachute-channel",
+          port: 1941,
+          paths: ["/channel"],
+          health: "/channel/health",
+          version: "0.1.0",
+          publicExposure: "auth-required",
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const logs: string[] = [];
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const mounts = calls
+        .filter((c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"))
+        .map((c) => c.find((a) => a.startsWith("--set-path=")));
+      expect(mounts).not.toContain("--set-path=/channel");
+      expect(logs.join("\n")).toMatch(/parachute-channel is loopback-only — auth-required/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("missing publicExposure + spec kind=api, hasAuth=false → loopback default (scribe)", async () => {
+    // Scribe today has no auth gate; its ServiceSpec says so (kind: "api",
+    // hasAuth: false). With publicExposure absent we should still withhold.
+    // This is the safe-by-default case for services that haven't yet been
+    // updated to declare their exposure.
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      upsertService(
+        {
+          name: "parachute-scribe",
+          port: 1943,
+          paths: ["/scribe"],
+          health: "/scribe/health",
+          version: "0.1.0",
+          // publicExposure intentionally absent — exercises spec-derived default
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const logs: string[] = [];
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const mounts = calls
+        .filter((c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"))
+        .map((c) => c.find((a) => a.startsWith("--set-path=")));
+      expect(mounts).not.toContain("--set-path=/scribe");
+      // Reason text points operators at the missing auth gate.
+      expect(logs.join("\n")).toMatch(
+        /parachute-scribe is loopback-only — auth-required: service has no auth gate/,
+      );
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("missing publicExposure on a known auth'd api service (vault) still exposes", async () => {
+    // vault's ServiceSpec has hasAuth: true, so the absence of publicExposure
+    // should not hide it — the back-compat path for every vault entry written
+    // before this field existed.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      const mounts = calls
+        .filter((c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"))
+        .map((c) => c.find((a) => a.startsWith("--set-path=")));
+      expect(mounts).toContain("--set-path=/vault/default");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("unknown third-party service without publicExposure defaults to allowed", async () => {
+    // A service not in SERVICE_SPECS has no kind/hasAuth signal. We err on
+    // the side of preserving current behavior (back-compat) so operators'
+    // existing exposures don't silently stop working on upgrade. If the
+    // third-party wants to opt out, they can write publicExposure: "loopback"
+    // into their services.json entry.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "parachute-rando",
+          port: 1947,
+          paths: ["/rando"],
+          health: "/rando/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      const { runner, calls } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const code = await exposeTailnet("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      const mounts = calls
+        .filter((c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"))
+        .map((c) => c.find((a) => a.startsWith("--set-path=")));
+      expect(mounts).toContain("--set-path=/rando");
+    } finally {
+      h.cleanup();
+    }
+  });
+});
