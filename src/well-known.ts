@@ -36,7 +36,7 @@ export interface WellKnownServicesEntry {
  *     multi-tenant service.
  *   - `services: []` — flat list the hub page iterates. Scales to N frontends
  *     without the consumer needing to know every shortName.
- *   - Top-level flat keys (`notes`, `scribe`, …) — kept for back-compat with
+ *   - Top-level flat keys (`lens`, `scribe`, …) — kept for back-compat with
  *     clients that predate `services[]`.
  */
 export type WellKnownDocument = {

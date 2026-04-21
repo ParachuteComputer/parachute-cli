@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 /**
- * Tiny static-file server for the @openparachute/notes PWA bundle.
+ * Tiny static-file server for the @openparachute/lens PWA bundle.
  *
- * Notes is a SPA — no backend of its own. `parachute start notes` invokes
+ * Lens is a SPA — no backend of its own. `parachute start lens` invokes
  * this shim with the installed `dist/` path so the PWA is served at a
  * known port and can be reverse-proxied by `parachute expose` alongside
  * the other services.
@@ -11,7 +11,7 @@
  * Invoked as:
  *   bun <this-file> --port <n> [--dist <path>]
  *
- * If --dist is omitted, we resolve @openparachute/notes's dist directory
+ * If --dist is omitted, we resolve @openparachute/lens's dist directory
  * via Bun.resolveSync. If that fails (package not installed globally, or
  * package doesn't ship dist/), exit 1 with a clear error.
  */
@@ -43,13 +43,13 @@ function parseArgs(argv: string[]): { port: number; dist?: string } {
   return { port, dist };
 }
 
-function resolveNotesDist(): string {
-  const pkgPath = Bun.resolveSync("@openparachute/notes/package.json", process.cwd());
+function resolveLensDist(): string {
+  const pkgPath = Bun.resolveSync("@openparachute/lens/package.json", process.cwd());
   const root = dirname(pkgPath);
   const dist = join(root, "dist");
   if (!existsSync(dist)) {
     throw new Error(
-      `@openparachute/notes is installed but has no dist/ directory at ${dist}. The package may not ship a prebuilt bundle — ask the notes maintainer to add a prepublishOnly build step.`,
+      `@openparachute/lens is installed but has no dist/ directory at ${dist}. The package may not ship a prebuilt bundle — ask the lens maintainer to add a prepublishOnly build step.`,
     );
   }
   return dist;
@@ -59,9 +59,9 @@ const { port, dist: distArg } = parseArgs(process.argv.slice(2));
 
 let dist: string;
 try {
-  dist = distArg ?? resolveNotesDist();
+  dist = distArg ?? resolveLensDist();
 } catch (err) {
-  console.error(`parachute-notes-serve: ${err instanceof Error ? err.message : String(err)}`);
+  console.error(`parachute-lens-serve: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
 
@@ -85,4 +85,4 @@ Bun.serve({
   },
 });
 
-console.log(`notes static-serve listening on :${port} (dist=${dist})`);
+console.log(`lens static-serve listening on :${port} (dist=${dist})`);

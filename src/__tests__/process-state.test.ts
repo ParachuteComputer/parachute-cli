@@ -22,7 +22,7 @@ function makeTempConfig(): { dir: string; cleanup: () => void } {
 describe("process-state paths", () => {
   test("pidPath / logPath land under <configDir>/<svc>/{run,logs}", () => {
     expect(pidPath("vault", "/cfg")).toBe("/cfg/vault/run/vault.pid");
-    expect(logPath("notes", "/cfg")).toBe("/cfg/notes/logs/notes.log");
+    expect(logPath("lens", "/cfg")).toBe("/cfg/lens/logs/lens.log");
   });
 });
 

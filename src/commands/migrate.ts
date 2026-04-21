@@ -23,10 +23,15 @@ export const ARCHIVE_PREFIX = ".archive-";
  * `knownServices()` so adding a service doesn't require touching migrate;
  * `hub` is added explicitly since it's an internal-only lifecycle dir not
  * in SERVICE_SPECS.
+ *
+ * `notes` is kept after the lens rename so existing `~/.parachute/notes/`
+ * dirs don't get swept into `.archive-*` on upgrade. Safe to remove once
+ * launch users have all had a chance to re-install under the new name.
  */
 export function safelistEntries(): Set<string> {
   return new Set<string>([
     ...knownServices(),
+    "notes",
     "hub",
     "services.json",
     "expose-state.json",

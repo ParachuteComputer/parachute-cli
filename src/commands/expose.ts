@@ -41,7 +41,7 @@ import {
  * Funnel constraint: Tailscale allows at most three public HTTPS ports per
  * node (443, 8443, 10000). Path-routing packs every service onto a single
  * port — that's why we default to one `--https=443` and mount services under
- * `/vault`, `/notes`, etc. rather than giving each service its own port or
+ * `/vault`, `/lens`, etc. rather than giving each service its own port or
  * subdomain. Subdomain-per-service requires the Tailscale Services feature
  * (virtual-IP advertisement) and is deferred.
  *

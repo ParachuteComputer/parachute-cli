@@ -50,9 +50,13 @@ Flags:
 
 Examples:
   parachute install vault           # installs + runs \`parachute-vault init\`
-  parachute install notes           # installs notes (no init required)
+  parachute install lens            # installs lens (no init required)
   parachute install vault --tag rc  # pin to the rc dist-tag for pre-release testing
   parachute install all --tag rc    # bootstrap the whole ecosystem to rc
+
+Aliases:
+  notes → lens                      # accepted for one release cycle after
+                                    # the Lens rebrand; prints a rename notice.
 `;
 }
 
@@ -80,7 +84,7 @@ Example:
   $ parachute status
   SERVICE          PORT  VERSION  PROCESS  PID    UPTIME  HEALTH  LATENCY
   parachute-vault  1940  0.2.4    running  12345  2h 13m  ok      2ms
-  parachute-notes  5173  0.0.1    stopped  -      -       -       -
+  parachute-lens   5173  0.0.1    stopped  -      -       -       -
 `;
 }
 
@@ -110,11 +114,11 @@ Examples:
 
 Constraints (public layer / Funnel):
   - Funnel supports HTTPS only on ports 443 / 8443 / 10000 per node.
-    We pin to 443 and path-route (vault at /, notes at /notes, …) so this
+    We pin to 443 and path-route (vault at /vault/…, lens at /lens, …) so this
     cap never becomes a constraint no matter how many services you install.
   - Funnel has bandwidth caps on Tailscale's free tier.
     See https://tailscale.com/kb/1223/funnel for current limits.
-  - Subdomain-per-service (vault.<fqdn>, notes.<fqdn>, …) requires the
+  - Subdomain-per-service (vault.<fqdn>, lens.<fqdn>, …) requires the
     Tailscale Services feature and is not supported in this release.
 
 Coming soon:
@@ -152,7 +156,7 @@ Start commands by service:
   vault     parachute-vault serve
   scribe    parachute-scribe serve
   channel   parachute-channel daemon
-  notes     bun <cli>/notes-serve.ts --port <configured>
+  lens      bun <cli>/lens-serve.ts --port <configured>
 `;
 }
 
@@ -210,7 +214,8 @@ Usage:
 What it does:
   Scans ~/.parachute/ for files and directories that don't belong to the
   post-restructure layout. Recognized entries — per-service dirs
-  (vault/, notes/, scribe/, channel/, hub/), services.json,
+  (vault/, lens/, scribe/, channel/, hub/; legacy notes/ also kept),
+  services.json,
   expose-state.json, well-known/ — stay in place. Anything else (plus
   known legacy cruft like daily.db, server.yaml) is moved under
   ~/.parachute/.archive-<YYYY-MM-DD>/, never deleted.

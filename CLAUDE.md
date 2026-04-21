@@ -1,6 +1,6 @@
 # Parachute CLI
 
-`parachute` — the top-level CLI. Installs services, runs them as background processes, and exposes them over Tailscale. Coordinator, not a service: each Parachute package (`vault`, `notes`, `scribe`, `channel`) stays standalone; this CLI stitches them together.
+`parachute` — the top-level CLI. Installs services, runs them as background processes, and exposes them over Tailscale. Coordinator, not a service: each Parachute package (`vault`, `lens`, `scribe`, `channel`) stays standalone; this CLI stitches them together.
 
 User-facing README is the right intro for operators. This file is for agents and humans working *on* the CLI itself.
 
@@ -73,7 +73,7 @@ Every PR here is reviewer-gated — no direct-to-main, even for one-line fixes. 
 - Bin name: `parachute`
 - Config root: `~/.parachute/` (override with `PARACHUTE_HOME`)
 - Per-service dirs: `~/.parachute/<short>/` (e.g. `~/.parachute/vault/`)
-- Short names (map to `manifestName` via `SERVICE_SPECS`): `vault`, `notes`, `scribe`, `channel`
+- Short names (map to `manifestName` via `SERVICE_SPECS`): `vault`, `lens`, `scribe`, `channel`. `notes` is a transition alias for `lens` on `parachute install` (one release cycle); removed post-launch.
 
 ## License
 

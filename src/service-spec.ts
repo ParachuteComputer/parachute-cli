@@ -8,7 +8,7 @@ import type { ServiceEntry } from "./services-manifest.ts";
  *   1939  parachute-hub      internal static + proxy, CLI-managed
  *   1940  parachute-vault
  *   1941  parachute-channel
- *   1942  parachute-notes    static server over the PWA bundle
+ *   1942  parachute-lens     static server over the PWA bundle (formerly parachute-notes)
  *   1943  parachute-scribe
  *   1944  reserved — pendant
  *   1945  reserved — daily-v2
@@ -37,7 +37,7 @@ export const PORT_RESERVATIONS: readonly PortReservation[] = [
   { port: 1939, name: "parachute-hub", status: "assigned" },
   { port: 1940, name: "parachute-vault", status: "assigned" },
   { port: 1941, name: "parachute-channel", status: "assigned" },
-  { port: 1942, name: "parachute-notes", status: "assigned" },
+  { port: 1942, name: "parachute-lens", status: "assigned" },
   { port: 1943, name: "parachute-scribe", status: "assigned" },
   { port: 1944, name: "pendant", status: "reserved" },
   { port: 1945, name: "daily-v2", status: "reserved" },
@@ -53,7 +53,7 @@ export function isCanonicalPort(port: number): boolean {
 
 /**
  * Broad shape of a service. Matches the hub's card-kind taxonomy.
- *   "frontend"  a user-facing UI (notes). Safe to expose by default.
+ *   "frontend"  a user-facing UI (lens). Safe to expose by default.
  *   "api"       a programmatic surface (vault, channel, scribe). Whether
  *               it's safe to expose depends on `hasAuth`.
  *   "tool"      like "api" but specifically MCP-shaped / agent-callable.
@@ -67,7 +67,7 @@ export interface ServiceSpec {
   readonly init?: readonly string[];
   /**
    * Command to spawn for `parachute start <svc>`. Receives the services.json
-   * entry so commands that need per-install data (e.g., the notes static-serve
+   * entry so commands that need per-install data (e.g., the lens static-serve
    * shim needs the configured port) can pull it from there.
    *
    * Returns `undefined` to declare "lifecycle not supported for this service."
@@ -102,7 +102,7 @@ export interface ServiceSpec {
   readonly hasAuth?: boolean;
 }
 
-const NOTES_SERVE_PATH = fileURLToPath(new URL("./notes-serve.ts", import.meta.url));
+const LENS_SERVE_PATH = fileURLToPath(new URL("./lens-serve.ts", import.meta.url));
 
 /**
  * Seed entries land in services.json as placeholder rows when a freshly
@@ -128,16 +128,18 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       version: SEED_VERSION,
     }),
   },
-  notes: {
-    package: "@openparachute/notes",
-    manifestName: "parachute-notes",
-    startCmd: (entry) => ["bun", NOTES_SERVE_PATH, "--port", String(entry.port)],
+  lens: {
+    // Lens is the product name (formerly "notes"). vault's internal
+    // `/api/notes` endpoint is unchanged — different concept.
+    package: "@openparachute/lens",
+    manifestName: "parachute-lens",
+    startCmd: (entry) => ["bun", LENS_SERVE_PATH, "--port", String(entry.port)],
     kind: "frontend",
     seedEntry: () => ({
-      name: "parachute-notes",
+      name: "parachute-lens",
       port: 1942,
-      paths: ["/notes"],
-      health: "/notes/health",
+      paths: ["/lens"],
+      health: "/lens/health",
       version: SEED_VERSION,
     }),
   },
@@ -179,7 +181,7 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
  * entry. Explicit wins. If absent, derive from the spec: known api/tool
  * services without declared auth fall back to "auth-required" (treated as
  * loopback at launch); everything else defaults to "allowed" — so vault,
- * notes, channel and unknown third-party services continue to be exposed
+ * lens, channel and unknown third-party services continue to be exposed
  * without needing to opt in.
  */
 export function effectivePublicExposure(
