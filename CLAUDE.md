@@ -24,6 +24,7 @@ The flat shape matters: each command is a self-contained module in `src/commands
 - **`src/hub-server.ts`** — internal Bun server on port 1939. Serves `/` (discovery page) and `/.well-known/parachute.json`. Spawned by `parachute expose`, stopped when the last layer goes away. Tailscale serve can't directly serve files on macOS (sandboxed), so this loopback proxy is the portable shape.
 - **`src/expose-state.ts`** — which layers (tailnet/public) are currently up, persisted to `~/.parachute/expose-state.json`. Lets `expose <layer> off` be precise rather than blowing away everything.
 - **`src/tailscale/`** — thin wrappers around `tailscale serve` / `tailscale funnel`. Shape is pinned to 1.82+ (`funnel` as its own subcommand).
+- **`src/lens-serve.ts`** — tiny Bun static-file server for the @openparachute/lens PWA bundle. Invoked as `bun lens-serve.ts --port <n> [--dist <path>] [--mount <prefix>]`. The `--mount` arg (default `/lens`, derived from `entry.paths[0]` in the service spec) is the path prefix the reverse proxy hands us; the shim strips it before joining with `dist/`. Without the strip, requests for `/lens/sw.js` and `/lens/manifest.webmanifest` get SPA-shelled with `text/html`, the browser never sees them as the SW + manifest, and the PWA install prompt never fires. Pass `--mount ""` (or `--mount /`) when serving at the origin root.
 
 ## Key design decisions
 

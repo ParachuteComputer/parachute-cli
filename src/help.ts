@@ -156,7 +156,7 @@ Start commands by service:
   vault     parachute-vault serve
   scribe    parachute-scribe serve
   channel   parachute-channel daemon
-  lens      bun <cli>/lens-serve.ts --port <configured>
+  lens      bun <cli>/lens-serve.ts --port <configured> --mount <paths[0]>
 `;
 }
 
