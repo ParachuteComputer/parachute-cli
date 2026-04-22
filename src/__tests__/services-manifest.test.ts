@@ -26,11 +26,11 @@ const vault: ServiceEntry = {
   version: "0.2.4",
 };
 
-const lens: ServiceEntry = {
-  name: "parachute-lens",
+const notes: ServiceEntry = {
+  name: "parachute-notes",
   port: 5173,
-  paths: ["/lens"],
-  health: "/lens/health",
+  paths: ["/notes"],
+  health: "/notes/health",
   version: "0.0.1",
 };
 
@@ -84,10 +84,10 @@ describe("services-manifest", () => {
     const { path, cleanup } = makeTempPath();
     try {
       upsertService(vault, path);
-      upsertService(lens, path);
+      upsertService(notes, path);
       const m = readManifest(path);
       expect(m.services).toHaveLength(2);
-      expect(m.services.map((s) => s.name).sort()).toEqual(["parachute-lens", "parachute-vault"]);
+      expect(m.services.map((s) => s.name).sort()).toEqual(["parachute-notes", "parachute-vault"]);
     } finally {
       cleanup();
     }
@@ -97,11 +97,11 @@ describe("services-manifest", () => {
     const { path, cleanup } = makeTempPath();
     try {
       upsertService(vault, path);
-      upsertService(lens, path);
+      upsertService(notes, path);
       removeService("parachute-vault", path);
       const m = readManifest(path);
       expect(m.services).toHaveLength(1);
-      expect(m.services[0]?.name).toBe("parachute-lens");
+      expect(m.services[0]?.name).toBe("parachute-notes");
     } finally {
       cleanup();
     }

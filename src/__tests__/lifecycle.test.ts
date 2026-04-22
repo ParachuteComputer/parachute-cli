@@ -35,13 +35,13 @@ function seedVault(manifestPath: string): void {
   );
 }
 
-function seedLens(manifestPath: string): void {
+function seedNotes(manifestPath: string): void {
   upsertService(
     {
-      name: "parachute-lens",
+      name: "parachute-notes",
       port: 5173,
-      paths: ["/lens"],
-      health: "/lens/health",
+      paths: ["/notes"],
+      health: "/notes/health",
       version: "0.0.1",
     },
     manifestPath,
@@ -95,13 +95,13 @@ describe("parachute start", () => {
     try {
       seedVault(h.manifestPath);
       const logs: string[] = [];
-      const code = await start("lens", {
+      const code = await start("notes", {
         configDir: h.configDir,
         manifestPath: h.manifestPath,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
-      expect(logs.join("\n")).toMatch(/lens isn't installed/);
+      expect(logs.join("\n")).toMatch(/notes isn't installed/);
     } finally {
       h.cleanup();
     }
@@ -130,12 +130,12 @@ describe("parachute start", () => {
     }
   });
 
-  test("lens start command includes configured port and lens-serve shim path", async () => {
+  test("notes start command includes configured port and notes-serve shim path", async () => {
     const h = makeHarness();
     try {
-      seedLens(h.manifestPath);
+      seedNotes(h.manifestPath);
       const spawner = makeSpawner([5151]);
-      const code = await start("lens", {
+      const code = await start("notes", {
         configDir: h.configDir,
         manifestPath: h.manifestPath,
         spawner,
@@ -144,13 +144,13 @@ describe("parachute start", () => {
       expect(code).toBe(0);
       const cmd = spawner.calls[0]?.cmd ?? [];
       expect(cmd[0]).toBe("bun");
-      expect(cmd.some((a) => a.endsWith("lens-serve.ts"))).toBe(true);
+      expect(cmd.some((a) => a.endsWith("notes-serve.ts"))).toBe(true);
       const portIdx = cmd.indexOf("--port");
       expect(portIdx).toBeGreaterThan(-1);
       expect(cmd[portIdx + 1]).toBe("5173");
       const mountIdx = cmd.indexOf("--mount");
       expect(mountIdx).toBeGreaterThan(-1);
-      expect(cmd[mountIdx + 1]).toBe("/lens");
+      expect(cmd[mountIdx + 1]).toBe("/notes");
     } finally {
       h.cleanup();
     }
@@ -204,7 +204,7 @@ describe("parachute start", () => {
     const h = makeHarness();
     try {
       seedVault(h.manifestPath);
-      seedLens(h.manifestPath);
+      seedNotes(h.manifestPath);
       const spawner = makeSpawner([4242, 5151]);
       const code = await start(undefined, {
         configDir: h.configDir,
@@ -215,26 +215,26 @@ describe("parachute start", () => {
       expect(code).toBe(0);
       expect(spawner.calls).toHaveLength(2);
       expect(readPid("vault", h.configDir)).toBe(4242);
-      expect(readPid("lens", h.configDir)).toBe(5151);
+      expect(readPid("notes", h.configDir)).toBe(5151);
     } finally {
       h.cleanup();
     }
   });
 
-  test("legacy parachute-notes manifest entry still starts under the lens spec", async () => {
-    // v0.x users upgraded into the lens rename will still have
-    // `parachute-notes` in services.json until their lens package next
-    // boots and rewrites the row. Without the manifest alias,
+  test("legacy parachute-lens manifest entry still starts under the notes spec", async () => {
+    // Users who installed during the brief Notes→Lens window (Apr 19–22)
+    // will still have `parachute-lens` in services.json until their notes
+    // package next boots and rewrites the row. Without the manifest alias,
     // shortNameForManifest returns undefined, resolveTargets skips the
     // entry, and they get "No manageable services" with no hint.
     const h = makeHarness();
     try {
       upsertService(
         {
-          name: "parachute-notes",
+          name: "parachute-lens",
           port: 5173,
-          paths: ["/notes"],
-          health: "/notes/health",
+          paths: ["/lens"],
+          health: "/lens/health",
           version: "0.0.1",
         },
         h.manifestPath,
@@ -248,8 +248,8 @@ describe("parachute start", () => {
       });
       expect(code).toBe(0);
       expect(spawner.calls).toHaveLength(1);
-      expect(spawner.calls[0]?.cmd.some((a) => a.endsWith("lens-serve.ts"))).toBe(true);
-      expect(readPid("lens", h.configDir)).toBe(5151);
+      expect(spawner.calls[0]?.cmd.some((a) => a.endsWith("notes-serve.ts"))).toBe(true);
+      expect(readPid("notes", h.configDir)).toBe(5151);
     } finally {
       h.cleanup();
     }

@@ -1,6 +1,6 @@
 {
   "name": "@openparachute/cli",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "description": "parachute — the top-level CLI for the Parachute ecosystem.",
   "license": "AGPL-3.0",
   "type": "module",

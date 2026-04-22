@@ -46,12 +46,13 @@ describe("safelistEntries", () => {
     const s = safelistEntries();
     // Service dirs from SERVICE_SPECS
     expect(s.has("vault")).toBe(true);
-    expect(s.has("lens")).toBe(true);
+    expect(s.has("notes")).toBe(true);
     expect(s.has("scribe")).toBe(true);
     expect(s.has("channel")).toBe(true);
-    // Legacy — kept across the lens rename so existing ~/.parachute/notes/
-    // dirs from pre-rename installs don't get archived on upgrade.
-    expect(s.has("notes")).toBe(true);
+    // Legacy — kept across the Notes→Lens→Notes rename round-trip
+    // (Apr 19 → Apr 22) so existing ~/.parachute/lens/ dirs from the
+    // brief Lens window don't get archived on upgrade.
+    expect(s.has("lens")).toBe(true);
     // Internal
     expect(s.has("hub")).toBe(true);
     // CLI state

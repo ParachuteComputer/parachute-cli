@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 /**
- * Tiny static-file server for the @openparachute/lens PWA bundle.
+ * Tiny static-file server for the @openparachute/notes PWA bundle.
  *
- * Lens is a SPA — no backend of its own. `parachute start lens` invokes
+ * Notes is a SPA — no backend of its own. `parachute start notes` invokes
  * this shim with the installed `dist/` path so the PWA is served at a
  * known port and can be reverse-proxied by `parachute expose` alongside
  * the other services.
@@ -11,15 +11,15 @@
  * Invoked as:
  *   bun <this-file> --port <n> [--dist <path>] [--mount <prefix>]
  *
- * `--mount` (default `/lens`) is the path prefix the reverse proxy hands
+ * `--mount` (default `/notes`) is the path prefix the reverse proxy hands
  * us. We strip it before resolving against `dist/` so a request for
- * `/lens/sw.js` reads `{dist}/sw.js` rather than the nonexistent
- * `{dist}/lens/sw.js`. Without the strip, the SW + .webmanifest both
+ * `/notes/sw.js` reads `{dist}/sw.js` rather than the nonexistent
+ * `{dist}/notes/sw.js`. Without the strip, the SW + .webmanifest both
  * SPA-fall-back to index.html with content-type text/html, and the PWA
  * install prompt never fires. Pass `--mount ""` (or `--mount /`) when the
  * bundle is served at the origin root.
  *
- * If --dist is omitted, we resolve @openparachute/lens's dist directory
+ * If --dist is omitted, we resolve @openparachute/notes's dist directory
  * via Bun.resolveSync. If that fails (package not installed globally, or
  * package doesn't ship dist/), exit 1 with a clear error.
  */
@@ -36,7 +36,7 @@ interface Args {
 function parseArgs(argv: string[]): Args {
   let port = 5173;
   let dist: string | undefined;
-  let mount = "/lens";
+  let mount = "/notes";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--port") {
@@ -67,13 +67,13 @@ export function normalizeMount(raw: string): string {
   return raw.replace(/\/+$/, "");
 }
 
-function resolveLensDist(): string {
-  const pkgPath = Bun.resolveSync("@openparachute/lens/package.json", process.cwd());
+function resolveNotesDist(): string {
+  const pkgPath = Bun.resolveSync("@openparachute/notes/package.json", process.cwd());
   const root = dirname(pkgPath);
   const dist = join(root, "dist");
   if (!existsSync(dist)) {
     throw new Error(
-      `@openparachute/lens is installed but has no dist/ directory at ${dist}. The package may not ship a prebuilt bundle — ask the lens maintainer to add a prepublishOnly build step.`,
+      `@openparachute/notes is installed but has no dist/ directory at ${dist}. The package may not ship a prebuilt bundle — ask the notes maintainer to add a prepublishOnly build step.`,
     );
   }
   return dist;
@@ -86,7 +86,7 @@ function mimeFor(path: string): string | undefined {
   return undefined;
 }
 
-export function lensFetch(dist: string, mount: string): (req: Request) => Response {
+export function notesFetch(dist: string, mount: string): (req: Request) => Response {
   const indexHtml = join(dist, "index.html");
   const spaShell = () =>
     new Response(Bun.file(indexHtml), {
@@ -120,16 +120,16 @@ if (import.meta.main) {
 
   let dist: string;
   try {
-    dist = distArg ?? resolveLensDist();
+    dist = distArg ?? resolveNotesDist();
   } catch (err) {
-    console.error(`parachute-lens-serve: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`parachute-notes-serve: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
   Bun.serve({
     port,
-    fetch: lensFetch(dist, mount),
+    fetch: notesFetch(dist, mount),
   });
 
-  console.log(`lens static-serve listening on :${port} (dist=${dist}, mount=${mount || "/"})`);
+  console.log(`notes static-serve listening on :${port} (dist=${dist}, mount=${mount || "/"})`);
 }
