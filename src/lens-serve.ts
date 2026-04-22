@@ -9,7 +9,15 @@
  * the other services.
  *
  * Invoked as:
- *   bun <this-file> --port <n> [--dist <path>]
+ *   bun <this-file> --port <n> [--dist <path>] [--mount <prefix>]
+ *
+ * `--mount` (default `/lens`) is the path prefix the reverse proxy hands
+ * us. We strip it before resolving against `dist/` so a request for
+ * `/lens/sw.js` reads `{dist}/sw.js` rather than the nonexistent
+ * `{dist}/lens/sw.js`. Without the strip, the SW + .webmanifest both
+ * SPA-fall-back to index.html with content-type text/html, and the PWA
+ * install prompt never fires. Pass `--mount ""` (or `--mount /`) when the
+ * bundle is served at the origin root.
  *
  * If --dist is omitted, we resolve @openparachute/lens's dist directory
  * via Bun.resolveSync. If that fails (package not installed globally, or
@@ -19,9 +27,16 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-function parseArgs(argv: string[]): { port: number; dist?: string } {
+interface Args {
+  port: number;
+  dist?: string;
+  mount: string;
+}
+
+function parseArgs(argv: string[]): Args {
   let port = 5173;
   let dist: string | undefined;
+  let mount = "/lens";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--port") {
@@ -36,11 +51,20 @@ function parseArgs(argv: string[]): { port: number; dist?: string } {
       const v = argv[++i];
       if (!v) throw new Error("--dist requires a value");
       dist = resolve(v);
+    } else if (a === "--mount") {
+      const v = argv[++i];
+      if (v === undefined) throw new Error("--mount requires a value");
+      mount = normalizeMount(v);
     } else {
       throw new Error(`unknown argument: ${a}`);
     }
   }
-  return { port, dist };
+  return { port, dist, mount };
+}
+
+export function normalizeMount(raw: string): string {
+  if (raw === "" || raw === "/") return "";
+  return raw.replace(/\/+$/, "");
 }
 
 function resolveLensDist(): string {
@@ -55,34 +79,57 @@ function resolveLensDist(): string {
   return dist;
 }
 
-const { port, dist: distArg } = parseArgs(process.argv.slice(2));
-
-let dist: string;
-try {
-  dist = distArg ?? resolveLensDist();
-} catch (err) {
-  console.error(`parachute-lens-serve: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+function mimeFor(path: string): string | undefined {
+  // Bun.file infers MIME from extension but doesn't know .webmanifest;
+  // without this the PWA install prompt sees text/html and bails.
+  if (path.endsWith(".webmanifest")) return "application/manifest+json";
+  return undefined;
 }
 
-const indexHtml = join(dist, "index.html");
+export function lensFetch(dist: string, mount: string): (req: Request) => Response {
+  const indexHtml = join(dist, "index.html");
+  const spaShell = () =>
+    new Response(Bun.file(indexHtml), {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
 
-Bun.serve({
-  port,
-  fetch(req) {
+  return (req) => {
     const url = new URL(req.url);
-    const filePath = join(dist, decodeURIComponent(url.pathname));
+    let pathname = url.pathname;
+    if (mount && (pathname === mount || pathname.startsWith(`${mount}/`))) {
+      pathname = pathname.slice(mount.length) || "/";
+    }
+    if (pathname === "/" || pathname.endsWith("/")) {
+      return spaShell();
+    }
+    const filePath = join(dist, decodeURIComponent(pathname));
     if (!filePath.startsWith(dist)) {
       return new Response("forbidden", { status: 403 });
     }
-    const file = Bun.file(filePath);
-    if (existsSync(filePath) && !filePath.endsWith("/")) {
-      return new Response(file);
+    if (existsSync(filePath)) {
+      const file = Bun.file(filePath);
+      const mime = mimeFor(filePath);
+      return new Response(file, mime ? { headers: { "content-type": mime } } : undefined);
     }
-    return new Response(Bun.file(indexHtml), {
-      headers: { "content-type": "text/html; charset=utf-8" },
-    });
-  },
-});
+    return spaShell();
+  };
+}
 
-console.log(`lens static-serve listening on :${port} (dist=${dist})`);
+if (import.meta.main) {
+  const { port, dist: distArg, mount } = parseArgs(process.argv.slice(2));
+
+  let dist: string;
+  try {
+    dist = distArg ?? resolveLensDist();
+  } catch (err) {
+    console.error(`parachute-lens-serve: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  Bun.serve({
+    port,
+    fetch: lensFetch(dist, mount),
+  });
+
+  console.log(`lens static-serve listening on :${port} (dist=${dist}, mount=${mount || "/"})`);
+}

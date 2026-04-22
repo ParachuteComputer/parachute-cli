@@ -133,7 +133,11 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
     // `/api/notes` endpoint is unchanged — different concept.
     package: "@openparachute/lens",
     manifestName: "parachute-lens",
-    startCmd: (entry) => ["bun", LENS_SERVE_PATH, "--port", String(entry.port)],
+    startCmd: (entry) => {
+      const first = entry.paths[0] ?? "/lens";
+      const mount = first === "/" ? "" : first.replace(/\/+$/, "");
+      return ["bun", LENS_SERVE_PATH, "--port", String(entry.port), "--mount", mount];
+    },
     kind: "frontend",
     seedEntry: () => ({
       name: "parachute-lens",

@@ -144,9 +144,13 @@ describe("parachute start", () => {
       expect(code).toBe(0);
       const cmd = spawner.calls[0]?.cmd ?? [];
       expect(cmd[0]).toBe("bun");
-      expect(cmd.at(-2)).toBe("--port");
-      expect(cmd.at(-1)).toBe("5173");
       expect(cmd.some((a) => a.endsWith("lens-serve.ts"))).toBe(true);
+      const portIdx = cmd.indexOf("--port");
+      expect(portIdx).toBeGreaterThan(-1);
+      expect(cmd[portIdx + 1]).toBe("5173");
+      const mountIdx = cmd.indexOf("--mount");
+      expect(mountIdx).toBeGreaterThan(-1);
+      expect(cmd[mountIdx + 1]).toBe("/lens");
     } finally {
       h.cleanup();
     }
