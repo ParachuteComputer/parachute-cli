@@ -17,13 +17,15 @@ export type Runner = (cmd: readonly string[]) => Promise<number>;
 
 /**
  * Transition aliases for services that were renamed. Accepted for one
- * release cycle with a rename notice, then removed. `notes → lens`
- * landed 2026-04 as part of the Lens rebrand; remove after launch
- * sinks in and `parachute install notes` has stopped appearing in
- * support threads.
+ * release cycle with a rename notice, then removed. `lens → notes`
+ * exists because the frontend was briefly renamed Notes → Lens (Apr 19)
+ * and then reverted (Apr 22) on launch eve. Anyone who ran `parachute
+ * install lens` during the ~3-day window keeps working. Remove after
+ * launch sinks in and `parachute install lens` has stopped appearing
+ * in support threads.
  */
 const SERVICE_ALIASES: Record<string, string> = {
-  notes: "lens",
+  lens: "notes",
 };
 
 export interface InstallOpts {

@@ -43,7 +43,7 @@ export async function getFqdn(runner: Runner): Promise<string> {
 
 /**
  * Detect whether wildcard MagicDNS is active — i.e. whether subdomains of the
- * current machine (vault.<fqdn>, lens.<fqdn>, …) resolve back to this node.
+ * current machine (vault.<fqdn>, notes.<fqdn>, …) resolve back to this node.
  *
  * Tailscale's standard MagicDNS gives each machine a single hostname and does
  * not auto-resolve arbitrary subdomains; wildcard MagicDNS exists in the

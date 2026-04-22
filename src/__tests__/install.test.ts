@@ -112,22 +112,22 @@ describe("install", () => {
   });
 
   test("warns when manifest entry lands outside the canonical port range", async () => {
-    // Historically lens wrote 5173 (Vite's dev default). Canonical is
-    // 1939–1949; warn so integrators know their service could conflict with
-    // other software on the box, but don't block — forks may intentionally
-    // deviate.
+    // Historically the notes PWA wrote 5173 (Vite's dev default). Canonical
+    // is 1939–1949; warn so integrators know their service could conflict
+    // with other software on the box, but don't block — forks may
+    // intentionally deviate.
     const { path, cleanup } = makeTempPath();
     try {
       const logs: string[] = [];
-      const code = await install("lens", {
+      const code = await install("notes", {
         runner: async (cmd) => {
           if (cmd[0] === "bun") {
             upsertService(
               {
-                name: "parachute-lens",
+                name: "parachute-notes",
                 port: 5173,
-                paths: ["/lens"],
-                health: "/lens/health",
+                paths: ["/notes"],
+                health: "/notes/health",
                 version: "0.0.1",
               },
               path,
@@ -147,14 +147,16 @@ describe("install", () => {
     }
   });
 
-  test("`install notes` aliases to lens with a rename notice", async () => {
-    // Transition alias after the Lens rebrand (2026-04). Accepted for one
-    // release cycle; removed after launch users have re-installed.
+  test("`install lens` aliases to notes with a rename notice", async () => {
+    // Transition alias for the brief Notes→Lens rename (Apr 19) that was
+    // reverted on launch eve (Apr 22). Accepted for one release cycle so
+    // anyone who ran `parachute install lens` during the ~3-day window
+    // keeps working; removed after launch users have re-installed.
     const { path, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
       const logs: string[] = [];
-      const code = await install("notes", {
+      const code = await install("lens", {
         runner: async (cmd) => {
           calls.push([...cmd]);
           return 0;
@@ -164,12 +166,10 @@ describe("install", () => {
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
-      expect(logs.join("\n")).toMatch(
-        /"notes" has been renamed to "lens"; installing lens\./,
-      );
+      expect(logs.join("\n")).toMatch(/"lens" has been renamed to "notes"; installing notes\./);
       // Downstream bun-add must use the new package name, not the old.
-      expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/lens"]);
-      const seeded = findService("parachute-lens", path);
+      expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/notes"]);
+      const seeded = findService("parachute-notes", path);
       expect(seeded?.port).toBe(1942);
     } finally {
       cleanup();
@@ -524,7 +524,7 @@ describe("install", () => {
     }
   });
 
-  test("installing lens doesn't trigger auto-wire even if vault + scribe are present", async () => {
+  test("installing notes doesn't trigger auto-wire even if vault + scribe are present", async () => {
     // Defense: auto-wire should only fire from the scribe or vault install
     // path. A parallel install of a different service shouldn't touch the
     // shared-secret files.
@@ -551,7 +551,7 @@ describe("install", () => {
         },
         path,
       );
-      await install("lens", {
+      await install("notes", {
         runner: async () => 0,
         manifestPath: path,
         configDir,

@@ -8,7 +8,7 @@ import type { ServiceEntry } from "./services-manifest.ts";
  *   1939  parachute-hub      internal static + proxy, CLI-managed
  *   1940  parachute-vault
  *   1941  parachute-channel
- *   1942  parachute-lens     static server over the PWA bundle (formerly parachute-notes)
+ *   1942  parachute-notes    static server over the PWA bundle
  *   1943  parachute-scribe
  *   1944  reserved — pendant
  *   1945  reserved — daily-v2
@@ -37,7 +37,7 @@ export const PORT_RESERVATIONS: readonly PortReservation[] = [
   { port: 1939, name: "parachute-hub", status: "assigned" },
   { port: 1940, name: "parachute-vault", status: "assigned" },
   { port: 1941, name: "parachute-channel", status: "assigned" },
-  { port: 1942, name: "parachute-lens", status: "assigned" },
+  { port: 1942, name: "parachute-notes", status: "assigned" },
   { port: 1943, name: "parachute-scribe", status: "assigned" },
   { port: 1944, name: "pendant", status: "reserved" },
   { port: 1945, name: "daily-v2", status: "reserved" },
@@ -53,7 +53,7 @@ export function isCanonicalPort(port: number): boolean {
 
 /**
  * Broad shape of a service. Matches the hub's card-kind taxonomy.
- *   "frontend"  a user-facing UI (lens). Safe to expose by default.
+ *   "frontend"  a user-facing UI (notes). Safe to expose by default.
  *   "api"       a programmatic surface (vault, channel, scribe). Whether
  *               it's safe to expose depends on `hasAuth`.
  *   "tool"      like "api" but specifically MCP-shaped / agent-callable.
@@ -67,7 +67,7 @@ export interface ServiceSpec {
   readonly init?: readonly string[];
   /**
    * Command to spawn for `parachute start <svc>`. Receives the services.json
-   * entry so commands that need per-install data (e.g., the lens static-serve
+   * entry so commands that need per-install data (e.g., the notes static-serve
    * shim needs the configured port) can pull it from there.
    *
    * Returns `undefined` to declare "lifecycle not supported for this service."
@@ -102,7 +102,7 @@ export interface ServiceSpec {
   readonly hasAuth?: boolean;
 }
 
-const LENS_SERVE_PATH = fileURLToPath(new URL("./lens-serve.ts", import.meta.url));
+const NOTES_SERVE_PATH = fileURLToPath(new URL("./notes-serve.ts", import.meta.url));
 
 /**
  * Seed entries land in services.json as placeholder rows when a freshly
@@ -128,22 +128,22 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       version: SEED_VERSION,
     }),
   },
-  lens: {
-    // Lens is the product name (formerly "notes"). vault's internal
-    // `/api/notes` endpoint is unchanged — different concept.
-    package: "@openparachute/lens",
-    manifestName: "parachute-lens",
+  notes: {
+    // Frontend product name is "Notes". vault's internal `/api/notes` endpoint
+    // is unrelated — different concept (vault data primitive vs. PWA brand).
+    package: "@openparachute/notes",
+    manifestName: "parachute-notes",
     startCmd: (entry) => {
-      const first = entry.paths[0] ?? "/lens";
+      const first = entry.paths[0] ?? "/notes";
       const mount = first === "/" ? "" : first.replace(/\/+$/, "");
-      return ["bun", LENS_SERVE_PATH, "--port", String(entry.port), "--mount", mount];
+      return ["bun", NOTES_SERVE_PATH, "--port", String(entry.port), "--mount", mount];
     },
     kind: "frontend",
     seedEntry: () => ({
-      name: "parachute-lens",
+      name: "parachute-notes",
       port: 1942,
-      paths: ["/lens"],
-      health: "/lens/health",
+      paths: ["/notes"],
+      health: "/notes/health",
       version: SEED_VERSION,
     }),
   },
@@ -185,7 +185,7 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
  * entry. Explicit wins. If absent, derive from the spec: known api/tool
  * services without declared auth fall back to "auth-required" (treated as
  * loopback at launch); everything else defaults to "allowed" — so vault,
- * lens, channel and unknown third-party services continue to be exposed
+ * notes, channel and unknown third-party services continue to be exposed
  * without needing to opt in.
  */
 export function effectivePublicExposure(
@@ -211,14 +211,18 @@ export function getSpec(service: string): ServiceSpec | undefined {
 /**
  * Legacy manifest names kept so `parachute start` / `stop` / `logs` keep
  * working on an already-installed services.json that still carries the
- * old name. v0.x users who installed before the rename will have
- * `"parachute-notes"` in their manifest until the lens package next
- * boots and rewrites the entry; without this alias, lifecycle commands
- * silently skip those rows. Remove after launch, alongside the
- * `notes → lens` install alias.
+ * old name.
+ *
+ * `parachute-notes` was the original; it became `parachute-lens` for ~3
+ * days during the Lens rebrand window (2026-04-19 → 2026-04-22), then
+ * reverted. Users who installed during that window have `parachute-lens`
+ * in their services.json and need lifecycle commands to keep finding
+ * their install — without this alias, `parachute start/stop/logs/status`
+ * silently skip those rows. Remove after launch, alongside the `lens →
+ * notes` install alias.
  */
 const LEGACY_MANIFEST_ALIASES: Record<string, string> = {
-  "parachute-notes": "lens",
+  "parachute-lens": "notes",
 };
 
 /** Short name (the key into SERVICE_SPECS) for a given manifest name, e.g.

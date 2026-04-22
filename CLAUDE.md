@@ -1,6 +1,6 @@
 # Parachute CLI
 
-`parachute` — the top-level CLI. Installs services, runs them as background processes, and exposes them over Tailscale. Coordinator, not a service: each Parachute package (`vault`, `lens`, `scribe`, `channel`) stays standalone; this CLI stitches them together.
+`parachute` — the top-level CLI. Installs services, runs them as background processes, and exposes them over Tailscale. Coordinator, not a service: each Parachute package (`vault`, `notes`, `scribe`, `channel`) stays standalone; this CLI stitches them together.
 
 User-facing README is the right intro for operators. This file is for agents and humans working *on* the CLI itself.
 
@@ -24,7 +24,7 @@ The flat shape matters: each command is a self-contained module in `src/commands
 - **`src/hub-server.ts`** — internal Bun server on port 1939. Serves `/` (discovery page) and `/.well-known/parachute.json`. Spawned by `parachute expose`, stopped when the last layer goes away. Tailscale serve can't directly serve files on macOS (sandboxed), so this loopback proxy is the portable shape.
 - **`src/expose-state.ts`** — which layers (tailnet/public) are currently up, persisted to `~/.parachute/expose-state.json`. Lets `expose <layer> off` be precise rather than blowing away everything.
 - **`src/tailscale/`** — thin wrappers around `tailscale serve` / `tailscale funnel`. Shape is pinned to 1.82+ (`funnel` as its own subcommand).
-- **`src/lens-serve.ts`** — tiny Bun static-file server for the @openparachute/lens PWA bundle. Invoked as `bun lens-serve.ts --port <n> [--dist <path>] [--mount <prefix>]`. The `--mount` arg (default `/lens`, derived from `entry.paths[0]` in the service spec) is the path prefix the reverse proxy hands us; the shim strips it before joining with `dist/`. Without the strip, requests for `/lens/sw.js` and `/lens/manifest.webmanifest` get SPA-shelled with `text/html`, the browser never sees them as the SW + manifest, and the PWA install prompt never fires. Pass `--mount ""` (or `--mount /`) when serving at the origin root.
+- **`src/notes-serve.ts`** — tiny Bun static-file server for the @openparachute/notes PWA bundle. Invoked as `bun notes-serve.ts --port <n> [--dist <path>] [--mount <prefix>]`. The `--mount` arg (default `/notes`, derived from `entry.paths[0]` in the service spec) is the path prefix the reverse proxy hands us; the shim strips it before joining with `dist/`. Without the strip, requests for `/notes/sw.js` and `/notes/manifest.webmanifest` get SPA-shelled with `text/html`, the browser never sees them as the SW + manifest, and the PWA install prompt never fires. Pass `--mount ""` (or `--mount /`) when serving at the origin root.
 
 ## Key design decisions
 
@@ -74,7 +74,7 @@ Every PR here is reviewer-gated — no direct-to-main, even for one-line fixes. 
 - Bin name: `parachute`
 - Config root: `~/.parachute/` (override with `PARACHUTE_HOME`)
 - Per-service dirs: `~/.parachute/<short>/` (e.g. `~/.parachute/vault/`)
-- Short names (map to `manifestName` via `SERVICE_SPECS`): `vault`, `lens`, `scribe`, `channel`. `notes` is a transition alias for `lens` on `parachute install` (one release cycle); removed post-launch.
+- Short names (map to `manifestName` via `SERVICE_SPECS`): `vault`, `notes`, `scribe`, `channel`. `lens` is a transition alias for `notes` on `parachute install` (one release cycle, residue from the brief Notes→Lens→Notes round-trip on 2026-04-19/22); removed post-launch.
 
 ## License
 

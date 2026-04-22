@@ -98,10 +98,10 @@ function seedServices(path: string): void {
   );
   upsertService(
     {
-      name: "parachute-lens",
+      name: "parachute-notes",
       port: 5173,
-      paths: ["/lens"],
-      health: "/lens/health",
+      paths: ["/notes"],
+      health: "/notes/health",
       version: "0.0.1",
     },
     path,
@@ -136,7 +136,7 @@ describe("expose tailnet up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      // 4 baseline (hub + wk + vault + lens) + 4 OAuth proxies (vault present).
+      // 4 baseline (hub + wk + vault + notes) + 4 OAuth proxies (vault present).
       expect(serveCalls).toHaveLength(8);
       // Tailnet mode never uses funnel — neither the old flag nor the new subcommand.
       expect(serveCalls.every((c) => !c.includes("--funnel"))).toBe(true);
@@ -147,7 +147,7 @@ describe("expose tailnet up", () => {
         "--set-path=/",
         "--set-path=/.well-known/oauth-authorization-server",
         "--set-path=/.well-known/parachute.json",
-        "--set-path=/lens",
+        "--set-path=/notes",
         "--set-path=/oauth/authorize",
         "--set-path=/oauth/register",
         "--set-path=/oauth/token",
@@ -167,8 +167,8 @@ describe("expose tailnet up", () => {
 
       // Service targets also include their mount path to prevent tailscale
       // from stripping the prefix before forwarding to a base-aware backend.
-      const lensCall = serveCalls.find((c) => c.includes("--set-path=/lens"));
-      expect(lensCall?.[lensCall.length - 1]).toBe("http://127.0.0.1:5173/lens");
+      const notesCall = serveCalls.find((c) => c.includes("--set-path=/notes"));
+      expect(notesCall?.[notesCall.length - 1]).toBe("http://127.0.0.1:5173/notes");
       const vaultCall = serveCalls.find((c) => c.includes("--set-path=/vault/default"));
       expect(vaultCall?.[vaultCall.length - 1]).toBe("http://127.0.0.1:1940/vault/default");
 
@@ -219,17 +219,17 @@ describe("expose tailnet up", () => {
   });
 
   test("trailing-slash mount preserves trailing slash in target URL", async () => {
-    // Aaron hit ERR_TOO_MANY_REDIRECTS on /lens/ because tailscale strips
-    // the prefix, Vite (base=/lens) redirects back to /lens/, tailscale
+    // Aaron hit ERR_TOO_MANY_REDIRECTS on /notes/ because tailscale strips
+    // the prefix, Vite (base=/notes) redirects back to /notes/, tailscale
     // strips again, loop. Pinning target = mount byte-for-byte breaks that.
     const h = makeHarness();
     try {
       upsertService(
         {
-          name: "parachute-lens",
+          name: "parachute-notes",
           port: 5173,
-          paths: ["/lens/"],
-          health: "/lens/health",
+          paths: ["/notes/"],
+          health: "/notes/health",
           version: "0.0.1",
         },
         h.manifestPath,
@@ -252,9 +252,9 @@ describe("expose tailnet up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      const lensCall = serveCalls.find((c) => c.includes("--set-path=/lens/"));
-      expect(lensCall).toBeDefined();
-      expect(lensCall?.[lensCall.length - 1]).toBe("http://127.0.0.1:5173/lens/");
+      const notesCall = serveCalls.find((c) => c.includes("--set-path=/notes/"));
+      expect(notesCall).toBeDefined();
+      expect(notesCall?.[notesCall.length - 1]).toBe("http://127.0.0.1:5173/notes/");
     } finally {
       h.cleanup();
     }
@@ -417,14 +417,14 @@ describe("expose tailnet up", () => {
         wellKnownDir: h.wellKnownDir,
         configDir: h.configDir,
         hubEnsureOpts: hubEnsureOpts(spawner),
-        // vault is up; lens is down.
+        // vault is up; notes is down.
         servicePortProbe: async (port) => port === 1940,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
       const joined = logs.join("\n");
-      expect(joined).toMatch(/parachute-lens \(port 5173\) is not responding/);
-      expect(joined).toMatch(/parachute start lens/);
+      expect(joined).toMatch(/parachute-notes \(port 5173\) is not responding/);
+      expect(joined).toMatch(/parachute start notes/);
       expect(joined).not.toMatch(/parachute-vault.*not responding/);
       // Bringup still happened — 4 service entries + 4 OAuth proxies got staged.
       const serveCalls = calls.filter(
@@ -533,10 +533,10 @@ describe("expose tailnet up", () => {
     try {
       upsertService(
         {
-          name: "parachute-lens",
+          name: "parachute-notes",
           port: 5173,
-          paths: ["/lens"],
-          health: "/lens/health",
+          paths: ["/notes"],
+          health: "/notes/health",
           version: "0.0.1",
         },
         h.manifestPath,
@@ -560,7 +560,7 @@ describe("expose tailnet up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      // No vault → no OAuth proxies. Hub + well-known + lens = 3.
+      // No vault → no OAuth proxies. Hub + well-known + notes = 3.
       expect(serveCalls).toHaveLength(3);
       const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path=")));
       expect(mounts.every((m) => m !== undefined && !m.includes("/oauth/"))).toBe(true);
@@ -1087,7 +1087,7 @@ describe("expose publicExposure filter", () => {
     // it identically to loopback — still no funnel/tailnet exposure.
     const h = makeHarness();
     try {
-      seedServices(h.manifestPath); // vault + lens, both allowed by default
+      seedServices(h.manifestPath); // vault + notes, both allowed by default
       upsertService(
         {
           name: "parachute-channel",
