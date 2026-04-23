@@ -24,6 +24,7 @@ import {
 } from "../expose-last-provider.ts";
 import { getTailscaleStatus, isTailscaleInstalled } from "../tailscale/detect.ts";
 import { type Runner, defaultRunner } from "../tailscale/run.ts";
+import { type AuthPreflightOpts, runAuthPreflight } from "./expose-auth-preflight.ts";
 import {
   type ExposeCloudflareOpts,
   exposeCloudflareUp,
@@ -75,12 +76,20 @@ export interface ExposeInteractiveOpts {
    */
   preselect?: ExposeProvider;
   /**
+   * Options passed through to the post-exposure auth preflight. Set
+   * `authPreflight.status` in tests to bypass the real on-disk probe; leave
+   * unset in production. Only consulted when the handoff returns 0.
+   */
+  authPreflight?: AuthPreflightOpts;
+  /**
    * Test seams for the downstream entry points — lets us exercise the
    * interactive branches without standing up a full tailscale/cloudflared
    * stub stack. Production code never sets these.
    */
   exposePublicImpl?: (action: "up" | "off", opts: ExposeOpts) => Promise<number>;
   exposeCloudflareUpImpl?: (hostname: string, opts: ExposeCloudflareOpts) => Promise<number>;
+  /** Test seam for the preflight itself. Defaults to {@link runAuthPreflight}. */
+  runAuthPreflightImpl?: (opts: AuthPreflightOpts) => Promise<void>;
 }
 
 interface Resolved {
@@ -95,8 +104,10 @@ interface Resolved {
   exposeOpts: ExposeOpts;
   cloudflareOpts: ExposeCloudflareOpts;
   preselect: ExposeProvider | undefined;
+  authPreflight: AuthPreflightOpts;
   exposePublicImpl: (action: "up" | "off", opts: ExposeOpts) => Promise<number>;
   exposeCloudflareUpImpl: (hostname: string, opts: ExposeCloudflareOpts) => Promise<number>;
+  runAuthPreflightImpl: (opts: AuthPreflightOpts) => Promise<void>;
 }
 
 function resolve(opts: ExposeInteractiveOpts): Resolved {
@@ -112,8 +123,10 @@ function resolve(opts: ExposeInteractiveOpts): Resolved {
     exposeOpts: opts.exposeOpts ?? {},
     cloudflareOpts: opts.cloudflareOpts ?? {},
     preselect: opts.preselect,
+    authPreflight: opts.authPreflight ?? {},
     exposePublicImpl: opts.exposePublicImpl ?? exposePublic,
     exposeCloudflareUpImpl: opts.exposeCloudflareUpImpl ?? exposeCloudflareUp,
+    runAuthPreflightImpl: opts.runAuthPreflightImpl ?? runAuthPreflight,
   };
 }
 
@@ -380,7 +393,9 @@ export async function exposePublicInteractive(opts: ExposeInteractiveOpts = {}):
       return 1;
     }
     writeLastProvider("tailscale", { path: r.lastProviderPath, now: r.now });
-    return r.exposePublicImpl("up", r.exposeOpts);
+    const code = await r.exposePublicImpl("up", r.exposeOpts);
+    if (code === 0) await runPreflightSafely(r);
+    return code;
   }
 
   // Cloudflare path.
@@ -394,5 +409,20 @@ export async function exposePublicInteractive(opts: ExposeInteractiveOpts = {}):
     return 0;
   }
   writeLastProvider("cloudflare", { path: r.lastProviderPath, now: r.now });
-  return r.exposeCloudflareUpImpl(hostname, r.cloudflareOpts);
+  const code = await r.exposeCloudflareUpImpl(hostname, r.cloudflareOpts);
+  if (code === 0) await runPreflightSafely(r);
+  return code;
+}
+
+/**
+ * Catch anything the preflight throws and log it — the tunnel is already
+ * up, so an advisory module crashing must never swallow the user's success.
+ */
+async function runPreflightSafely(r: Resolved): Promise<void> {
+  try {
+    await r.runAuthPreflightImpl(r.authPreflight);
+  } catch (err) {
+    r.log("");
+    r.log(`(auth preflight check skipped: ${err instanceof Error ? err.message : String(err)})`);
+  }
 }
