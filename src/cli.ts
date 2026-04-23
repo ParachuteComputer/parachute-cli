@@ -36,6 +36,16 @@ function isHelpFlag(arg: string | undefined): boolean {
 }
 
 /**
+ * Both stdin and stdout must be TTYs before we offer interactive prompts.
+ * Stdin-only TTY would let us read keystrokes but leave prompt text going to
+ * a log file; stdout-only TTY would let us write prompts but never read an
+ * answer. Either asymmetry means the flag-driven path is the safer default.
+ */
+function isTtyInteractive(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+/**
  * Extract `--hub-origin=<url>` / `--hub-origin <url>` from argv. Returns the
  * URL and the remaining args (so callers can keep validating positionals
  * without the flag in the way). `error` is set on missing value.
@@ -258,6 +268,17 @@ async function main(argv: string[]): Promise<number> {
       }
 
       const exposeOpts = hubExtract.hubOrigin ? { hubOrigin: hubExtract.hubOrigin } : {};
+
+      // Interactive picker: `parachute expose public` with no provider/domain
+      // flags, running under a TTY on both stdin and stdout, routes through a
+      // guided flow that offers Tailscale vs. Cloudflare, walks provider
+      // setup, and hands back to the flag-driven entry points. Non-TTY or any
+      // scripted use (flags present) keeps today's behavior exactly.
+      if (layer === "public" && action === "up" && isTtyInteractive()) {
+        const { exposePublicInteractive } = await import("./commands/expose-interactive.ts");
+        return await exposePublicInteractive({ exposeOpts });
+      }
+
       return layer === "public"
         ? await exposePublic(action, exposeOpts)
         : await exposeTailnet(action, exposeOpts);

@@ -51,7 +51,7 @@ const AUTH_DOC_URL =
  * Cloudflare's own validation catch the rest. Pre-checking against every
  * RFC 1123 corner would be overkill for a CLI flag that the user just typed.
  */
-function isValidHostname(h: string): boolean {
+export function isValidHostname(h: string): boolean {
   if (h.length === 0 || h.length > 253) return false;
   if (!h.includes(".")) return false;
   const labelRe = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
