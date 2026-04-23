@@ -1255,3 +1255,139 @@ describe("expose publicExposure filter", () => {
     }
   });
 });
+
+describe("expose auto-restart of hub-dependent services", () => {
+  // Launch-day bug (2026-04-23): `expose public` updated hubOrigin in
+  // expose-state.json, but a vault already running kept its stale
+  // PARACHUTE_HUB_ORIGIN in memory, so the OAuth issuer didn't match what
+  // clients saw and claude.ai MCP failed to reach the server. The CLI used
+  // to print a "Restart vault to pick up…" hint that got lost in the wall
+  // of expose output. Auto-restart the service instead.
+  test("restarts vault when vault is running", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      writePid("vault", 4242, h.configDir);
+      const { runner } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const restarted: string[] = [];
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        alive: () => true,
+        restartService: async (short) => {
+          restarted.push(short);
+          return 0;
+        },
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(restarted).toEqual(["vault"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("skips restart when vault is not running", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      // No writePid → vault has no pidfile → processState returns "unknown".
+      const { runner } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const restarted: string[] = [];
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        alive: () => true,
+        restartService: async (short) => {
+          restarted.push(short);
+          return 0;
+        },
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(restarted).toEqual([]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("skips restart when pidfile is stale (process dead)", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      writePid("vault", 4242, h.configDir);
+      const { runner } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const restarted: string[] = [];
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        // Simulate pid-file-present-but-process-dead. processState returns
+        // "stopped", not "running", so we should skip.
+        alive: () => false,
+        restartService: async (short) => {
+          restarted.push(short);
+          return 0;
+        },
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(restarted).toEqual([]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("restart failure logs warning but expose still succeeds", async () => {
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      writePid("vault", 4242, h.configDir);
+      const { runner } = makeRunner();
+      const { spawner } = makeHubSpawner(1111);
+      const logs: string[] = [];
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        alive: () => true,
+        restartService: async () => 1,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(logs.join("\n")).toMatch(/vault restart failed/);
+      expect(logs.join("\n")).toMatch(/parachute restart vault/);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
