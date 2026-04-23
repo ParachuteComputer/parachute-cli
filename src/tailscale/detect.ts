@@ -1,11 +1,12 @@
 import type { Runner } from "./run.ts";
 import { TailscaleError } from "./run.ts";
 
-/** ACL capability key Tailscale emits on `Self.CapMap` when the node is
- * allowed to run Funnel. Internal-ish surface: the key string is stable in
- * practice but not documented as API. Treat the probe as best-effort (see
- * {@link getTailscaleStatus}). */
-const FUNNEL_CAP_KEY = "https://tailscale.com/cap/funnel";
+/** ACL capability keys Tailscale emits on `Self.CapMap` when the node is
+ * allowed to run Funnel. Modern tailscaled (≥ ~1.96) emits the bare
+ * `"funnel"` key; older builds emit the URL form. Accept either — the probe
+ * is best-effort (see {@link getTailscaleStatus}) and we'd rather cross
+ * versions than over-nag users whose ACL is correctly granted. */
+export const FUNNEL_CAP_KEYS = ["funnel", "https://tailscale.com/cap/funnel"] as const;
 
 export async function isTailscaleInstalled(runner: Runner): Promise<boolean> {
   try {
@@ -25,7 +26,7 @@ export async function isTailscaleInstalled(runner: Runner): Promise<boolean> {
  *   decide whether to prompt the user to run `tailscale up` before anything
  *   else.
  * - `funnelCapable` — best-effort probe for whether this node is allowed to
- *   expose Funnel, via `Self.CapMap[{@link FUNNEL_CAP_KEY}]`.
+ *   expose Funnel, via any key in {@link FUNNEL_CAP_KEYS} on `Self.CapMap`.
  *
  * Caveat on `funnelCapable`: `CapMap` is a semi-internal field whose shape
  * Tailscale can shift across versions. This probe is not load-bearing — a
@@ -50,7 +51,10 @@ export async function getTailscaleStatus(
     const loggedIn = typeof dnsName === "string" && dnsName.length > 0;
     const capMap = parsed.Self?.CapMap;
     const funnelCapable =
-      loggedIn && !!capMap && typeof capMap === "object" && FUNNEL_CAP_KEY in capMap;
+      loggedIn &&
+      !!capMap &&
+      typeof capMap === "object" &&
+      FUNNEL_CAP_KEYS.some((k) => k in capMap);
     return { loggedIn, funnelCapable };
   } catch {
     return { loggedIn: false, funnelCapable: false };
