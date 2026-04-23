@@ -33,7 +33,10 @@ parachute status
 parachute expose tailnet
 # ✓ Tailnet exposure active. Open: https://parachute.<tailnet>.ts.net/
 
-# 6. Go public (Tailscale Funnel — same URL, now reachable from the internet)
+# 6. Go public — `parachute expose public` in a terminal walks through
+#    provider selection (Tailscale Funnel vs. Cloudflare Tunnel) and
+#    prompts for setup bits as needed. Non-interactive or flag-driven
+#    invocations stay scripted — see `parachute expose --help`.
 parachute expose public
 # ✓ Public exposure active (Funnel). Open: https://parachute.<tailnet>.ts.net/
 ```

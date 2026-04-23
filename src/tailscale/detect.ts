@@ -1,12 +1,59 @@
 import type { Runner } from "./run.ts";
 import { TailscaleError } from "./run.ts";
 
+/** ACL capability key Tailscale emits on `Self.CapMap` when the node is
+ * allowed to run Funnel. Internal-ish surface: the key string is stable in
+ * practice but not documented as API. Treat the probe as best-effort (see
+ * {@link getTailscaleStatus}). */
+const FUNNEL_CAP_KEY = "https://tailscale.com/cap/funnel";
+
 export async function isTailscaleInstalled(runner: Runner): Promise<boolean> {
   try {
     const { code } = await runner(["tailscale", "version"]);
     return code === 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Consolidated read of `tailscale status --json`, returning everything the
+ * readiness check needs in one subprocess call:
+ *
+ * - `loggedIn` — Self.DNSName is present and non-empty. False on `Logged out`,
+ *   `Stopped`, install/PATH errors, or parse failures — callers use this to
+ *   decide whether to prompt the user to run `tailscale up` before anything
+ *   else.
+ * - `funnelCapable` — best-effort probe for whether this node is allowed to
+ *   expose Funnel, via `Self.CapMap[{@link FUNNEL_CAP_KEY}]`.
+ *
+ * Caveat on `funnelCapable`: `CapMap` is a semi-internal field whose shape
+ * Tailscale can shift across versions. This probe is not load-bearing — a
+ * false negative only means we'll point the user at the admin console when
+ * they don't actually need to do anything. The downstream `tailscale funnel`
+ * call is the real gate; this just lets us nudge the user earlier in the flow.
+ *
+ * Any error (non-zero exit, parse failure) returns `{ loggedIn: false,
+ * funnelCapable: false }` rather than throwing; the readiness check is an
+ * advisory pre-flight, not a hard gate.
+ */
+export async function getTailscaleStatus(
+  runner: Runner,
+): Promise<{ loggedIn: boolean; funnelCapable: boolean }> {
+  try {
+    const result = await runner(["tailscale", "status", "--json"]);
+    if (result.code !== 0) return { loggedIn: false, funnelCapable: false };
+    const parsed = JSON.parse(result.stdout) as {
+      Self?: { DNSName?: unknown; CapMap?: Record<string, unknown> };
+    };
+    const dnsName = parsed.Self?.DNSName;
+    const loggedIn = typeof dnsName === "string" && dnsName.length > 0;
+    const capMap = parsed.Self?.CapMap;
+    const funnelCapable =
+      loggedIn && !!capMap && typeof capMap === "object" && FUNNEL_CAP_KEY in capMap;
+    return { loggedIn, funnelCapable };
+  } catch {
+    return { loggedIn: false, funnelCapable: false };
   }
 }
 

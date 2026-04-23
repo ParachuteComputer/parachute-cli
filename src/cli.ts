@@ -36,6 +36,16 @@ function isHelpFlag(arg: string | undefined): boolean {
 }
 
 /**
+ * Both stdin and stdout must be TTYs before we offer interactive prompts.
+ * Stdin-only TTY would let us read keystrokes but leave prompt text going to
+ * a log file; stdout-only TTY would let us write prompts but never read an
+ * answer. Either asymmetry means the flag-driven path is the safer default.
+ */
+function isTtyInteractive(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+/**
  * Extract `--hub-origin=<url>` / `--hub-origin <url>` from argv. Returns the
  * URL and the remaining args (so callers can keep validating positionals
  * without the flag in the way). `error` is set on missing value.
@@ -242,6 +252,15 @@ async function main(argv: string[]): Promise<number> {
           return await exposeCloudflareOff();
         }
         if (!cfExtract.domain) {
+          // Partial flag promotion: the user told us they want Cloudflare but
+          // didn't supply a hostname. In a TTY, prompt only for what's
+          // missing instead of forcing them to retype the whole command. In a
+          // non-TTY (scripts, CI), keep today's hard-error so automation
+          // doesn't block on an invisible prompt.
+          if (isTtyInteractive()) {
+            const { exposePublicInteractive } = await import("./commands/expose-interactive.ts");
+            return await exposePublicInteractive({ preselect: "cloudflare" });
+          }
           console.error("parachute expose public --cloudflare: --domain <hostname> is required.");
           console.error("Example: parachute expose public --cloudflare --domain vault.example.com");
           console.error("");
@@ -258,6 +277,17 @@ async function main(argv: string[]): Promise<number> {
       }
 
       const exposeOpts = hubExtract.hubOrigin ? { hubOrigin: hubExtract.hubOrigin } : {};
+
+      // Interactive picker: `parachute expose public` with no provider/domain
+      // flags, running under a TTY on both stdin and stdout, routes through a
+      // guided flow that offers Tailscale vs. Cloudflare, walks provider
+      // setup, and hands back to the flag-driven entry points. Non-TTY or any
+      // scripted use (flags present) keeps today's behavior exactly.
+      if (layer === "public" && action === "up" && isTtyInteractive()) {
+        const { exposePublicInteractive } = await import("./commands/expose-interactive.ts");
+        return await exposePublicInteractive({ exposeOpts });
+      }
+
       return layer === "public"
         ? await exposePublic(action, exposeOpts)
         : await exposeTailnet(action, exposeOpts);

@@ -98,6 +98,13 @@ Usage:
   parachute expose public  --cloudflare --domain <hostname>
   parachute expose public  off --cloudflare
 
+Interactive:
+  Run in a terminal with no flags, \`parachute expose public\` walks you
+  through provider selection (Tailscale Funnel vs. Cloudflare Tunnel),
+  offers to install missing dependencies on macOS, and prompts for the
+  Cloudflare hostname when needed. Piped / non-TTY invocations keep the
+  scripted behavior: default to Tailscale, flags override.
+
 Layers:
   tailnet    HTTPS across your tailnet (tailscale serve)
   public     HTTPS on the public internet
