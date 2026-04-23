@@ -357,11 +357,34 @@ async function main(argv: string[]): Promise<number> {
     case "auth":
       return await auth(rest);
 
-    case "vault":
+    case "vault": {
       // `parachute vault` with no args forwards --help to parachute-vault so
       // users see the actual vault surface, not a CLI-side stub. Anything
       // after `vault` (including --help) is passed through verbatim.
-      return await dispatchVault(rest.length === 0 ? ["--help"] : rest);
+      if (rest.length === 0) return await dispatchVault(["--help"]);
+
+      // `parachute vault tokens create` in a TTY with no scope-narrowing flag
+      // → guided flow. Any of --scope / --read / --permission means the user
+      // has already decided, so we stay out of the way. Non-TTY always
+      // bypasses (no way to answer a prompt). Label is orthogonal — the
+      // guided flow prompts for it only if --label wasn't supplied.
+      const wantsGuidedTokenCreate =
+        rest[0] === "tokens" &&
+        rest[1] === "create" &&
+        isTtyInteractive() &&
+        !rest.includes("--scope") &&
+        !rest.includes("--read") &&
+        !rest.includes("--permission") &&
+        !isHelpFlag(rest[2]);
+      if (wantsGuidedTokenCreate) {
+        const { runVaultTokensCreateInteractive } = await import(
+          "./commands/vault-tokens-create-interactive.ts"
+        );
+        return await runVaultTokensCreateInteractive({ args: rest.slice(2) });
+      }
+
+      return await dispatchVault(rest);
+    }
 
     default:
       console.error(`parachute: unknown command "${command}"`);

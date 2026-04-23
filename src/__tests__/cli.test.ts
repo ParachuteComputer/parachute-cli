@@ -153,6 +153,26 @@ describe("cli per-subcommand help", () => {
     expect(stderr).toMatch(/parachute-vault not found on PATH/);
     expect(stderr).toMatch(/parachute install vault/);
   });
+
+  test("vault tokens create in non-TTY passes through without prompting", async () => {
+    // Spawned-subprocess stdio is piped, so isTtyInteractive() returns false
+    // and the command falls through to the passthrough. Clearing PATH forces
+    // ENOENT — same probe as the `vault no-args` test. If we regressed into
+    // prompting, this subprocess would hang on stdin instead of exiting 127.
+    const proc = Bun.spawn([process.execPath, CLI, "vault", "tokens", "create"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        PATH: "",
+        HOME: "/tmp/parachute-cli-nonexistent-home",
+        PARACHUTE_HOME: "/tmp/parachute-cli-nonexistent-home",
+      },
+    });
+    const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+    expect(code).toBe(127);
+    expect(stderr).toMatch(/parachute-vault not found on PATH/);
+  });
 });
 
 describe("cli friendly errors", () => {
