@@ -288,6 +288,15 @@ async function main(argv: string[]): Promise<number> {
         return await exposePublicInteractive({ exposeOpts });
       }
 
+      // `expose public off` (no `--cloudflare`) auto-detects which provider is
+      // live. The explicit `--cloudflare` off branch above still wins — this
+      // path is only for users who typed plain `off` and don't want to
+      // remember which provider they brought up last.
+      if (layer === "public" && action === "off") {
+        const { runExposePublicOffAutoDetect } = await import("./commands/expose-off-auto.ts");
+        return await runExposePublicOffAutoDetect({ tailscaleOffOpts: exposeOpts });
+      }
+
       return layer === "public"
         ? await exposePublic(action, exposeOpts)
         : await exposeTailnet(action, exposeOpts);
