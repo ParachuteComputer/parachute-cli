@@ -7,6 +7,7 @@
  */
 
 import pkg from "../package.json" with { type: "json" };
+import { CloudflaredStateError } from "./cloudflare/state.ts";
 import { auth } from "./commands/auth.ts";
 import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
@@ -96,6 +97,44 @@ function extractTag(args: string[]): {
   return { tag, rest };
 }
 
+/**
+ * Extract the Cloudflare-mode flags from `parachute expose public …`:
+ * `--cloudflare` (boolean) + `--domain=<host>` / `--domain <host>`. Returns
+ * the stripped argv so the layer/action parser sees `[layer, action?]`
+ * regardless of flag placement.
+ */
+function extractCloudflareFlags(args: string[]): {
+  cloudflare: boolean;
+  domain?: string;
+  rest: string[];
+  error?: string;
+} {
+  const rest: string[] = [];
+  let cloudflare = false;
+  let domain: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--cloudflare") {
+      cloudflare = true;
+      continue;
+    }
+    if (a === "--domain") {
+      const v = args[i + 1];
+      if (!v) return { cloudflare, rest, error: "--domain requires a hostname argument" };
+      domain = v;
+      i++;
+      continue;
+    }
+    if (a?.startsWith("--domain=")) {
+      domain = a.slice("--domain=".length);
+      if (!domain) return { cloudflare, rest, error: "--domain requires a hostname argument" };
+      continue;
+    }
+    if (a !== undefined) rest.push(a);
+  }
+  return { cloudflare, domain, rest };
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
@@ -155,7 +194,12 @@ async function main(argv: string[]): Promise<number> {
         console.error(`parachute expose: ${hubExtract.error}`);
         return 1;
       }
-      const exposeArgs = hubExtract.rest;
+      const cfExtract = extractCloudflareFlags(hubExtract.rest);
+      if (cfExtract.error) {
+        console.error(`parachute expose: ${cfExtract.error}`);
+        return 1;
+      }
+      const exposeArgs = cfExtract.rest;
       const layer = exposeArgs[0];
       const mode = exposeArgs[1];
       if (isHelpFlag(layer)) {
@@ -166,6 +210,7 @@ async function main(argv: string[]): Promise<number> {
         console.error(`parachute expose: unknown layer "${layer ?? ""}"`);
         console.error("usage: parachute expose tailnet [off]");
         console.error("       parachute expose public  [off]");
+        console.error("       parachute expose public --cloudflare --domain <hostname>");
         console.error("run `parachute expose --help` for details");
         return 1;
       }
@@ -179,6 +224,39 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       const action = mode === "off" ? "off" : "up";
+
+      // Cloudflare mode is a separate execution path — different detector,
+      // different state file, different process model (it spawns cloudflared
+      // rather than driving tailscale serve/funnel). Route to it early.
+      if (cfExtract.cloudflare) {
+        if (layer !== "public") {
+          console.error(
+            "parachute expose: --cloudflare only applies to `public` (it's a public-internet path).",
+          );
+          return 1;
+        }
+        const { exposeCloudflareUp, exposeCloudflareOff } = await import(
+          "./commands/expose-cloudflare.ts"
+        );
+        if (action === "off") {
+          return await exposeCloudflareOff();
+        }
+        if (!cfExtract.domain) {
+          console.error("parachute expose public --cloudflare: --domain <hostname> is required.");
+          console.error("Example: parachute expose public --cloudflare --domain vault.example.com");
+          console.error("");
+          console.error("The hostname's apex domain must already be a zone on your Cloudflare");
+          console.error(
+            "account. If you don't have one yet: https://dash.cloudflare.com → Add site.",
+          );
+          console.error("");
+          console.error("If you'd rather not own a domain, use Tailscale Funnel instead:");
+          console.error("  parachute expose public");
+          return 1;
+        }
+        return await exposeCloudflareUp(cfExtract.domain);
+      }
+
       const exposeOpts = hubExtract.hubOrigin ? { hubOrigin: hubExtract.hubOrigin } : {};
       return layer === "public"
         ? await exposePublic(action, exposeOpts)
@@ -274,6 +352,11 @@ async function run(argv: string[]): Promise<number> {
     if (err instanceof ExposeStateError) {
       console.error(`expose-state.json is malformed: ${err.message}`);
       console.error("If you're stuck, delete ~/.parachute/expose-state.json and re-run.");
+      return 1;
+    }
+    if (err instanceof CloudflaredStateError) {
+      console.error(`cloudflared-state.json is malformed: ${err.message}`);
+      console.error("If you're stuck, delete ~/.parachute/cloudflared-state.json and re-run.");
       return 1;
     }
     if (err instanceof TailscaleError) {
