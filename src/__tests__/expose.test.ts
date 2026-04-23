@@ -1391,3 +1391,191 @@ describe("expose auto-restart of hub-dependent services", () => {
     }
   });
 });
+
+describe("expose teardown tolerance for already-gone entries", () => {
+  // Launch-day bug (2026-04-23): Aaron ran `tailscale funnel reset` while
+  // debugging, then re-ran `parachute expose public`. expose-state.json still
+  // recorded 8 entries; the CLI tried to tear them down; tailscale returned
+  // `error: failed to remove web serve: handler does not exist` for each; the
+  // CLI aborted and never got to bringup. Tailscale's `off` is idempotent
+  // from the user's perspective — if the handler is already gone, that's the
+  // outcome we wanted.
+  function makePublicPriorState(statePath: string, entryCount: number): void {
+    const entries = Array.from({ length: entryCount }, (_, i) => ({
+      kind: "proxy" as const,
+      mount: `/svc${i}`,
+      target: `http://127.0.0.1:${2000 + i}`,
+      service: `parachute-svc${i}`,
+    }));
+    writeExposeState(
+      {
+        version: 1,
+        layer: "public",
+        mode: "path",
+        canonicalFqdn: "parachute.taildf9ce2.ts.net",
+        port: 443,
+        funnel: true,
+        entries,
+      },
+      statePath,
+    );
+  }
+
+  test("exposeOff treats 'handler does not exist' as success and clears state", async () => {
+    const h = makeHarness();
+    try {
+      makePublicPriorState(h.statePath, 3);
+      const runner: Runner = async (cmd) => {
+        if (cmd[cmd.length - 1] === "off") {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: "error: failed to remove web serve: handler does not exist",
+          };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const logs: string[] = [];
+      const code = await exposePublic("off", {
+        runner,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(existsSync(h.statePath)).toBe(false);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/already gone/);
+      expect(joined).toMatch(/✓ Public \(Funnel\) exposure removed/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("exposeOff handles a mix of clean and already-gone entries", async () => {
+    const h = makeHarness();
+    try {
+      makePublicPriorState(h.statePath, 3);
+      let i = 0;
+      const runner: Runner = async (cmd) => {
+        if (cmd[cmd.length - 1] === "off") {
+          const idx = i++;
+          if (idx === 1) {
+            return {
+              code: 1,
+              stdout: "",
+              stderr: "error: failed to remove web serve: listener does not exist",
+            };
+          }
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const code = await exposePublic("off", {
+        runner,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(existsSync(h.statePath)).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("exposeOff still aborts on a real (non-already-gone) error", async () => {
+    const h = makeHarness();
+    try {
+      makePublicPriorState(h.statePath, 2);
+      const runner: Runner = async (cmd) => {
+        if (cmd[cmd.length - 1] === "off") {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: "failed to connect to tailscaled: is it running?",
+          };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const logs: string[] = [];
+      const code = await exposePublic("off", {
+        runner,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubStopOpts: hubStopOpts(),
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(1);
+      expect(existsSync(h.statePath)).toBe(true);
+      expect(logs.join("\n")).toMatch(/Teardown failed/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("exposeUp tolerates already-gone prior entries and proceeds to bringup", async () => {
+    // Aaron's exact repro: prior expose-state lingered after an external
+    // `tailscale funnel reset`, re-running `parachute expose public` aborted
+    // because every teardown said "handler does not exist".
+    const h = makeHarness();
+    try {
+      seedServices(h.manifestPath);
+      makePublicPriorState(h.statePath, 2);
+      const { spawner } = makeHubSpawner(1111);
+      const bringupCalls: string[][] = [];
+      const runner: Runner = async (cmd) => {
+        if (cmd[0] === "tailscale" && cmd[1] === "version") {
+          return { code: 0, stdout: "1.96.5\n", stderr: "" };
+        }
+        if (cmd[0] === "tailscale" && cmd[1] === "status" && cmd[2] === "--json") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ Self: { DNSName: "parachute.taildf9ce2.ts.net." } }),
+            stderr: "",
+          };
+        }
+        if (cmd[cmd.length - 1] === "off") {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: "error: failed to remove web serve: handler does not exist",
+          };
+        }
+        if (cmd.includes("--bg")) {
+          bringupCalls.push([...cmd]);
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const code = await exposePublic("up", {
+        runner,
+        manifestPath: h.manifestPath,
+        statePath: h.statePath,
+        wellKnownPath: h.wellKnownPath,
+        hubPath: h.hubPath,
+        wellKnownDir: h.wellKnownDir,
+        configDir: h.configDir,
+        hubEnsureOpts: hubEnsureOpts(spawner),
+        servicePortProbe: allServicesUp,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(bringupCalls.length).toBeGreaterThan(0);
+      const state = readExposeState(h.statePath);
+      expect(state?.layer).toBe("public");
+    } finally {
+      h.cleanup();
+    }
+  });
+});

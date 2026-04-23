@@ -263,6 +263,45 @@ async function runEach(
   return 0;
 }
 
+/**
+ * Tailscale's `serve/funnel … off` exits non-zero with stderr like
+ * `error: failed to remove web serve: handler does not exist` when the entry
+ * is already absent from tailscale's state. This happens when the user ran
+ * `tailscale funnel reset` externally, tailscaled restarted and dropped
+ * ephemeral state, or a prior teardown partially succeeded. From the user's
+ * perspective `off` is idempotent — the goal is "this handler is gone" and
+ * it already is. Match the narrow `does not exist` phrase; real errors
+ * (auth, daemon down) don't include it and still abort.
+ */
+function teardownAlreadyGone(stderr: string): boolean {
+  return stderr.toLowerCase().includes("does not exist");
+}
+
+/**
+ * Like `runEach` but tolerant of already-gone entries. Each command that
+ * fails with a "does not exist" stderr is logged and skipped; any other
+ * non-zero exit still aborts so real failures surface.
+ */
+async function runTeardown(
+  runner: Runner,
+  commands: string[][],
+  log: (line: string) => void,
+): Promise<number> {
+  for (const cmd of commands) {
+    log(`  $ ${cmd.join(" ")}`);
+    const { code, stderr } = await runner(cmd);
+    if (code === 0) continue;
+    if (teardownAlreadyGone(stderr)) {
+      const firstLine = stderr.trim().split("\n")[0] ?? "already gone";
+      log(`  (already gone — ${firstLine})`);
+      continue;
+    }
+    if (stderr.trim()) log(stderr.trim());
+    return code;
+  }
+  return 0;
+}
+
 function layerLabel(layer: ExposeLayer): string {
   return layer === "public" ? "Public (Funnel)" : "Tailnet";
 }
@@ -301,7 +340,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
     const teardownCmds = prior.entries.map((e) =>
       teardownCommand(e, { port: prior.port, funnel: prior.funnel }),
     );
-    const code = await runEach(runner, teardownCmds, log);
+    const code = await runTeardown(runner, teardownCmds, log);
     if (code !== 0) {
       log("Teardown of prior state failed; aborting.");
       return code;
@@ -448,7 +487,7 @@ export async function exposeOff(layer: ExposeLayer, opts: ExposeOpts = {}): Prom
   const cmds = state.entries.map((e) =>
     teardownCommand(e, { port: state.port, funnel: state.funnel }),
   );
-  const code = await runEach(runner, cmds, log);
+  const code = await runTeardown(runner, cmds, log);
   if (code !== 0) {
     log("Teardown failed. State file left in place so you can retry.");
     return code;
