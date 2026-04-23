@@ -95,36 +95,51 @@ export function exposeHelp(): string {
 Usage:
   parachute expose tailnet [off]
   parachute expose public  [off]
+  parachute expose public  --cloudflare --domain <hostname>
+  parachute expose public  off --cloudflare
 
 Layers:
   tailnet    HTTPS across your tailnet (tailscale serve)
-  public     HTTPS on the public internet (Tailscale Funnel)
+  public     HTTPS on the public internet
+             - default: Tailscale Funnel (no domain needed, *.ts.net URL)
+             - --cloudflare + --domain: named Cloudflare tunnel on your own
+               domain (stable URL, free, no bandwidth caps)
 
-Both layers share a single tailscale-serve config on this node. Switching
-layers is idempotent — the prior layer tears down before the new one comes up.
+Tailscale and Cloudflare modes share no state. Either can be up without the
+other. Inside each mode, switching on/off is idempotent.
 
 Flags:
   --hub-origin <url>    override the OAuth issuer URL advertised to clients
                         (default: https://<fqdn> when exposed, else http://127.0.0.1:<hub-port>)
+  --cloudflare          use a named Cloudflare tunnel for the public layer
+                        (requires --domain)
+  --domain <hostname>   fully-qualified hostname to route through the tunnel
+                        (e.g. vault.example.com). The apex must be a zone on
+                        your Cloudflare account.
 
 Examples:
-  parachute expose tailnet          # bring every service up inside your tailnet
-  parachute expose public           # also reachable from the public internet
-  parachute expose tailnet off      # tear down tailnet exposure
-  parachute expose public off       # tear down public exposure
+  parachute expose tailnet                                 # tailnet HTTPS
+  parachute expose public                                  # Funnel: *.ts.net URL
+  parachute expose public off                              # stop the Funnel
+  parachute expose public --cloudflare --domain vault.example.com
+                                                           # stable URL via cloudflared
+  parachute expose public off --cloudflare                 # stop the cloudflared tunnel
 
-Constraints (public layer / Funnel):
-  - Funnel supports HTTPS only on ports 443 / 8443 / 10000 per node.
-    We pin to 443 and path-route (vault at /vault/…, notes at /notes, …) so this
-    cap never becomes a constraint no matter how many services you install.
-  - Funnel has bandwidth caps on Tailscale's free tier.
-    See https://tailscale.com/kb/1223/funnel for current limits.
-  - Subdomain-per-service (vault.<fqdn>, notes.<fqdn>, …) requires the
-    Tailscale Services feature and is not supported in this release.
+Tailscale Funnel constraints:
+  - HTTPS only on ports 443 / 8443 / 10000 per node. We pin to 443 and
+    path-route (vault at /vault/…, notes at /notes, …) so this cap never
+    becomes a constraint no matter how many services you install.
+  - Bandwidth caps on Tailscale's free tier — see https://tailscale.com/kb/1223/funnel.
+  - Subdomain-per-service needs the Tailscale Services feature (not yet).
 
-Coming soon:
-  parachute expose public --mode caddy        use your own domain + Caddy
-  parachute expose public --mode cloudflared  use your own domain + cloudflared
+Cloudflare tunnel requirements (--cloudflare):
+  - \`cloudflared\` installed (macOS: \`brew install cloudflared\`).
+  - \`cloudflared tunnel login\` run once (browser flow) — drops a cert at
+    ~/.cloudflared/cert.pem.
+  - Apex of --domain is a Cloudflare zone on that account. Add at
+    https://dash.cloudflare.com → Add site (any registrar works).
+  - Only vault is currently routed. Multi-service ingress via Cloudflare is
+    deferred; use Funnel if you need hub + vault + notes on one exposure.
 `;
 }
 

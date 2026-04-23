@@ -99,6 +99,33 @@ describe("cli per-subcommand help", () => {
     expect(stdout).toMatch(/expose public/);
     expect(stdout).toMatch(/Funnel/);
     expect(stdout).toMatch(/443/);
+    expect(stdout).toMatch(/--cloudflare/);
+    expect(stdout).toMatch(/--domain/);
+  });
+
+  test("expose public --cloudflare without --domain exits 1 with usage hint", async () => {
+    const { code, stderr } = await runCli(["expose", "public", "--cloudflare"]);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/--domain <hostname> is required/);
+    expect(stderr).toMatch(/dash\.cloudflare\.com/);
+  });
+
+  test("expose tailnet --cloudflare is rejected (cloudflare is public-only)", async () => {
+    const { code, stderr } = await runCli([
+      "expose",
+      "tailnet",
+      "--cloudflare",
+      "--domain",
+      "vault.example.com",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/--cloudflare only applies to `public`/);
+  });
+
+  test("expose with missing --domain value exits 1", async () => {
+    const { code, stderr } = await runCli(["expose", "public", "--cloudflare", "--domain"]);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/--domain requires a hostname argument/);
   });
 
   test("expose tailnet --help shows full expose help", async () => {
