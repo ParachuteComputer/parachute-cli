@@ -91,7 +91,7 @@ describe("install", () => {
     }
   });
 
-  test("propagates non-zero exit from bun add", async () => {
+  test("propagates non-zero exit from bun add when package not present at global prefix", async () => {
     const { path, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
@@ -102,10 +102,54 @@ describe("install", () => {
         },
         manifestPath: path,
         isLinked: () => false,
+        findGlobalInstall: () => null,
         log: () => {},
       });
       expect(code).toBe(42);
       expect(calls).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("tolerates bun add exit 1 when the package is actually installed (bun 1.2.x lockfile quirk)", async () => {
+    // Repro: `bun add -g @openparachute/vault` on bun 1.2.19 can print
+    // "InvalidPackageResolution" + "Failed to install 1 package" and exit 1,
+    // while the package *is* installed (see "installed @openparachute/vault…
+    // with binaries" in the same output). If we bail on the exit code, init
+    // + seed never runs and `parachute status` shows nothing even though
+    // the binary is on PATH — day-one breakage for anyone on bun 1.2.x.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          // `bun add -g` exits 1; `parachute-vault init` succeeds.
+          return cmd[0] === "bun" ? 1 : 0;
+        },
+        manifestPath: path,
+        isLinked: () => false,
+        findGlobalInstall: (pkg) =>
+          pkg === "@openparachute/vault"
+            ? "/fake/bun/global/node_modules/@openparachute/vault/package.json"
+            : null,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      // Warning mentions the found path and the bun 1.2.x quirk.
+      expect(logs.join("\n")).toMatch(
+        /bun add reported exit 1 but @openparachute\/vault is installed at/,
+      );
+      expect(logs.join("\n")).toMatch(/bun 1\.2\.x lockfile quirk/);
+      // Crucially: init still ran, and the service got seeded.
+      expect(calls).toEqual([
+        ["bun", "add", "-g", "@openparachute/vault"],
+        ["parachute-vault", "init"],
+      ]);
+      const seeded = findService("parachute-vault", path);
+      expect(seeded?.port).toBe(1940);
     } finally {
       cleanup();
     }
@@ -339,6 +383,7 @@ describe("install", () => {
         runner: async () => 1,
         manifestPath: path,
         isLinked: () => false,
+        findGlobalInstall: () => null,
         log: (l) => logs.push(l),
         tag: "rc",
       });
