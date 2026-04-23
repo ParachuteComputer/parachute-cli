@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { autoWireScribeAuth } from "../auto-wire.ts";
@@ -53,6 +53,15 @@ export interface InstallOpts {
    * Tests pass a deterministic string; production uses crypto.randomBytes.
    */
   randomToken?: () => string;
+  /**
+   * Probe whether `pkg` is present at bun's global node_modules (returns the
+   * package.json path on hit, null on miss). Used after `bun add -g` returns
+   * non-zero to distinguish a real failure from bun 1.2.x's noisy
+   * lockfile-recovery path — where the package *is* actually installed
+   * despite the exit code. Defaults to a filesystem probe against
+   * `bunGlobalPrefixes()`.
+   */
+  findGlobalInstall?: (pkg: string) => string | null;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -80,6 +89,21 @@ function defaultIsLinked(pkg: string): boolean {
   return false;
 }
 
+function defaultFindGlobalInstall(pkg: string): string | null {
+  for (const prefix of bunGlobalPrefixes()) {
+    const pkgJsonPath = join(prefix, ...pkg.split("/"), "package.json");
+    try {
+      const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+      if (typeof parsed?.name === "string" && typeof parsed?.version === "string") {
+        return pkgJsonPath;
+      }
+    } catch {
+      // Not present / not valid at this prefix; try the next.
+    }
+  }
+  return null;
+}
+
 export async function install(service: string, opts: InstallOpts = {}): Promise<number> {
   const runner = opts.runner ?? defaultRunner;
   const manifestPath = opts.manifestPath ?? SERVICES_MANIFEST_PATH;
@@ -87,6 +111,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   const now = opts.now ?? (() => new Date());
   const log = opts.log ?? ((line) => console.log(line));
   const isLinked = opts.isLinked ?? defaultIsLinked;
+  const findGlobalInstall = opts.findGlobalInstall ?? defaultFindGlobalInstall;
 
   const aliased = SERVICE_ALIASES[service];
   if (aliased !== undefined) {
@@ -108,8 +133,23 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     log(`Installing ${addSpec}…`);
     const addCode = await runner(["bun", "add", "-g", addSpec]);
     if (addCode !== 0) {
-      log(`bun add -g ${addSpec} failed (exit ${addCode})`);
-      return addCode;
+      // Bun 1.2.x has a noisy lockfile-recovery path where `bun add -g` prints
+      // InvalidPackageResolution + "Failed to install 1 package" and exits 1,
+      // *even though the package is successfully installed* (you can see
+      // "installed @openparachute/<foo> with binaries" in the same output).
+      // Bailing here on exit code alone means the caller-visible install
+      // fails and downstream init/seed never runs — so probe the global
+      // prefix before treating non-zero as fatal.
+      const foundAt = findGlobalInstall(spec.package);
+      if (foundAt) {
+        log(`bun add reported exit ${addCode} but ${spec.package} is installed at ${foundAt}.`);
+        log(
+          "Known bun 1.2.x lockfile quirk — the package landed despite the warning. Proceeding. `bun upgrade` to 1.3.x avoids it.",
+        );
+      } else {
+        log(`bun add -g ${addSpec} failed (exit ${addCode})`);
+        return addCode;
+      }
     }
   }
 
