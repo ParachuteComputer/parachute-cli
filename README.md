@@ -2,7 +2,7 @@
 
 `parachute` — the top-level command for the [Parachute](https://parachute.computer) ecosystem.
 
-Install, inspect, and expose Parachute services with one command. Each service (vault, lens, scribe, channel, …) stays a standalone package; this CLI is the coordinator.
+Install, inspect, and (soon) expose Parachute services with one command. Each service (vault, notes, scribe, channel, …) stays a standalone package; this CLI is the coordinator.
 
 ## Install
 
@@ -10,7 +10,7 @@ Install, inspect, and expose Parachute services with one command. Each service (
 bun add -g @openparachute/cli
 ```
 
-Prereqs: [Bun](https://bun.sh), and — for `parachute expose` — [Tailscale](https://tailscale.com/download) **1.82 or newer** installed and `tailscale up` run at least once. (1.82 is when `tailscale funnel` was split out into its own subcommand; the CLI targets the modern shape only.)
+Prereqs: [Bun](https://bun.sh) 1.3.0 or later. `parachute expose` also requires [Tailscale](https://tailscale.com/download) **1.82 or newer** (installed + `tailscale up` run once); the `expose` path is under active polish for launch, so expect rough edges.
 
 ## First 5 minutes
 
@@ -29,16 +29,14 @@ parachute status
 # SERVICE          PORT  VERSION  PROCESS  PID    UPTIME  HEALTH  LATENCY
 # parachute-vault  1940  0.2.4    running  12345  12s     ok      2ms
 
-# 5. Expose across your tailnet (HTTPS via Tailscale MagicDNS)
-parachute expose tailnet
-# ✓ Tailnet exposure active. Open: https://parachute.<tailnet>.ts.net/
+# 5. Use it. Vault is up on 127.0.0.1:1940; Claude Code picked up the MCP
+#    on your next session. Point any other local MCP client (Codex, Goose,
+#    OpenCode, Cursor, Zed, Cline, your own agent) at:
+#      http://127.0.0.1:1940/vault/default/mcp
 
-# 6. Go public — `parachute expose public` in a terminal walks through
-#    provider selection (Tailscale Funnel vs. Cloudflare Tunnel) and
-#    prompts for setup bits as needed. Non-interactive or flag-driven
-#    invocations stay scripted — see `parachute expose --help`.
-parachute expose public
-# ✓ Public exposure active (Funnel). Open: https://parachute.<tailnet>.ts.net/
+# 6. Expose beyond localhost — Tailscale Funnel or Cloudflare Tunnel.
+#    Polishing for broad launch, but live today for early testers:
+parachute expose --help
 ```
 
 Tear down with `parachute expose tailnet off` or `parachute expose public off`. Layers are independent — `off` only affects the layer you name.
