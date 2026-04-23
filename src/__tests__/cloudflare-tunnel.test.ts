@@ -144,9 +144,19 @@ describe("cloudflare tunnel", () => {
     });
   });
 
-  test("routeDns sends the right argv and surfaces zone-not-found errors", async () => {
+  test("routeDns passes --overwrite-dns and surfaces zone-not-found errors", async () => {
     const { runner, seen } = makeRunner(
-      [["cloudflared", "tunnel", "route", "dns", "parachute", "vault.example.com"]],
+      [
+        [
+          "cloudflared",
+          "tunnel",
+          "route",
+          "dns",
+          "--overwrite-dns",
+          "parachute",
+          "vault.example.com",
+        ],
+      ],
       [
         {
           code: 1,
@@ -163,9 +173,32 @@ describe("cloudflare tunnel", () => {
       "tunnel",
       "route",
       "dns",
+      "--overwrite-dns",
       "parachute",
       "vault.example.com",
     ]);
+  });
+
+  test("routeDns succeeds on rerun when the CNAME already exists (upsert semantics)", async () => {
+    // Without --overwrite-dns this call would exit non-zero with "An A, AAAA,
+    // or CNAME record with that host already exists" on the second run. The
+    // flag turns it into an idempotent UPSERT, which is what users expect.
+    const { runner, seen } = makeRunner(
+      [
+        [
+          "cloudflared",
+          "tunnel",
+          "route",
+          "dns",
+          "--overwrite-dns",
+          "parachute",
+          "vault.example.com",
+        ],
+      ],
+      [{ code: 0, stdout: "Added CNAME vault.example.com which will route to …", stderr: "" }],
+    );
+    await routeDns(runner, "parachute", "vault.example.com");
+    expect(seen[0]).toContain("--overwrite-dns");
   });
 
   test("credentialsPath joins uuid under the cloudflared home", () => {

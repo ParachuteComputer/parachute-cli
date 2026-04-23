@@ -6,18 +6,32 @@ import type { Runner } from "../tailscale/run.ts";
 export const DEFAULT_CLOUDFLARED_HOME = join(homedir(), ".cloudflared");
 
 /**
- * `cloudflared --version` is the canonical liveness probe. Wrap in try/catch
- * so that an ENOENT from Bun.spawn (binary not on PATH) reads as "not
- * installed" rather than bubbling up as an unhandled error — same shape as
- * `isTailscaleInstalled`.
+ * `cloudflared --version` is the canonical liveness probe. Swallow only
+ * "binary not on PATH" errors — anything else (EACCES from a non-executable
+ * file, corrupted binary, etc.) propagates so we don't silently report
+ * "not installed" when something more specific is wrong.
  */
 export async function isCloudflaredInstalled(runner: Runner): Promise<boolean> {
   try {
     const { code } = await runner(["cloudflared", "--version"]);
     return code === 0;
-  } catch {
-    return false;
+  } catch (err) {
+    if (isBinaryNotFoundError(err)) return false;
+    throw err;
   }
+}
+
+function isBinaryNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: unknown; message?: unknown };
+  if (e.code === "ENOENT") return true;
+  // Bun.spawn's error shape varies across versions; fall back to message
+  // string matching so we catch "Executable not found in $PATH" and
+  // "ENOENT" variants without pinning to one runtime detail.
+  if (typeof e.message === "string") {
+    return /ENOENT|not found|No such file/i.test(e.message);
+  }
+  return false;
 }
 
 /**

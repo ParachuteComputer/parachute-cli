@@ -269,6 +269,15 @@ export async function exposeCloudflareUp(
   writeCloudflaredState(state, r.statePath);
 
   const baseUrl = `https://${hostname}`;
+  // A well-formed vault manifest always lists at least one mount path. If
+  // it's empty, something went sideways in `parachute install vault` — warn
+  // so the user can fix services.json rather than chasing a phantom 404 on
+  // /vault/default that may or may not exist.
+  if (!vaultEntry.paths[0]) {
+    r.log(
+      `⚠ vault entry in services.json has no paths[]; defaulting to "/vault/default". Check the manifest.`,
+    );
+  }
   const vaultMount = vaultEntry.paths[0] ?? "/vault/default";
   const vaultUrl = `${baseUrl}${vaultMount}`;
 

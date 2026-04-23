@@ -14,11 +14,21 @@ describe("cloudflare config", () => {
     });
     expect(yaml).toContain("tunnel: 2c1a7c7e-1234-5678-9abc-def012345678");
     expect(yaml).toContain(
-      "credentials-file: /Users/x/.cloudflared/2c1a7c7e-1234-5678-9abc-def012345678.json",
+      'credentials-file: "/Users/x/.cloudflared/2c1a7c7e-1234-5678-9abc-def012345678.json"',
     );
     expect(yaml).toContain("- hostname: vault.example.com");
     expect(yaml).toContain("service: http://localhost:1940");
     expect(yaml).toContain("- service: http_status:404");
+  });
+
+  test("renderConfig double-quotes credentials-file so paths with spaces survive YAML parse", () => {
+    const yaml = renderConfig({
+      tunnelUuid: "uuid",
+      credentialsFile: "/Users/John Doe/.cloudflared/uuid.json",
+      hostname: "vault.example.com",
+      servicePort: 1940,
+    });
+    expect(yaml).toContain('credentials-file: "/Users/John Doe/.cloudflared/uuid.json"');
   });
 
   test("writeConfig creates the parent directory and writes to the given path", () => {

@@ -105,12 +105,21 @@ export async function createTunnel(runner: Runner, name: string): Promise<Tunnel
   return { id: match[1]!, name };
 }
 
+/**
+ * `--overwrite-dns` turns the route command into an idempotent UPSERT: without
+ * it, cloudflared exits non-zero when the CNAME already exists, which breaks
+ * every rerun on the same hostname (and the error surface — "add the domain to
+ * Cloudflare" — is actively wrong in that case). The destination is always the
+ * caller's tunnel, so overwriting a pre-existing CNAME that points somewhere
+ * else is the right move; the user explicitly asked for this hostname to
+ * reach this tunnel.
+ */
 export async function routeDns(
   runner: Runner,
   tunnelName: string,
   hostname: string,
 ): Promise<void> {
-  const cmd = ["cloudflared", "tunnel", "route", "dns", tunnelName, hostname];
+  const cmd = ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", tunnelName, hostname];
   const result = await runner(cmd);
   if (result.code !== 0) {
     throw new CloudflaredError(

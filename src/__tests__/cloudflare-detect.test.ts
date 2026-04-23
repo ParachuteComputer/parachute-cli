@@ -27,11 +27,25 @@ describe("cloudflare detect", () => {
     expect(await isCloudflaredInstalled(runner)).toBe(false);
   });
 
-  test("isCloudflaredInstalled swallows spawn errors (ENOENT → not installed)", async () => {
+  test("isCloudflaredInstalled swallows ENOENT (binary missing → not installed)", async () => {
     // Bun.spawn throws synchronously when the binary is missing; the detector
     // has to read that as "not installed" rather than propagating the error.
     const runner = stubRunner(new Error("ENOENT: cloudflared not on PATH"));
     expect(await isCloudflaredInstalled(runner)).toBe(false);
+  });
+
+  test("isCloudflaredInstalled matches on .code === 'ENOENT' too", async () => {
+    const err = Object.assign(new Error("spawn failed"), { code: "ENOENT" });
+    expect(await isCloudflaredInstalled(stubRunner(err))).toBe(false);
+  });
+
+  test("isCloudflaredInstalled propagates non-ENOENT errors (don't lie about why)", async () => {
+    // An EACCES (binary found but not executable) is real misconfiguration,
+    // not a missing install. Swallowing it here would mask the actual fix.
+    const err = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    await expect(isCloudflaredInstalled(stubRunner(err))).rejects.toMatchObject({
+      code: "EACCES",
+    });
   });
 
   test("isCloudflaredLoggedIn reads cert.pem presence in the passed home dir", () => {

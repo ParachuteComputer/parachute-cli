@@ -140,6 +140,7 @@ describe("exposeCloudflareUp", () => {
         "tunnel",
         "route",
         "dns",
+        "--overwrite-dns",
         "parachute",
         "vault.example.com",
       ]);
