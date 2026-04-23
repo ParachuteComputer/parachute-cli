@@ -6,6 +6,12 @@ import { exposePublicInteractive } from "../commands/expose-interactive.ts";
 import { readLastProvider, writeLastProvider } from "../expose-last-provider.ts";
 import type { CommandResult, Runner } from "../tailscale/run.ts";
 
+// Every test in this file uses injected seams for tailscale/cloudflared; the
+// auth preflight is a separate module with its own test file, so stub it out
+// here to keep these tests focused on the picker logic. Tests that want to
+// assert preflight behavior override this.
+const noopPreflight = async () => {};
+
 interface TestEnv {
   cloudflaredHome: string;
   lastProviderPath: string;
@@ -112,6 +118,7 @@ describe("exposePublicInteractive — both ready", () => {
           cloudflareCalled = true;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(tailscaleCalled).toBe(true);
@@ -146,6 +153,7 @@ describe("exposePublicInteractive — both ready", () => {
           cloudflareHostname = h;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(cloudflareHostname).toBe("vault.example.com");
@@ -176,6 +184,7 @@ describe("exposePublicInteractive — both ready", () => {
           cloudflareHostname = h;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(cloudflareHostname).toBe("vault.example.com");
@@ -273,6 +282,7 @@ describe("exposePublicInteractive — only one ready", () => {
         log: (l) => logs.push(l),
         exposePublicImpl: async () => 0,
         exposeCloudflareUpImpl: async () => 0,
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(prompts).toBe(0);
@@ -304,6 +314,7 @@ describe("exposePublicInteractive — only one ready", () => {
           cloudflareHostname = h;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(cloudflareHostname).toBe("vault.example.com");
@@ -417,6 +428,7 @@ describe("exposePublicInteractive — neither ready", () => {
           cloudflareHostname = h;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(interactiveCmds[0]).toEqual(["brew", "install", "cloudflared"]);
@@ -574,6 +586,7 @@ describe("exposePublicInteractive — edge cases", () => {
           cloudflareCalled = true;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(cloudflareCalled).toBe(true);
@@ -603,6 +616,7 @@ describe("exposePublicInteractive — edge cases", () => {
           return 0;
         },
         exposeCloudflareUpImpl: async () => 0,
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(receivedExposeOpts).toEqual({ hubOrigin: "https://custom.example" });
@@ -641,6 +655,7 @@ describe("exposePublicInteractive — edge cases", () => {
           cloudflareHostname = h;
           return 0;
         },
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(tailscaleCalled).toBe(false);
@@ -676,6 +691,7 @@ describe("exposePublicInteractive — edge cases", () => {
           return 0;
         },
         exposeCloudflareUpImpl: async () => 0,
+        runAuthPreflightImpl: noopPreflight,
       });
       expect(code).toBe(0);
       expect(tailscaleCalled).toBe(true);
