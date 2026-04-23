@@ -155,7 +155,8 @@ async function main(argv: string[]): Promise<number> {
         console.error(`parachute expose: ${hubExtract.error}`);
         return 1;
       }
-      const exposeArgs = hubExtract.rest;
+      const useCloudflare = hubExtract.rest.includes("--cloudflare");
+      const exposeArgs = hubExtract.rest.filter((a) => a !== "--cloudflare");
       const layer = exposeArgs[0];
       const mode = exposeArgs[1];
       if (isHelpFlag(layer)) {
@@ -165,7 +166,7 @@ async function main(argv: string[]): Promise<number> {
       if (layer !== "tailnet" && layer !== "public") {
         console.error(`parachute expose: unknown layer "${layer ?? ""}"`);
         console.error("usage: parachute expose tailnet [off]");
-        console.error("       parachute expose public  [off]");
+        console.error("       parachute expose public  [off] [--cloudflare]");
         console.error("run `parachute expose --help` for details");
         return 1;
       }
@@ -179,6 +180,17 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       const action = mode === "off" ? "off" : "up";
+      if (useCloudflare) {
+        if (layer !== "public") {
+          console.error("--cloudflare only makes sense with `expose public`.");
+          console.error("(tailnet exposure is what Tailscale already does.)");
+          return 1;
+        }
+        const { exposeCloudflareUp, exposeCloudflareOff } = await import(
+          "./commands/expose-cloudflare.ts"
+        );
+        return action === "off" ? await exposeCloudflareOff() : await exposeCloudflareUp();
+      }
       const exposeOpts = hubExtract.hubOrigin ? { hubOrigin: hubExtract.hubOrigin } : {};
       return layer === "public"
         ? await exposePublic(action, exposeOpts)
