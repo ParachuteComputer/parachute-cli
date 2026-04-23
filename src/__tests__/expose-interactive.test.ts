@@ -611,6 +611,49 @@ describe("exposePublicInteractive — edge cases", () => {
     }
   });
 
+  test("preselect=cloudflare skips picker and prompts only for hostname", async () => {
+    // Simulates `parachute expose public --cloudflare` in a TTY without
+    // --domain: we know the user wants Cloudflare, so no provider picker,
+    // straight to the hostname prompt.
+    const env = makeEnv({ cloudflaredLoggedIn: true });
+    try {
+      const { runner } = fixedRunner({
+        tailscaleInstalled: true,
+        tailscaleLoggedIn: true,
+        tailscaleFunnelCap: true,
+        cloudflaredInstalled: true,
+      });
+      const { prompt, asked } = queuePrompt(["vault.example.com"]);
+      let cloudflareHostname: string | undefined;
+      let tailscaleCalled = false;
+      const code = await exposePublicInteractive({
+        runner,
+        prompt,
+        preselect: "cloudflare",
+        cloudflaredHome: env.cloudflaredHome,
+        lastProviderPath: env.lastProviderPath,
+        log: () => {},
+        exposePublicImpl: async () => {
+          tailscaleCalled = true;
+          return 0;
+        },
+        exposeCloudflareUpImpl: async (h) => {
+          cloudflareHostname = h;
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(tailscaleCalled).toBe(false);
+      expect(cloudflareHostname).toBe("vault.example.com");
+      // Only one prompt was asked — the hostname. No provider picker shown.
+      expect(asked).toHaveLength(1);
+      expect(asked[0]?.toLowerCase()).toContain("hostname");
+      expect(readLastProvider(env.lastProviderPath)?.provider).toBe("cloudflare");
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test("invalid provider input reprompts rather than crashing", async () => {
     const env = makeEnv({ cloudflaredLoggedIn: true });
     try {

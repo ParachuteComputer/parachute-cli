@@ -22,11 +22,7 @@ import {
   readLastProvider,
   writeLastProvider,
 } from "../expose-last-provider.ts";
-import {
-  hasFunnelCapability,
-  isTailscaleInstalled,
-  isTailscaleLoggedIn,
-} from "../tailscale/detect.ts";
+import { getTailscaleStatus, isTailscaleInstalled } from "../tailscale/detect.ts";
 import { type Runner, defaultRunner } from "../tailscale/run.ts";
 import {
   type ExposeCloudflareOpts,
@@ -72,6 +68,13 @@ export interface ExposeInteractiveOpts {
   /** Passthrough opts for the Cloudflare path (`exposeCloudflareUp`). */
   cloudflareOpts?: ExposeCloudflareOpts;
   /**
+   * Skip the provider picker — the caller has already chosen. Used when the
+   * user typed a provider flag but left a required piece out (e.g.
+   * `--cloudflare` without `--domain` in a TTY): we've got their choice, we
+   * just need to prompt for what's missing.
+   */
+  preselect?: ExposeProvider;
+  /**
    * Test seams for the downstream entry points — lets us exercise the
    * interactive branches without standing up a full tailscale/cloudflared
    * stub stack. Production code never sets these.
@@ -91,6 +94,7 @@ interface Resolved {
   log: (line: string) => void;
   exposeOpts: ExposeOpts;
   cloudflareOpts: ExposeCloudflareOpts;
+  preselect: ExposeProvider | undefined;
   exposePublicImpl: (action: "up" | "off", opts: ExposeOpts) => Promise<number>;
   exposeCloudflareUpImpl: (hostname: string, opts: ExposeCloudflareOpts) => Promise<number>;
 }
@@ -107,6 +111,7 @@ function resolve(opts: ExposeInteractiveOpts): Resolved {
     log: opts.log ?? ((line) => console.log(line)),
     exposeOpts: opts.exposeOpts ?? {},
     cloudflareOpts: opts.cloudflareOpts ?? {},
+    preselect: opts.preselect,
     exposePublicImpl: opts.exposePublicImpl ?? exposePublic,
     exposeCloudflareUpImpl: opts.exposeCloudflareUpImpl ?? exposeCloudflareUp,
   };
@@ -122,10 +127,11 @@ interface Readiness {
 
 async function detectReadiness(r: Resolved): Promise<Readiness> {
   const tailscaleInstalled = await isTailscaleInstalled(r.runner);
-  // Logged-in + funnel-cap only mean something if the binary's there — skip
-  // the follow-on status calls (they'd just fail) when it isn't.
-  const tailscaleLoggedIn = tailscaleInstalled ? await isTailscaleLoggedIn(r.runner) : false;
-  const tailscaleFunnelCap = tailscaleLoggedIn ? await hasFunnelCapability(r.runner) : false;
+  // One `tailscale status --json` covers both login state and Funnel cap.
+  // Skipped when the binary's missing — the call would just fail.
+  const { loggedIn: tailscaleLoggedIn, funnelCapable: tailscaleFunnelCap } = tailscaleInstalled
+    ? await getTailscaleStatus(r.runner)
+    : { loggedIn: false, funnelCapable: false };
 
   const cloudflareInstalled = await isCloudflaredInstalled(r.runner);
   const cloudflareLoggedIn = cloudflareInstalled ? isCloudflaredLoggedIn(r.cloudflaredHome) : false;
@@ -335,7 +341,11 @@ export async function exposePublicInteractive(opts: ExposeInteractiveOpts = {}):
   const cfReady = isCloudflareReady(readiness);
 
   let provider: ExposeProvider;
-  if (tsReady && cfReady) {
+  if (r.preselect) {
+    // Caller passed a provider flag but is missing a required piece — skip
+    // the picker entirely and resume at the setup / hostname prompt.
+    provider = r.preselect;
+  } else if (tsReady && cfReady) {
     const picked = await pickProvider(r, {
       defaultProvider: defaultProviderFrom(r.lastProviderPath),
       context: "both-ready",

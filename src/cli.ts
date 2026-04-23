@@ -252,6 +252,15 @@ async function main(argv: string[]): Promise<number> {
           return await exposeCloudflareOff();
         }
         if (!cfExtract.domain) {
+          // Partial flag promotion: the user told us they want Cloudflare but
+          // didn't supply a hostname. In a TTY, prompt only for what's
+          // missing instead of forcing them to retype the whole command. In a
+          // non-TTY (scripts, CI), keep today's hard-error so automation
+          // doesn't block on an invisible prompt.
+          if (isTtyInteractive()) {
+            const { exposePublicInteractive } = await import("./commands/expose-interactive.ts");
+            return await exposePublicInteractive({ preselect: "cloudflare" });
+          }
           console.error("parachute expose public --cloudflare: --domain <hostname> is required.");
           console.error("Example: parachute expose public --cloudflare --domain vault.example.com");
           console.error("");
