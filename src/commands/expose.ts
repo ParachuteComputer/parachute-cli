@@ -18,6 +18,7 @@ import {
 } from "../hub-control.ts";
 import { deriveHubOrigin } from "../hub-origin.ts";
 import { HUB_MOUNT, HUB_PATH, writeHubFile } from "../hub.ts";
+import { type AliveFn, processState } from "../process-state.ts";
 import { effectivePublicExposure, shortNameForManifest } from "../service-spec.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
 import { type ServeEntry, bringupCommand, teardownCommand } from "../tailscale/commands.ts";
@@ -33,6 +34,7 @@ import {
   vaultInstanceName,
   writeWellKnownFile,
 } from "../well-known.ts";
+import { restart } from "./lifecycle.ts";
 
 /**
  * Two exposure layers share a single tailscale serve config on this node.
@@ -83,7 +85,24 @@ export interface ExposeOpts {
    * through to vault (and future services) via PARACHUTE_HUB_ORIGIN.
    */
   hubOrigin?: string;
+  /** Process-liveness check for auto-restart — test seam. */
+  alive?: AliveFn;
+  /**
+   * Restart a service by short name after exposure changes. Defaults to the
+   * lifecycle `restart`; tests inject a fake to assert the call without
+   * spawning real child processes.
+   */
+  restartService?: (short: string) => Promise<number>;
 }
+
+/**
+ * Short names whose running process caches the hub origin (today:
+ * PARACHUTE_HUB_ORIGIN → vault's OAuth issuer). `exposeUp` restarts these
+ * after writing new expose-state so in-memory state matches what clients see.
+ * Hard-coded while vault is the only dependent; a services.json field will
+ * generalize this once a second service needs it.
+ */
+const HUB_DEPENDENT_SHORTS = ["vault"] as const;
 
 /**
  * OAuth paths the hub fronts on behalf of vault (Phase 0: vault implements
@@ -381,7 +400,26 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   log(`  Discovery: ${canonicalOrigin}${WELL_KNOWN_MOUNT}`);
   if (primaryVault(services)) {
     log(`  OAuth issuer: ${hubOrigin}`);
-    log("  Restart vault to pick up the new hub origin: parachute restart vault");
+  }
+
+  // Auto-restart services that cache the hub origin. Aaron hit this on launch
+  // day: after `expose public` first-run, vault kept its stale (loopback)
+  // PARACHUTE_HUB_ORIGIN, the OAuth issuer didn't match what clients saw, and
+  // claude.ai MCP failed with a cryptic "Couldn't reach the MCP server". The
+  // old output told the user to restart manually; it got buried in the wall
+  // of expose output. Do the restart ourselves.
+  const doRestart =
+    opts.restartService ?? ((short: string) => restart(short, { manifestPath, configDir, log }));
+  for (const short of HUB_DEPENDENT_SHORTS) {
+    if (processState(short, configDir, opts.alive).status !== "running") continue;
+    log("");
+    log(`Restarting ${short} to pick up new hub origin…`);
+    const rcode = await doRestart(short);
+    if (rcode !== 0) {
+      log(
+        `⚠ ${short} restart failed. Run manually once the issue is resolved: parachute restart ${short}`,
+      );
+    }
   }
   return 0;
 }
