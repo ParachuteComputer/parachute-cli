@@ -188,4 +188,160 @@ describe("status", () => {
       cleanup();
     }
   });
+
+  // URL column: the launch-day pain was a user staring at the table not
+  // knowing where to point Claude.ai or curl. Each row gets a "  → URL"
+  // continuation line so the next step is obvious.
+  test("vault row prints MCP URL beneath it (path + /mcp suffix)", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+        },
+        path,
+      );
+      const lines: string[] = [];
+      await status({
+        manifestPath: path,
+        fetchImpl: async () => new Response(null, { status: 200 }),
+        print: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l.includes("→ http://127.0.0.1:1940/vault/default/mcp"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("scribe row prints root URL (API is at /, ignore path prefix)", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      upsertService(
+        {
+          name: "parachute-scribe",
+          port: 1943,
+          paths: ["/scribe"],
+          health: "/scribe/health",
+          version: "0.1.0",
+        },
+        path,
+      );
+      const lines: string[] = [];
+      await status({
+        manifestPath: path,
+        fetchImpl: async () => new Response(null, { status: 200 }),
+        print: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l === "  → http://127.0.0.1:1943")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("notes row prints UI URL (port + /notes mount)", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      upsertService(
+        {
+          name: "parachute-notes",
+          port: 1942,
+          paths: ["/notes"],
+          health: "/notes/health",
+          version: "0.0.1",
+        },
+        path,
+      );
+      const lines: string[] = [];
+      await status({
+        manifestPath: path,
+        fetchImpl: async () => new Response(null, { status: 200 }),
+        print: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l === "  → http://127.0.0.1:1942/notes")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("channel row prints port + /channel mount", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      upsertService(
+        {
+          name: "parachute-channel",
+          port: 1941,
+          paths: ["/channel"],
+          health: "/channel/health",
+          version: "0.1.0",
+        },
+        path,
+      );
+      const lines: string[] = [];
+      await status({
+        manifestPath: path,
+        fetchImpl: async () => new Response(null, { status: 200 }),
+        print: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l === "  → http://127.0.0.1:1941/channel")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("unknown service falls back to bare host:port + paths[0]", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      upsertService(
+        {
+          name: "third-party-thing",
+          port: 9000,
+          paths: ["/widget"],
+          health: "/health",
+          version: "1.0.0",
+        },
+        path,
+      );
+      const lines: string[] = [];
+      await status({
+        manifestPath: path,
+        fetchImpl: async () => new Response(null, { status: 200 }),
+        print: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l === "  → http://127.0.0.1:9000/widget")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("stopped services still render a URL line so the user knows where to point clients post-start", async () => {
+    const { path, configDir, cleanup } = makeTempPath();
+    try {
+      upsertService(
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/default"],
+          health: "/vault/default/health",
+          version: "0.2.4",
+        },
+        path,
+      );
+      writePid("vault", 4242, configDir);
+      const lines: string[] = [];
+      await status({
+        manifestPath: path,
+        configDir,
+        alive: () => false,
+        fetchImpl: async () => new Response(null, { status: 200 }),
+        print: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l.includes("→ http://127.0.0.1:1940/vault/default/mcp"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
 });

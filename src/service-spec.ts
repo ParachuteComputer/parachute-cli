@@ -100,6 +100,24 @@ export interface ServiceSpec {
    * conservatively false for scribe until its auth-gate ships.
    */
   readonly hasAuth?: boolean;
+  /**
+   * Canonical reachable URL for the service given its manifest entry. Drives
+   * the URL column in `parachute status` and any other place we need to
+   * render "where do I point a client?". Most services use port + paths[0],
+   * but some need to append a fixed suffix (vault's MCP endpoint lives at
+   * `/vault/<name>/mcp`, not the bare mount path).
+   *
+   * Returns undefined when the entry doesn't carry enough info — callers
+   * should fall back to the bare `http://127.0.0.1:<port>` form.
+   */
+  readonly urlForEntry?: (entry: ServiceEntry) => string | undefined;
+  /**
+   * Lines printed at the end of `parachute install <svc>` so the user has a
+   * clear next step. Vault's footer comes from `parachute-vault init` itself
+   * (PR #166) — richer because it can read the freshly-minted API token —
+   * so vault's spec leaves this off.
+   */
+  readonly postInstallFooter?: () => readonly string[];
 }
 
 const NOTES_SERVE_PATH = fileURLToPath(new URL("./notes-serve.ts", import.meta.url));
@@ -111,6 +129,13 @@ const NOTES_SERVE_PATH = fileURLToPath(new URL("./notes-serve.ts", import.meta.u
  * will overwrite with its own authoritative write.
  */
 const SEED_VERSION = "0.0.0-linked";
+
+function pathBasedUrl(entry: ServiceEntry): string {
+  const first = entry.paths[0] ?? "";
+  // Strip a trailing slash so concatenation never doubles up.
+  const path = first.replace(/\/+$/, "");
+  return `http://127.0.0.1:${entry.port}${path}`;
+}
 
 export const SERVICE_SPECS: Record<string, ServiceSpec> = {
   vault: {
@@ -127,6 +152,10 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       health: "/vault/default/health",
       version: SEED_VERSION,
     }),
+    // Vault's MCP endpoint lives one segment past the mount path. The bare
+    // `/vault/<name>` URL is the discovery shape; clients (claude.ai et al.)
+    // need `/vault/<name>/mcp` to actually open the stream.
+    urlForEntry: (entry) => `${pathBasedUrl(entry)}/mcp`,
   },
   notes: {
     // Frontend product name is "Notes". vault's internal `/api/notes` endpoint
@@ -146,6 +175,13 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       health: "/notes/health",
       version: SEED_VERSION,
     }),
+    urlForEntry: pathBasedUrl,
+    postInstallFooter: () => [
+      "",
+      "Open your Notes UI at http://localhost:1942/notes — paste the vault URL",
+      "  http://127.0.0.1:1940/vault/default",
+      "and the API token from your vault install.",
+    ],
   },
   scribe: {
     package: "@openparachute/scribe",
@@ -163,6 +199,17 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       health: "/scribe/health",
       version: SEED_VERSION,
     }),
+    // Scribe's API is at the root, not under `/scribe`. The path prefix only
+    // shows up in the health endpoint; clients hit the bare port.
+    urlForEntry: (entry) => `http://127.0.0.1:${entry.port}`,
+    postInstallFooter: () => [
+      "",
+      "Scribe is listening on http://127.0.0.1:1943.",
+      "Vault will auto-call this for transcription (SCRIBE_URL has been wired to the vault env).",
+      "Configure the transcription provider at ~/.parachute/scribe/scribe.config.json — defaults",
+      "to `parakeet-mlx` (Apple Silicon, requires `parakeet-mlx` binary). Pick `groq` / `openai`",
+      "/ `cloudflare` / `whisper-cpp` if you want a different one.",
+    ],
   },
   channel: {
     package: "@openparachute/channel",
@@ -177,6 +224,7 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       health: "/channel/health",
       version: SEED_VERSION,
     }),
+    urlForEntry: pathBasedUrl,
   },
 };
 

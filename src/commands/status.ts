@@ -1,7 +1,7 @@
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import { HUB_SVC, readHubPort } from "../hub-control.ts";
 import { type AliveFn, defaultAlive, formatUptime, processState } from "../process-state.ts";
-import { shortNameForManifest } from "../service-spec.ts";
+import { getSpec, shortNameForManifest } from "../service-spec.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
@@ -71,8 +71,23 @@ interface StatusRow {
   uptimeLabel: string;
   healthLabel: string;
   latencyLabel: string;
+  url: string | undefined;
   healthy: boolean;
   skipped: boolean;
+}
+
+/**
+ * Canonical reachable URL for a row. Spec-driven where possible (vault appends
+ * `/mcp`, scribe is at the root, …). Unknown services fall back to bare
+ * `http://127.0.0.1:<port>` plus the first declared path so third-party
+ * services still get a useful pointer rather than an empty cell.
+ */
+function urlForEntry(entry: ServiceEntry, short: string | undefined): string | undefined {
+  const spec = short ? getSpec(short) : undefined;
+  const fromSpec = spec?.urlForEntry?.(entry);
+  if (fromSpec) return fromSpec;
+  const first = entry.paths[0]?.replace(/\/+$/, "") ?? "";
+  return `http://127.0.0.1:${entry.port}${first}`;
 }
 
 function hubRow(configDir: string, alive: AliveFn, nowDate: Date): StatusRow | undefined {
@@ -93,6 +108,7 @@ function hubRow(configDir: string, alive: AliveFn, nowDate: Date): StatusRow | u
     uptimeLabel,
     healthLabel: "-",
     latencyLabel: "-",
+    url: port !== undefined ? `http://127.0.0.1:${port}` : undefined,
     healthy: true,
     skipped: true,
   };
@@ -136,6 +152,8 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
       const uptimeLabel =
         proc?.status === "running" && proc.startedAt ? formatUptime(proc.startedAt, nowDate) : "-";
 
+      const url = urlForEntry(entry, short);
+
       // Only skip probe when we know the process is dead (PID file was
       // present but kill(pid, 0) failed). "unknown" status (no PID file)
       // still probes — externally-managed services should report health.
@@ -149,6 +167,7 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
           uptimeLabel,
           healthLabel: "-",
           latencyLabel: "-",
+          url,
           healthy: false,
           skipped: true,
         };
@@ -169,6 +188,7 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
         uptimeLabel,
         healthLabel,
         latencyLabel: `${p.latencyMs}ms`,
+        url,
         healthy: p.healthy,
         skipped: false,
       };
@@ -195,7 +215,17 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
     Math.max(header[i]?.length ?? 0, ...textRows.map((r) => r[i]?.length ?? 0)),
   );
   print(formatRow(header, widths));
-  for (const r of textRows) print(formatRow(r, widths));
+  // URL stays on a continuation line rather than a column. URLs are long
+  // (vault's MCP path runs ~40 chars), and a ninth column would push the
+  // table past 80 cols on every install. The "  → " prefix groups visually
+  // with the row above without misleading the table widths.
+  for (let i = 0; i < textRows.length; i++) {
+    const cells = textRows[i];
+    const row = rows[i];
+    if (!cells || !row) continue;
+    print(formatRow(cells, widths));
+    if (row.url) print(`  → ${row.url}`);
+  }
 
   /**
    * Overall exit: non-zero if any *probed* service is unhealthy. A stopped
