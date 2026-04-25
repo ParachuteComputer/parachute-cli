@@ -6,13 +6,11 @@ import type { ServiceEntry } from "./services-manifest.ts";
  * 1939–1949; third-party integrators are expected to avoid it.
  *
  *   1939  parachute-hub      internal static + proxy, CLI-managed
- *   1940  parachute-vault
- *   1941  parachute-channel
- *   1942  parachute-notes    static server over the PWA bundle
- *   1943  parachute-scribe
- *   1944  reserved — pendant
- *   1945  reserved — daily-v2
- *   1946–1949  reserved
+ *   1940  parachute-vault    committed core
+ *   1941  parachute-channel  exploration (may retire)
+ *   1942  parachute-notes    committed core (PWA bundle)
+ *   1943  parachute-scribe   committed core
+ *   1944–1949  unassigned
  *
  * Hub pins 1939: `parachute expose` composes hub targets as
  * `http://127.0.0.1:1939/` and that URL has to be stable across machines for
@@ -23,6 +21,10 @@ import type { ServiceEntry } from "./services-manifest.ts";
  * Ports outside the range aren't blocked. `parachute install` warns but
  * proceeds, since forks and non-standard deployments sometimes land on other
  * ports intentionally.
+ *
+ * **No speculative reservations.** Future first-party modules claim a slot
+ * the moment they ship, not before — pre-reservation for unbuilt things has
+ * proven a hold-place we kept reshaping.
  */
 export const CANONICAL_PORT_MIN = 1939;
 export const CANONICAL_PORT_MAX = 1949;
@@ -39,8 +41,8 @@ export const PORT_RESERVATIONS: readonly PortReservation[] = [
   { port: 1941, name: "parachute-channel", status: "assigned" },
   { port: 1942, name: "parachute-notes", status: "assigned" },
   { port: 1943, name: "parachute-scribe", status: "assigned" },
-  { port: 1944, name: "pendant", status: "reserved" },
-  { port: 1945, name: "daily-v2", status: "reserved" },
+  { port: 1944, name: "unassigned", status: "reserved" },
+  { port: 1945, name: "unassigned", status: "reserved" },
   { port: 1946, name: "unassigned", status: "reserved" },
   { port: 1947, name: "unassigned", status: "reserved" },
   { port: 1948, name: "unassigned", status: "reserved" },
