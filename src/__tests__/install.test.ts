@@ -160,6 +160,98 @@ describe("install", () => {
     }
   });
 
+  test("notes tolerance path: bun add exit 1 + package present → seedEntry still fires", async () => {
+    // Mirror of the vault tolerance test for notes (#44). notes has no
+    // spec.init, so the only path to a services.json entry on a fresh
+    // install is the seedEntry block. Verifies that gate is reached even
+    // when bun's exit code says "failed."
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("notes", {
+        runner: async (cmd) => (cmd[0] === "bun" ? 1 : 0),
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        findGlobalInstall: (pkg) =>
+          pkg === "@openparachute/notes"
+            ? "/fake/bun/global/node_modules/@openparachute/notes/package.json"
+            : null,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const seeded = findService("parachute-notes", path);
+      expect(seeded?.port).toBe(1942);
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for parachute-notes/);
+      expect(logs.join("\n")).toMatch(/bun 1\.2\.x lockfile quirk/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("non-tolerance bun add failure logs the prefixes that were probed", async () => {
+    // Defensive logging from #44: when findGlobalInstall returns null we want
+    // operators on non-standard bun layouts to see WHERE we looked, so they
+    // can spot a BUN_INSTALL or homebrew-prefix mismatch. The prefixes line
+    // is the actionable signal.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async () => 1,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        findGlobalInstall: () => null,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(1);
+      expect(logs.join("\n")).toMatch(/probed bun globals at:/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("final registration check warns when the entry is missing at install exit", async () => {
+    // Unknown / third-party services with no spec are rejected upfront, but
+    // a registered service whose spec lacks both `init` AND `seedEntry` could
+    // exit install with no manifest entry. We can't trigger that with the
+    // real ServiceSpec catalog, so simulate it by removing the entry mid-
+    // flight via a runner side-effect.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async (cmd) => {
+          // vault's init "succeeds" but never writes services.json. seedEntry
+          // fires (vault has one) → entry present. Then we sabotage by
+          // emptying the manifest before the final check, simulating an
+          // external clobber that the verify-step is designed to catch.
+          if (cmd[0] === "parachute-vault") {
+            // no-op (init didn't write)
+          }
+          return 0;
+        },
+        manifestPath: path,
+        // After install runs through to auto-start, the startService stub
+        // gets called. We use it as the very last hook before the final
+        // check to wipe the manifest.
+        startService: async () => {
+          // Wipe services.json so the final findService comes back empty.
+          const { writeFileSync } = await import("node:fs");
+          writeFileSync(path, JSON.stringify({ services: [] }, null, 2));
+          return 0;
+        },
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(logs.join("\n")).toMatch(/parachute-vault is not in services\.json after install/);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("warns when manifest entry lands outside the canonical port range", async () => {
     // Historically the notes PWA wrote 5173 (Vite's dev default). Canonical
     // is 1939–1949; warn so integrators know their service could conflict
