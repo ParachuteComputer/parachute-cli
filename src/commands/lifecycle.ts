@@ -1,6 +1,7 @@
 import { existsSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
+import { readEnvFileValues } from "../env-file.ts";
 import { readExposeState } from "../expose-state.ts";
 import { readHubPort } from "../hub-control.ts";
 import { HUB_ORIGIN_ENV, deriveHubOrigin } from "../hub-origin.ts";
@@ -190,12 +191,21 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
     }
 
     const logFile = ensureLogPath(short, r.configDir);
-    const env = r.hubOrigin ? { [HUB_ORIGIN_ENV]: r.hubOrigin } : undefined;
+    // Merge `<configDir>/<short>/.env` into the spawn env so service-specific
+    // values (auto-wired SCRIBE_AUTH_TOKEN/SCRIBE_URL on vault, GROQ/OPENAI
+    // API keys on scribe written by the install prompt) reach the daemon.
+    // Vault still loads its own .env at runtime (it has its own start.sh
+    // wrapper for launchd / systemd) — this is idempotent there. Hub-origin
+    // override wins on collision; that's the live-exposure source of truth.
+    const fileEnv = readEnvFileValues(join(r.configDir, short, ".env"));
+    const env: Record<string, string> = { ...fileEnv };
+    if (r.hubOrigin) env[HUB_ORIGIN_ENV] = r.hubOrigin;
+    const envForSpawn = Object.keys(env).length > 0 ? env : undefined;
     try {
-      const pid = r.spawner.spawn(cmd, logFile, env);
+      const pid = r.spawner.spawn(cmd, logFile, envForSpawn);
       writePid(short, pid, r.configDir);
       r.log(`✓ ${short} started (pid ${pid}); logs: ${logFile}`);
-      if (env) r.log(`  ${HUB_ORIGIN_ENV}=${r.hubOrigin}`);
+      if (r.hubOrigin) r.log(`  ${HUB_ORIGIN_ENV}=${r.hubOrigin}`);
     } catch (err) {
       failures++;
       const msg = err instanceof Error ? err.message : String(err);

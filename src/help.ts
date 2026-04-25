@@ -33,6 +33,7 @@ export function installHelp(): string {
 Usage:
   parachute install <service> [--tag <name>] [--no-start]
   parachute install all       [--tag <name>] [--no-start]
+  parachute install scribe    [--scribe-provider <name>] [--scribe-key <key>]
 
 Services:
   ${knownServices().join(", ")}
@@ -42,22 +43,32 @@ What it does:
   1. bun add -g @openparachute/<service>[@<tag>]
   2. run any service-specific init (e.g. \`parachute-vault init\`)
   3. verify the service registered itself in ~/.parachute/services.json
-  4. start the service in the background (idempotent — no-op if already up)
+  4. for scribe in a TTY: prompt for transcription provider + API key
+     (or take \`--scribe-provider\` / \`--scribe-key\`)
+  5. start the service in the background (idempotent — no-op if already up)
 
 Flags:
-  --tag <name>      npm dist-tag or exact version to install
-                    (e.g. \`--tag rc\` → \`bun add -g @openparachute/vault@rc\`)
-                    Skipped if the package is already \`bun link\`-ed locally.
-  --no-start        skip the post-install daemon start. For piped / CI
-                    installs that own their own process model.
+  --tag <name>              npm dist-tag or exact version to install
+                            (e.g. \`--tag rc\` → \`bun add -g @openparachute/vault@rc\`)
+                            Skipped if the package is already \`bun link\`-ed locally.
+  --no-start                skip the post-install daemon start. For piped / CI
+                            installs that own their own process model.
+  --scribe-provider <name>  set scribe's transcription provider non-interactively.
+                            Known: parakeet-mlx (default), onnx-asr, whisper, groq, openai.
+                            Skips the interactive picker.
+  --scribe-key <key>        set the API key for the chosen provider non-interactively.
+                            Stored in ~/.parachute/scribe/.env. Only meaningful for
+                            cloud providers (groq → GROQ_API_KEY, openai → OPENAI_API_KEY).
 
 Examples:
-  parachute install vault           # installs, runs \`parachute-vault init\`, starts vault
-  parachute install notes           # installs and starts notes
-  parachute install scribe          # installs and starts scribe
-  parachute install vault --tag rc  # pin to the rc dist-tag for pre-release testing
-  parachute install all --tag rc    # bootstrap the whole ecosystem to rc
-  parachute install vault --no-start  # install without auto-starting (CI / scripts)
+  parachute install vault                                   # installs, runs init, starts vault
+  parachute install notes                                   # installs and starts notes
+  parachute install scribe                                  # installs, prompts for provider, starts scribe
+  parachute install scribe --scribe-provider groq --scribe-key gsk_…
+                                                            # non-interactive scribe setup
+  parachute install vault --tag rc                          # pin to rc dist-tag
+  parachute install all --tag rc                            # bootstrap whole ecosystem to rc
+  parachute install vault --no-start                        # install without auto-starting (CI)
 
 Aliases:
   lens → notes                      # accepted for one release cycle after

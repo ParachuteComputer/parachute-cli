@@ -108,6 +108,37 @@ function extractTag(args: string[]): {
 }
 
 /**
+ * Generic `--name=<value>` / `--name <value>` extractor used for the scribe
+ * install flags. Returns the matched value and argv with the flag stripped, or
+ * an error when the flag is present without a value.
+ */
+function extractNamedFlag(
+  args: string[],
+  flag: string,
+): { value?: string; rest: string[]; error?: string } {
+  const rest: string[] = [];
+  let value: string | undefined;
+  const eqPrefix = `${flag}=`;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === flag) {
+      const v = args[i + 1];
+      if (!v) return { rest, error: `${flag} requires a value` };
+      value = v;
+      i++;
+      continue;
+    }
+    if (a?.startsWith(eqPrefix)) {
+      value = a.slice(eqPrefix.length);
+      if (!value) return { rest, error: `${flag} requires a value` };
+      continue;
+    }
+    if (a !== undefined) rest.push(a);
+  }
+  return { value, rest };
+}
+
+/**
  * Extract the Cloudflare-mode flags from `parachute expose public …`:
  * `--cloudflare` (boolean) + `--domain=<host>` / `--domain <host>`. Returns
  * the stripped argv so the layer/action parser sees `[layer, action?]`
@@ -171,17 +202,32 @@ async function main(argv: string[]): Promise<number> {
         console.error(`parachute install: ${tagExtract.error}`);
         return 1;
       }
-      const noStart = tagExtract.rest.includes("--no-start");
-      const installArgs = tagExtract.rest.filter((a) => a !== "--no-start");
+      const providerExtract = extractNamedFlag(tagExtract.rest, "--scribe-provider");
+      if (providerExtract.error) {
+        console.error(`parachute install: ${providerExtract.error}`);
+        return 1;
+      }
+      const keyExtract = extractNamedFlag(providerExtract.rest, "--scribe-key");
+      if (keyExtract.error) {
+        console.error(`parachute install: ${keyExtract.error}`);
+        return 1;
+      }
+      const noStart = keyExtract.rest.includes("--no-start");
+      const installArgs = keyExtract.rest.filter((a) => a !== "--no-start");
       const service = installArgs[0];
       if (!service) {
         console.error("usage: parachute install <service|all> [--tag <name>] [--no-start]");
+        console.error(
+          "       parachute install scribe [--scribe-provider <name>] [--scribe-key <key>]",
+        );
         console.error(`services: ${knownServices().join(", ")}`);
         return 1;
       }
       const installOpts: Parameters<typeof install>[1] = {};
       if (tagExtract.tag) installOpts.tag = tagExtract.tag;
       if (noStart) installOpts.noStart = true;
+      if (providerExtract.value) installOpts.scribeProvider = providerExtract.value;
+      if (keyExtract.value) installOpts.scribeKey = keyExtract.value;
       if (service === "all") {
         // Bootstrap the whole ecosystem to one dist-tag — the RC-testing payload.
         // Bail on first failure so a broken channel doesn't mask a working tag.
