@@ -154,13 +154,19 @@ Parachute services reserve a block of loopback ports in the canonical range **19
 | 1939 | parachute-hub (internal proxy + static) |
 | 1940 | parachute-vault    |
 | 1941 | parachute-channel  |
-| 1942 | parachute-lens     |
+| 1942 | parachute-notes    |
 | 1943 | parachute-scribe   |
-| 1944 | *reserved — pendant*  |
-| 1945 | *reserved — daily-v2* |
-| 1946–1949 | *reserved* |
+| 1944–1949 | *unassigned (CLI fallback range)* |
 
-The hub pins 1939 — no fallback. If something else is on 1939 when you run `parachute expose`, the command fails with a pointer to `lsof -iTCP:1939` rather than walking up into another service's slot. `parachute install` warns (but doesn't block) if a service's declared port lands outside the canonical range.
+The hub pins 1939 — no fallback. If something else is on 1939 when you run `parachute expose`, the command fails with a pointer to `lsof -iTCP:1939` rather than walking up into another service's slot.
+
+**The CLI is the port authority.** `parachute install <svc>` picks the port at install time and writes `PORT=<port>` into `~/.parachute/<svc>/.env`; lifecycle.start merges that .env into the spawn env so the next daemon boot binds the port the CLI assigned. The algorithm:
+
+1. Prefer the canonical slot (e.g. vault → 1940).
+2. On collision, walk the unassigned range (1944–1949).
+3. Range exhausted: assign past 1949 with a warning.
+
+Idempotent: an existing `PORT=` in `~/.parachute/<svc>/.env` wins, so re-installs and operator-edited ports survive across upgrades. Services keep their compiled-in fallbacks (vault → 1940 etc.) so a stand-alone `bun run` still works without a CLI-managed .env.
 
 `parachute expose` probes every service's port at bringup. A service that isn't responding still gets exposed, but you get a `⚠ parachute-<svc> (port …) is not responding` line so proxied requests never silently 502 without explanation.
 
