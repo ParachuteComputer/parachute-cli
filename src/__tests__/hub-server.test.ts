@@ -14,8 +14,8 @@ function makeHarness(): Harness {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-function req(path: string): Request {
-  return new Request(`http://127.0.0.1/${path.replace(/^\//, "")}`);
+function req(path: string, init?: RequestInit): Request {
+  return new Request(`http://127.0.0.1/${path.replace(/^\//, "")}`, init);
 }
 
 describe("hubFetch routing", () => {
@@ -52,6 +52,50 @@ describe("hubFetch routing", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("application/json");
       expect(await res.text()).toBe('{"vaults":[]}\n');
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  // CORS on the well-known doc: browsers running the Notes UI on
+  // http://localhost:1942 fetch this manifest cross-origin to auto-discover
+  // the user's vault. Without these headers the browser blocks the response
+  // body and the auto-discover flow silently falls back to manual paste.
+  // The doc itself is public (no secrets, no PII), so wildcard origin is OK.
+  test("/.well-known/parachute.json includes wildcard CORS headers on GET", async () => {
+    const h = makeHarness();
+    try {
+      writeFileSync(join(h.dir, "parachute.json"), '{"vaults":[]}\n');
+      const res = hubFetch(h.dir)(req("/.well-known/parachute.json"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+      expect(res.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("OPTIONS preflight on /.well-known/parachute.json returns 204 + CORS", async () => {
+    const h = makeHarness();
+    try {
+      // Note: no parachute.json on disk — preflight must not depend on it.
+      const res = hubFetch(h.dir)(req("/.well-known/parachute.json", { method: "OPTIONS" }));
+      expect(res.status).toBe(204);
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+      expect(res.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("missing parachute.json still returns CORS headers on the 404", async () => {
+    // If the response 404s without CORS, the browser treats it as a network
+    // error and the consumer can't even tell the server is reachable.
+    const h = makeHarness();
+    try {
+      const res = hubFetch(h.dir)(req("/.well-known/parachute.json"));
+      expect(res.status).toBe(404);
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
     } finally {
       h.cleanup();
     }

@@ -75,11 +75,26 @@ export function hubFetch(wellKnownDir: string): (req: Request) => Response {
     }
 
     if (pathname === "/.well-known/parachute.json") {
+      // The well-known doc is a public service-discovery manifest (no
+      // secrets, no PII), and Notes / future browser clients fetch it
+      // cross-origin from their own loopback port. Wildcard CORS is the
+      // shape it needs. Browsers send an OPTIONS preflight when the request
+      // adds non-simple headers; answer it with 204 + the same allow-list.
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, OPTIONS",
+      };
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders });
+      }
       if (!existsSync(parachuteJsonPath)) {
-        return new Response("parachute.json not found", { status: 404 });
+        return new Response("parachute.json not found", {
+          status: 404,
+          headers: corsHeaders,
+        });
       }
       return new Response(Bun.file(parachuteJsonPath), {
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...corsHeaders },
       });
     }
 
