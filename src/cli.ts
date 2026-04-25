@@ -171,14 +171,17 @@ async function main(argv: string[]): Promise<number> {
         console.error(`parachute install: ${tagExtract.error}`);
         return 1;
       }
-      const installArgs = tagExtract.rest;
+      const noStart = tagExtract.rest.includes("--no-start");
+      const installArgs = tagExtract.rest.filter((a) => a !== "--no-start");
       const service = installArgs[0];
       if (!service) {
-        console.error("usage: parachute install <service|all> [--tag <name>]");
+        console.error("usage: parachute install <service|all> [--tag <name>] [--no-start]");
         console.error(`services: ${knownServices().join(", ")}`);
         return 1;
       }
-      const installOpts = tagExtract.tag ? { tag: tagExtract.tag } : {};
+      const installOpts: Parameters<typeof install>[1] = {};
+      if (tagExtract.tag) installOpts.tag = tagExtract.tag;
+      if (noStart) installOpts.noStart = true;
       if (service === "all") {
         // Bootstrap the whole ecosystem to one dist-tag — the RC-testing payload.
         // Bail on first failure so a broken channel doesn't mask a working tag.

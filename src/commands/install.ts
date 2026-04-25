@@ -11,6 +11,7 @@ import {
   knownServices,
 } from "../service-spec.ts";
 import { findService, upsertService } from "../services-manifest.ts";
+import { start as lifecycleStart } from "./lifecycle.ts";
 import { migrateNotice } from "./migrate.ts";
 
 export type Runner = (cmd: readonly string[]) => Promise<number>;
@@ -62,6 +63,18 @@ export interface InstallOpts {
    * `bunGlobalPrefixes()`.
    */
   findGlobalInstall?: (pkg: string) => string | null;
+  /**
+   * Skip the post-install daemon start. The launch-day default is to leave
+   * the service running so users don't have to remember the second command;
+   * pass `true` for piped / CI installs that own their own process model.
+   */
+  noStart?: boolean;
+  /**
+   * Test seam: lifecycle start hook used by the post-install auto-start.
+   * Defaults to `lifecycle.start(short, …)`. Tests inject a fake to assert
+   * the call without spawning a real child.
+   */
+  startService?: (short: string) => Promise<number>;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -184,21 +197,48 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     }
   }
 
-  // Auto-wire the vault↔scribe shared secret when both services end up
-  // installed. Fires from either install order (scribe then vault, or vault
-  // then scribe). Idempotent — preserves any pre-existing token in vault .env.
+  // Auto-wire the vault↔scribe shared secret + SCRIBE_URL when both services
+  // end up installed. Fires from either install order (scribe then vault, or
+  // vault then scribe). Idempotent — preserves any pre-existing values in
+  // vault .env. Restarts vault if it's running so the worker re-reads .env.
   if (spec.manifestName === "parachute-vault" || spec.manifestName === "parachute-scribe") {
     const vaultPresent = !!findService("parachute-vault", manifestPath);
     const scribePresent = !!findService("parachute-scribe", manifestPath);
     if (vaultPresent && scribePresent) {
       const autoWireOpts: Parameters<typeof autoWireScribeAuth>[0] = { configDir, log };
       if (opts.randomToken) autoWireOpts.randomToken = opts.randomToken;
-      autoWireScribeAuth(autoWireOpts);
+      await autoWireScribeAuth(autoWireOpts);
     }
   }
 
   const notice = migrateNotice(configDir, now());
   if (notice) log(notice);
+
+  // Auto-start: vault and notes' inits historically left a daemon running, but
+  // scribe (and any service without a daemon-launching init) didn't — so
+  // launch-day `install scribe` ended with a silent install and the user
+  // wondering why nothing happened. Always end with the daemon running unless
+  // the caller opted out (CI / piped scripts). Idempotent: if the service is
+  // already up, lifecycle.start no-ops via the existing PID-file check.
+  if (!opts.noStart) {
+    const startService =
+      opts.startService ??
+      ((short: string) => lifecycleStart(short, { manifestPath, configDir, log }));
+    const startCode = await startService(resolvedService);
+    if (startCode !== 0) {
+      log(
+        `⚠ ${resolvedService} didn't start cleanly. Run manually: parachute start ${resolvedService}`,
+      );
+    }
+  }
+
+  // Per-service install footer — canonical next-step URLs and configuration
+  // hints. Vault prints its own (richer) footer from `parachute-vault init`
+  // (PR #166), so the spec leaves vault out and we don't double up here.
+  const footer = spec.postInstallFooter?.();
+  if (footer) {
+    for (const line of footer) log(line);
+  }
 
   return 0;
 }

@@ -21,6 +21,7 @@ describe("install", () => {
       const code = await install("mystery", {
         runner: async () => 0,
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -42,6 +43,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -78,6 +80,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -101,6 +104,7 @@ describe("install", () => {
           return 42;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         findGlobalInstall: () => null,
         log: () => {},
@@ -130,6 +134,7 @@ describe("install", () => {
           return cmd[0] === "bun" ? 1 : 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         findGlobalInstall: (pkg) =>
           pkg === "@openparachute/vault"
@@ -180,6 +185,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -206,6 +212,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -241,6 +248,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -261,6 +269,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
       });
@@ -290,6 +299,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: (pkg) => pkg === "@openparachute/scribe",
         log: (l) => logs.push(l),
       });
@@ -318,6 +328,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
         tag: "rc",
@@ -340,6 +351,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         log: () => {},
         tag: "0.3.0-rc.1",
@@ -363,6 +375,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => true,
         log: (l) => logs.push(l),
         tag: "rc",
@@ -382,6 +395,7 @@ describe("install", () => {
       const code = await install("vault", {
         runner: async () => 1,
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => false,
         findGlobalInstall: () => null,
         log: (l) => logs.push(l),
@@ -417,6 +431,7 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        startService: async () => 0,
         isLinked: () => true,
         log: (l) => logs.push(l),
       });
@@ -453,6 +468,7 @@ describe("install", () => {
         runner: async () => 0,
         manifestPath: path,
         configDir,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
         randomToken: () => "test-token-value",
@@ -469,7 +485,7 @@ describe("install", () => {
       const cfg = JSON.parse(readFileSync(scribeCfgPath, "utf8"));
       expect(cfg.auth.required_token).toBe("test-token-value");
 
-      expect(logs.join("\n")).toMatch(/Auto-wired shared secret for vault → scribe/);
+      expect(logs.join("\n")).toMatch(/Auto-wired shared secret \+ SCRIBE_URL/);
     } finally {
       cleanup();
     }
@@ -484,6 +500,7 @@ describe("install", () => {
         runner: async () => 0,
         manifestPath: path,
         configDir,
+        startService: async () => 0,
         isLinked: () => false,
         log: (l) => logs.push(l),
         randomToken: () => "should-not-fire",
@@ -516,6 +533,7 @@ describe("install", () => {
         runner: async () => 0,
         manifestPath: path,
         configDir,
+        startService: async () => 0,
         isLinked: () => false,
         log: () => {},
         randomToken: () => "install-vault-side-token",
@@ -547,6 +565,7 @@ describe("install", () => {
         runner: async () => 0,
         manifestPath: path,
         configDir,
+        startService: async () => 0,
         isLinked: () => false,
         log: () => {},
         randomToken: () => "first-token",
@@ -557,6 +576,7 @@ describe("install", () => {
         runner: async () => 0,
         manifestPath: path,
         configDir,
+        startService: async () => 0,
         isLinked: () => false,
         log: () => {},
         randomToken: () => "should-not-replace",
@@ -600,12 +620,167 @@ describe("install", () => {
         runner: async () => 0,
         manifestPath: path,
         configDir,
+        startService: async () => 0,
         isLinked: () => false,
         log: () => {},
         randomToken: () => "should-not-fire",
       });
       expect(existsSync(join(configDir, "vault", ".env"))).toBe(false);
       expect(existsSync(join(configDir, "scribe", "config.json"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Auto-start: launch-day demo had Aaron running `parachute install scribe`
+  // and then having to remember `parachute start scribe` separately. After
+  // 0.2.5, install ends with the daemon running.
+  test("auto-starts the service after a successful install", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const startCalls: string[] = [];
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async (short) => {
+          startCalls.push(short);
+          return 0;
+        },
+        isLinked: () => false,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(startCalls).toEqual(["scribe"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("--no-start suppresses the auto-start", async () => {
+    // Piped / CI installs that own their own process model want the install
+    // to land but not spawn anything.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const startCalls: string[] = [];
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async (short) => {
+          startCalls.push(short);
+          return 0;
+        },
+        isLinked: () => false,
+        log: () => {},
+        noStart: true,
+      });
+      expect(code).toBe(0);
+      expect(startCalls).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("auto-start uses the resolved (post-alias) short name", async () => {
+    // `install lens` aliases to notes — the start call must target notes,
+    // not the alias the user typed.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const startCalls: string[] = [];
+      const code = await install("lens", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async (short) => {
+          startCalls.push(short);
+          return 0;
+        },
+        isLinked: () => false,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(startCalls).toEqual(["notes"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("logs a hint when auto-start fails but doesn't fail the install itself", async () => {
+    // The install completed; a flaky daemon launch shouldn't roll it back.
+    // User gets a clear pointer to retry manually.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 1,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(logs.join("\n")).toMatch(/scribe didn't start cleanly.*parachute start scribe/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("scribe install emits the post-install footer with provider hints", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/Scribe is listening on http:\/\/127\.0\.0\.1:1943/);
+      expect(joined).toMatch(/parakeet-mlx/);
+      expect(joined).toMatch(/groq.*openai/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("notes install emits the post-install footer pointing at the Notes UI", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("notes", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/Open your Notes UI at http:\/\/localhost:1942\/notes/);
+      expect(joined).toMatch(/http:\/\/127\.0\.0\.1:1940\/vault\/default/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("vault install does not emit a CLI-side footer (vault prints its own)", async () => {
+    // PR #166 has parachute-vault init print a richer footer with the API
+    // token; the CLI shouldn't double up. spec.postInstallFooter is left
+    // undefined for vault on purpose.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: (l) => logs.push(l),
+      });
+      const joined = logs.join("\n");
+      expect(joined).not.toMatch(/Open your Notes UI/);
+      expect(joined).not.toMatch(/Scribe is listening/);
     } finally {
       cleanup();
     }

@@ -31,8 +31,8 @@ export function installHelp(): string {
   return `parachute install — install and register a Parachute service
 
 Usage:
-  parachute install <service> [--tag <name>]
-  parachute install all       [--tag <name>]
+  parachute install <service> [--tag <name>] [--no-start]
+  parachute install all       [--tag <name>] [--no-start]
 
 Services:
   ${knownServices().join(", ")}
@@ -42,17 +42,22 @@ What it does:
   1. bun add -g @openparachute/<service>[@<tag>]
   2. run any service-specific init (e.g. \`parachute-vault init\`)
   3. verify the service registered itself in ~/.parachute/services.json
+  4. start the service in the background (idempotent — no-op if already up)
 
 Flags:
   --tag <name>      npm dist-tag or exact version to install
                     (e.g. \`--tag rc\` → \`bun add -g @openparachute/vault@rc\`)
                     Skipped if the package is already \`bun link\`-ed locally.
+  --no-start        skip the post-install daemon start. For piped / CI
+                    installs that own their own process model.
 
 Examples:
-  parachute install vault           # installs + runs \`parachute-vault init\`
-  parachute install notes           # installs notes (no init required)
+  parachute install vault           # installs, runs \`parachute-vault init\`, starts vault
+  parachute install notes           # installs and starts notes
+  parachute install scribe          # installs and starts scribe
   parachute install vault --tag rc  # pin to the rc dist-tag for pre-release testing
   parachute install all --tag rc    # bootstrap the whole ecosystem to rc
+  parachute install vault --no-start  # install without auto-starting (CI / scripts)
 
 Aliases:
   lens → notes                      # accepted for one release cycle after
@@ -85,7 +90,9 @@ Example:
   $ parachute status
   SERVICE          PORT  VERSION  PROCESS  PID    UPTIME  HEALTH  LATENCY
   parachute-vault  1940  0.2.4    running  12345  2h 13m  ok      2ms
-  parachute-notes  5173  0.0.1    stopped  -      -       -       -
+    → http://127.0.0.1:1940/vault/default/mcp
+  parachute-notes  1942  0.0.1    stopped  -      -       -       -
+    → http://127.0.0.1:1942/notes
 `;
 }
 
