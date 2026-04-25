@@ -785,4 +785,101 @@ describe("install", () => {
       cleanup();
     }
   });
+
+  test("scribe install with --scribe-provider/--scribe-key writes config + .env non-interactively", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: () => {},
+        scribeProvider: "groq",
+        scribeKey: "gsk_test_value",
+        scribeAvailability: { kind: "not-tty" },
+      });
+      expect(code).toBe(0);
+      const cfg = JSON.parse(readFileSync(join(configDir, "scribe", "config.json"), "utf8"));
+      expect(cfg.transcribe).toEqual({ provider: "groq" });
+      const envText = readFileSync(join(configDir, "scribe", ".env"), "utf8");
+      expect(envText).toContain("GROQ_API_KEY=gsk_test_value");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("scribe install drives interactive prompt via the availability seam", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      const answers = ["openai", "sk-from-prompt"];
+      let i = 0;
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: () => {},
+        scribeAvailability: {
+          kind: "available",
+          prompt: async () => answers[i++] ?? "",
+        },
+      });
+      expect(code).toBe(0);
+      const cfg = JSON.parse(readFileSync(join(configDir, "scribe", "config.json"), "utf8"));
+      expect(cfg.transcribe).toEqual({ provider: "openai" });
+      const envText = readFileSync(join(configDir, "scribe", ".env"), "utf8");
+      expect(envText).toContain("OPENAI_API_KEY=sk-from-prompt");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("scribe install in non-TTY without flags leaves config untouched", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      const code = await install("scribe", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: () => {},
+        scribeAvailability: { kind: "not-tty" },
+      });
+      expect(code).toBe(0);
+      // Auto-wire didn't run (no vault), so config.json is never created.
+      expect(existsSync(join(configDir, "scribe", "config.json"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("non-scribe service install does not invoke the provider setup", async () => {
+    const { path, cleanup } = makeTempPath();
+    const configDir = join(path, "..");
+    try {
+      const code = await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        log: () => {},
+        // If the installer were to call setupScribeProvider here, the absent
+        // availability seam would default to detecting a real TTY and (in
+        // a real test runner with no TTY) skip silently. We just assert no
+        // scribe config materialized.
+      });
+      expect(code).toBe(0);
+      expect(existsSync(join(configDir, "scribe", "config.json"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
 });

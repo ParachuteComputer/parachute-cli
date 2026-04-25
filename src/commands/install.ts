@@ -13,6 +13,11 @@ import {
 import { findService, upsertService } from "../services-manifest.ts";
 import { start as lifecycleStart } from "./lifecycle.ts";
 import { migrateNotice } from "./migrate.ts";
+import {
+  type InteractiveAvailability,
+  type SetupScribeProviderOpts,
+  setupScribeProvider,
+} from "./scribe-provider-interactive.ts";
 
 export type Runner = (cmd: readonly string[]) => Promise<number>;
 
@@ -75,6 +80,23 @@ export interface InstallOpts {
    * the call without spawning a real child.
    */
   startService?: (short: string) => Promise<number>;
+  /**
+   * `parachute install scribe` only: pre-pick the transcription provider so
+   * the prompt doesn't fire. Validated against scribe's known providers — an
+   * unknown name is logged and the config is left at default.
+   */
+  scribeProvider?: string;
+  /**
+   * `parachute install scribe` only: pre-supply the API key for the chosen
+   * provider. Ignored for local providers (parakeet-mlx / onnx-asr / whisper).
+   */
+  scribeKey?: string;
+  /**
+   * Test seam for the scribe provider picker. Tests pass `{ kind: "available",
+   * prompt: ... }` to drive the prompt without a real TTY; production lets
+   * the default sense `process.stdin.isTTY`.
+   */
+  scribeAvailability?: InteractiveAvailability;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -209,6 +231,20 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
       if (opts.randomToken) autoWireOpts.randomToken = opts.randomToken;
       await autoWireScribeAuth(autoWireOpts);
     }
+  }
+
+  // Scribe-only: prompt for transcription provider (or accept --scribe-provider
+  // / --scribe-key). Has to land before auto-start so the very first scribe
+  // boot reads the right provider — and inside the prompt we restart scribe
+  // ourselves if it was already running, mirroring the auto-wire pattern.
+  // Failure here doesn't fail the install: a flaky restart shouldn't undo a
+  // successful `bun add`.
+  if (resolvedService === "scribe") {
+    const setupOpts: SetupScribeProviderOpts = { configDir, log };
+    if (opts.scribeProvider) setupOpts.preselectProvider = opts.scribeProvider;
+    if (opts.scribeKey) setupOpts.preselectKey = opts.scribeKey;
+    if (opts.scribeAvailability) setupOpts.availability = opts.scribeAvailability;
+    await setupScribeProvider(setupOpts);
   }
 
   const notice = migrateNotice(configDir, now());

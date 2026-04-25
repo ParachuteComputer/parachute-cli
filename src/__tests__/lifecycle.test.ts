@@ -360,6 +360,74 @@ describe("parachute start", () => {
       h.cleanup();
     }
   });
+
+  test("merges <configDir>/<svc>/.env into the spawn env", async () => {
+    // Scribe's API key prompt writes GROQ_API_KEY into ~/.parachute/scribe/.env.
+    // Scribe itself doesn't auto-load .env, so `parachute start scribe` has to
+    // forward the values into the child env or the API key won't take effect.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "parachute-scribe",
+          port: 1943,
+          paths: ["/scribe"],
+          health: "/scribe/health",
+          version: "0.1.0",
+        },
+        h.manifestPath,
+      );
+      ensureLogPath("scribe", h.configDir);
+      writeFileSync(
+        join(h.configDir, "scribe", ".env"),
+        'GROQ_API_KEY=gsk_real_value\nQUOTED="quoted_val"\n',
+      );
+      const spawner = makeSpawner([7777]);
+      const code = await start("scribe", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls[0]?.env).toEqual({
+        GROQ_API_KEY: "gsk_real_value",
+        QUOTED: "quoted_val",
+      });
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("hub-origin override wins over conflicting key in service .env", async () => {
+    // Defense: `start --hub-origin <url>` is the authoritative source for
+    // PARACHUTE_HUB_ORIGIN. If a service .env happens to have the same key
+    // (e.g. an old hand-edit), the live override should still apply.
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      ensureLogPath("vault", h.configDir);
+      writeFileSync(
+        join(h.configDir, "vault", ".env"),
+        "SCRIBE_AUTH_TOKEN=secret\nPARACHUTE_HUB_ORIGIN=http://stale.local\n",
+      );
+      const spawner = makeSpawner([4242]);
+      const code = await start("vault", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        hubOrigin: "https://live.example.com",
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls[0]?.env).toEqual({
+        SCRIBE_AUTH_TOKEN: "secret",
+        PARACHUTE_HUB_ORIGIN: "https://live.example.com",
+      });
+    } finally {
+      h.cleanup();
+    }
+  });
 });
 
 describe("parachute stop", () => {

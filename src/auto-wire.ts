@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { restart as lifecycleRestart } from "./commands/lifecycle.ts";
+import { parseEnvFile, upsertEnvLine, writeEnvFile } from "./env-file.ts";
 import { type AliveFn, defaultAlive, processState } from "./process-state.ts";
 import { PORT_RESERVATIONS } from "./service-spec.ts";
 
@@ -71,58 +72,6 @@ function defaultScribeUrl(): string {
   return `http://127.0.0.1:${port}`;
 }
 
-interface ParsedEnv {
-  lines: string[];
-  values: Record<string, string>;
-}
-
-function parseEnvLines(content: string): ParsedEnv {
-  const raw = content.length === 0 ? [] : content.split("\n");
-  // Drop a trailing empty string from a file that ends in "\n" so we don't
-  // double up newlines when we round-trip.
-  if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
-  const values: Record<string, string> = {};
-  for (const line of raw) {
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq);
-    let value = line.slice(eq + 1);
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
-    }
-    values[key] = value;
-  }
-  return { lines: raw, values };
-}
-
-function readVaultEnv(path: string): ParsedEnv {
-  if (!existsSync(path)) return { lines: [], values: {} };
-  return parseEnvLines(readFileSync(path, "utf8"));
-}
-
-function upsertEnvLine(lines: string[], key: string, value: string): string[] {
-  const next = [...lines];
-  const prefix = `${key}=`;
-  const idx = next.findIndex((line) => line.startsWith(prefix));
-  if (idx >= 0) {
-    next[idx] = `${key}=${value}`;
-  } else {
-    next.push(`${key}=${value}`);
-  }
-  return next;
-}
-
-function writeVaultEnv(path: string, lines: string[]): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, `${lines.join("\n")}\n`);
-  renameSync(tmp, path);
-}
-
 function writeScribeConfig(path: string, token: string): void {
   mkdirSync(dirname(path), { recursive: true });
   let current: Record<string, unknown> = {};
@@ -170,7 +119,7 @@ export async function autoWireScribeAuth(opts: AutoWireOpts): Promise<AutoWireRe
   const vaultEnvPath = join(opts.configDir, "vault", ".env");
   const scribeConfigPath = join(opts.configDir, "scribe", "config.json");
 
-  const parsed = readVaultEnv(vaultEnvPath);
+  const parsed = parseEnvFile(vaultEnvPath);
   let lines = parsed.lines;
   let didWriteEnv = false;
 
@@ -190,7 +139,7 @@ export async function autoWireScribeAuth(opts: AutoWireOpts): Promise<AutoWireRe
     didWriteEnv = true;
   }
 
-  if (didWriteEnv) writeVaultEnv(vaultEnvPath, lines);
+  if (didWriteEnv) writeEnvFile(vaultEnvPath, lines);
   writeScribeConfig(scribeConfigPath, token);
 
   if (tokenAlreadySet && urlAlreadySet) {

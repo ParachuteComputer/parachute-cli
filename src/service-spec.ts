@@ -206,9 +206,9 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       "",
       "Scribe is listening on http://127.0.0.1:1943.",
       "Vault will auto-call this for transcription (SCRIBE_URL has been wired to the vault env).",
-      "Configure the transcription provider at ~/.parachute/scribe/scribe.config.json — defaults",
-      "to `parakeet-mlx` (Apple Silicon, requires `parakeet-mlx` binary). Pick `groq` / `openai`",
-      "/ `cloudflare` / `whisper-cpp` if you want a different one.",
+      "Provider config lives at ~/.parachute/scribe/config.json (key: transcribe.provider);",
+      "API keys live at ~/.parachute/scribe/.env. Available: parakeet-mlx (default), onnx-asr,",
+      "whisper, groq, openai.",
     ],
   },
   channel: {
