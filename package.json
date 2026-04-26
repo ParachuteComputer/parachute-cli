@@ -1,7 +1,7 @@
 {
-  "name": "@openparachute/cli",
-  "version": "0.2.10-rc.1",
-  "description": "parachute — the top-level CLI for the Parachute ecosystem.",
+  "name": "@openparachute/hub",
+  "version": "0.3.0-rc.1",
+  "description": "parachute — the local hub for the Parachute ecosystem (discovery, ports, lifecycle, soon OAuth).",
   "license": "AGPL-3.0",
   "type": "module",
   "module": "src/cli.ts",
@@ -11,7 +11,7 @@
   "files": ["src", "README.md", "LICENSE"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ParachuteComputer/parachute-cli.git"
+    "url": "https://github.com/ParachuteComputer/parachute-hub.git"
   },
   "scripts": {
     "start": "bun src/cli.ts",

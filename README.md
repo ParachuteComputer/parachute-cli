@@ -1,13 +1,15 @@
-# Parachute CLI
+# Parachute Hub
 
-`parachute` — the top-level command for the [Parachute](https://parachute.computer) ecosystem.
+`@openparachute/hub` — the local hub for the [Parachute](https://parachute.computer) ecosystem. The `parachute` binary is one of its surfaces.
 
-Install, inspect, and (soon) expose Parachute services with one command. Each service (vault, notes, scribe, channel, …) stays a standalone package; this CLI is the coordinator.
+The hub coordinates the modules running on your machine: it installs them, runs them as background processes, exposes them over Tailscale, serves the discovery document at `/.well-known/parachute.json`, and (soon) issues OAuth tokens. Each module (vault, notes, scribe, channel, …) stays a standalone package; the hub stitches them together.
+
+> Previously published as `@openparachute/cli`. Renamed 2026-04-26 to better reflect the role — see [parachute-patterns/hub-as-issuer](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/hub-as-issuer.md). The `parachute` binary name is unchanged.
 
 ## Install
 
 ```sh
-bun add -g @openparachute/cli
+bun add -g @openparachute/hub
 ```
 
 Prereqs: [Bun](https://bun.sh) 1.3.0 or later. `parachute expose` also requires [Tailscale](https://tailscale.com/download) **1.82 or newer** (installed + `tailscale up` run once); the `expose` path is under active polish for launch, so expect rough edges.
@@ -15,8 +17,8 @@ Prereqs: [Bun](https://bun.sh) 1.3.0 or later. `parachute expose` also requires 
 ## First 5 minutes
 
 ```sh
-# 1. Install the CLI (one line)
-bun add -g @openparachute/cli
+# 1. Install the hub (one line — installs the `parachute` binary)
+bun add -g @openparachute/hub
 
 # 2. Install a service (runs `bun add -g @openparachute/vault` + `parachute-vault init`)
 parachute install vault
@@ -204,10 +206,10 @@ export PARACHUTE_HOME=/some/other/path
 
 ## Already have parachute-vault installed?
 
-Install the CLI and `parachute vault ...` forwards to your existing `parachute-vault` binary:
+Install the hub and `parachute vault ...` forwards to your existing `parachute-vault` binary:
 
 ```sh
-bun add -g @openparachute/cli
+bun add -g @openparachute/hub
 parachute vault init     # dispatches to parachute-vault init
 parachute vault --help   # dispatches to parachute-vault --help
 ```
@@ -220,7 +222,7 @@ Copy-paste to verify the whole chain. Everything here is idempotent.
 
 ```sh
 # Install
-bun add -g @openparachute/cli
+bun add -g @openparachute/hub
 
 # Verify CLI
 parachute --version

@@ -251,7 +251,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
       } else {
         // Make the failure mode legible: enumerating the prefixes we probed
         // turns "bun add -g failed" into something an operator on a non-
-        // standard bun layout can act on. (Surfaced by parachute-cli#44 — a
+        // standard bun layout can act on. (Surfaced by parachute-hub#44 — a
         // bun 1.2.x report where `notes` never registered; if the same
         // failure mode ever manifests via findGlobalInstall returning null,
         // the log tells us where to look.)
@@ -303,7 +303,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   // Find-or-seed the manifest entry. Re-read after the seed write so a silent
   // upsert failure (filesystem permission, races against an external writer)
   // surfaces as a loud log line instead of a phantom "registered" claim.
-  // parachute-cli#44 reported notes not appearing in services.json on a fresh
+  // parachute-hub#44 reported notes not appearing in services.json on a fresh
   // bun 1.2.x install; the gate logic was already correct, but a verify-step
   // turns silent loss into something an operator can spot.
   let entry = findService(spec.manifestName, manifestPath);
@@ -409,7 +409,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   // authoritative entry during init or first boot, replacing the seed (or
   // filling a gap when the service had no seedEntry). Re-read at exit so the
   // last line of the install always reflects ground truth, not an early
-  // snapshot. Surfaced by parachute-cli#44 — defensive logging that turns a
+  // snapshot. Surfaced by parachute-hub#44 — defensive logging that turns a
   // missing entry into a visible failure rather than a silent one.
   const finalEntry = findService(spec.manifestName, manifestPath);
   if (!finalEntry) {

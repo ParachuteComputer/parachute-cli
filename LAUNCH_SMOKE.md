@@ -11,7 +11,7 @@ Run this on a fresh macOS or Linux (or a VM) with nothing pre-installed under `~
 ## 1. Install the CLI from npm
 
 ```sh
-bun add -g @openparachute/cli
+bun add -g @openparachute/hub
 parachute --version           # Expect: 0.2.0
 parachute --help              # Lists install, status, start, stop, restart, logs, expose, migrate
 ```
