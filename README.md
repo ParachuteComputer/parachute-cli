@@ -36,12 +36,13 @@ parachute status
 #    OpenCode, Cursor, Zed, Cline, your own agent) at:
 #      http://127.0.0.1:1940/vault/default/mcp
 
-# 6. Expose beyond localhost — Tailscale Funnel or Cloudflare Tunnel.
-#    Polishing for broad launch, but live today for early testers:
-parachute expose --help
+# 6. Expose across your tailnet — HTTPS, MagicDNS, only your devices.
+#    The supported exposure shape today; public-internet exposure is
+#    exploratory (see "Public exposure" below).
+parachute expose tailnet
 ```
 
-Tear down with `parachute expose tailnet off` or `parachute expose public off`. Layers are independent — `off` only affects the layer you name.
+Tear down with `parachute expose tailnet off`. The public layer (`expose public off`) tears down independently — `off` only affects the layer you name.
 
 ## Service lifecycle
 
@@ -87,13 +88,18 @@ parachute migrate --yes           # unattended
 
 Anything swept goes to `~/.parachute/.archive-<YYYY-MM-DD>/` with its original name — nothing is deleted. Recognized entries (per-service dirs, `services.json`, `expose-state.json`, `well-known/`) are left in place, and so is anything starting with a dot (so `.env` and prior `.archive-*` dirs are safe).
 
-## Three layers of addressability
+## Two supported layers (plus an exploratory third)
 
 Each additive; each can be turned off without affecting the layer below.
 
 - **Local** — services on loopback. Zero config. Browsers treat `localhost` as a secure context, so OAuth, PKCE, and Web Crypto all just work out of the box.
-- **Tailnet** — `parachute expose tailnet` wraps `tailscale serve` for every registered service. HTTPS via Tailscale's MagicDNS cert. Only machines on your tailnet can reach the URL.
-- **Public** — `parachute expose public` routes each handler through `tailscale funnel` so the same URLs become reachable from the public internet. At launch, Funnel is the only supported backend; Caddy + your-own-domain and cloudflared tunnels are planned post-launch.
+- **Tailnet** — `parachute expose tailnet` wraps `tailscale serve` for every registered service. HTTPS via Tailscale's MagicDNS cert. Only machines on your tailnet can reach the URL. **This is the documented shape for the hub today.** Tailnet is already authenticated at the network layer, every user's tailnet is their own, and the OAuth + module access work happening in the hub is being designed against this shape first.
+
+### Public exposure (exploratory)
+
+`parachute expose public` exists for early testers. It routes each handler through `tailscale funnel` (or, with `--cloudflare`, a named Cloudflare tunnel) so the same URLs become reachable from the public internet. The code path is live and the flag still works, but the public-internet posture (DNS, cross-internet OAuth, Funnel quirks) hasn't been hardened the way tailnet has — expect rough edges.
+
+When the hub's OAuth issuer + per-module scope enforcement land, public will re-enter the documented narrative as "now safe." Until then, prefer tailnet.
 
 Under the hood, tailnet mode uses `tailscale serve` and public mode uses `tailscale funnel`; both write into the same node-level serve config. The CLI records which layer is live so that `expose <other-layer> off` is a no-op rather than a surprise teardown of the active layer.
 
@@ -142,10 +148,8 @@ The `/.well-known/parachute.json` document is an always-present descriptor — f
 
 Why path-routing and not subdomain-per-service? Two reasons:
 
-1. **Tailscale Funnel HTTPS is capped at three ports per node** (443, 8443, 10000). Pinning every service to 443 behind a path means you can install any number of services without ever hitting that cap.
+1. **Tailscale Funnel HTTPS is capped at three ports per node** (443, 8443, 10000). Pinning every service to 443 behind a path means you can install any number of services without ever hitting that cap. (Funnel is the public-exposure backend; the cap shapes the tailnet-mode design too, since both modes share one serve config.)
 2. **Subdomain-per-service requires the Tailscale Services feature** (virtual-IP advertisement per service), which is more than a MagicDNS wildcard — it needs admin-side setup that's out of scope for a one-command install. When it's a launch-grade path, we'll add `parachute expose tailnet --mode subdomain`.
-
-Funnel has bandwidth quotas on Tailscale's free tier. See [tailscale.com/kb/1223/funnel](https://tailscale.com/kb/1223/funnel) for current limits; for heavy traffic, the post-launch Caddy / cloudflared modes will be the answer.
 
 ## Ports
 
@@ -250,13 +254,11 @@ parachute expose tailnet
 # Also confirm the discovery document:
 curl -s https://parachute.<tailnet>.ts.net/.well-known/parachute.json | jq .
 
-# Flip to public (Funnel)
-parachute expose public
-# Open the same URL in a browser NOT on your tailnet — phone on cell, say.
-
 # Tear down
-parachute expose public off
+parachute expose tailnet off
 ```
+
+Public-internet exposure (`parachute expose public`) is exploratory — see "Public exposure" above. The flag still works for early testers; the supported smoke is tailnet.
 
 ## Subcommand reference
 
@@ -269,8 +271,8 @@ parachute start   [service]       start services in the background
 parachute stop    [service]       stop services (SIGTERM → 10s → SIGKILL)
 parachute restart [service]       stop + start
 parachute logs <service> [-f]     print/tail service logs
-parachute expose tailnet [off]    HTTPS across your tailnet
-parachute expose public  [off]    HTTPS on the public internet (Funnel)
+parachute expose tailnet [off]    HTTPS across your tailnet (supported)
+parachute expose public  [off]    HTTPS on the public internet (exploratory)
 parachute migrate [--dry-run]     archive legacy files at ecosystem root
 parachute vault <args...>         dispatch to parachute-vault
 ```
