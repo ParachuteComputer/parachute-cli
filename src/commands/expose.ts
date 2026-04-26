@@ -433,6 +433,9 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   if (layer === "public") {
     log(`✓ Public exposure active (Funnel). Open: ${canonicalOrigin}/`);
     log("  This node is reachable from the public internet.");
+    log(
+      "  Note: public is exploratory. Tailnet is the supported exposure shape today; the hub's OAuth + scope work targets tailnet first. Prefer `parachute expose tailnet` unless you specifically need a public URL.",
+    );
   } else {
     log(`✓ Tailnet exposure active. Open: ${canonicalOrigin}/`);
   }

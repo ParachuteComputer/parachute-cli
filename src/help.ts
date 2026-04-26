@@ -13,8 +13,8 @@ Usage:
   parachute stop    [service]       stop all services (or one) — SIGTERM then SIGKILL
   parachute restart [service]       stop + start
   parachute logs <service> [-f]     print service logs; -f to tail
-  parachute expose tailnet [off]    HTTPS across your tailnet
-  parachute expose public  [off]    HTTPS on the public internet (Funnel)
+  parachute expose tailnet [off]    HTTPS across your tailnet (supported)
+  parachute expose public  [off]    HTTPS on the public internet (exploratory)
   parachute migrate [--dry-run]     archive legacy files at ecosystem root
   parachute auth <cmd>              identity (set password, manage 2FA)
   parachute vault <args...>         vault-specific ops (tokens, 2fa, config, init,
@@ -119,6 +119,15 @@ Usage:
   parachute expose public  --cloudflare --domain <hostname>
   parachute expose public  off --cloudflare
 
+Status:
+  tailnet is the supported exposure shape. The hub's OAuth + per-module
+  scope work is being designed against tailnet first (already auth'd at
+  the network layer, every user's tailnet is their own).
+  public is exploratory — the flag still works for early testers, but
+  the public-internet posture (DNS, cross-internet OAuth, Funnel quirks)
+  hasn't been hardened. Prefer tailnet until public re-enters the
+  documented narrative post-OAuth.
+
 Interactive:
   Run in a terminal with no flags, \`parachute expose public\` walks you
   through provider selection (Tailscale Funnel vs. Cloudflare Tunnel),
@@ -127,8 +136,8 @@ Interactive:
   scripted behavior: default to Tailscale, flags override.
 
 Layers:
-  tailnet    HTTPS across your tailnet (tailscale serve)
-  public     HTTPS on the public internet
+  tailnet    HTTPS across your tailnet (tailscale serve) — supported
+  public     HTTPS on the public internet — exploratory
              - default: Tailscale Funnel (no domain needed, *.ts.net URL)
              - --cloudflare + --domain: named Cloudflare tunnel on your own
                domain (stable URL, free, no bandwidth caps)
