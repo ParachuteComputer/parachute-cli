@@ -42,10 +42,13 @@ Services:
 What it does:
   1. bun add -g @openparachute/<service>[@<tag>]
   2. run any service-specific init (e.g. \`parachute-vault init\`)
-  3. verify the service registered itself in ~/.parachute/services.json
-  4. for scribe in a TTY: prompt for transcription provider + API key
+  3. assign a canonical port (1939–1949) and write \`PORT=<port>\` into
+     \`~/.parachute/<service>/.env\`. Idempotent — an existing PORT wins, so
+     re-installs and operator-edited ports survive across upgrades.
+  4. verify the service registered itself in ~/.parachute/services.json
+  5. for scribe in a TTY: prompt for transcription provider + API key
      (or take \`--scribe-provider\` / \`--scribe-key\`)
-  5. start the service in the background (idempotent — no-op if already up)
+  6. start the service in the background (idempotent — no-op if already up)
 
 Flags:
   --tag <name>              npm dist-tag or exact version to install

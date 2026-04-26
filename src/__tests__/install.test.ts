@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { install } from "../commands/install.ts";
 import { findService, upsertService } from "../services-manifest.ts";
 
-function makeTempPath(): { path: string; cleanup: () => void } {
+function makeTempPath(): { path: string; configDir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "pcli-install-"));
   return {
     path: join(dir, "services.json"),
+    configDir: dir,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -23,6 +24,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
@@ -45,6 +47,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -82,6 +85,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -106,6 +110,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         findGlobalInstall: () => null,
         log: () => {},
       });
@@ -136,6 +141,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         findGlobalInstall: (pkg) =>
           pkg === "@openparachute/vault"
             ? "/fake/bun/global/node_modules/@openparachute/vault/package.json"
@@ -165,14 +171,16 @@ describe("install", () => {
     // spec.init, so the only path to a services.json entry on a fresh
     // install is the seedEntry block. Verifies that gate is reached even
     // when bun's exit code says "failed."
-    const { path, cleanup } = makeTempPath();
+    const { path, configDir, cleanup } = makeTempPath();
     try {
       const logs: string[] = [];
       const code = await install("notes", {
         runner: async (cmd) => (cmd[0] === "bun" ? 1 : 0),
         manifestPath: path,
+        configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         findGlobalInstall: (pkg) =>
           pkg === "@openparachute/notes"
             ? "/fake/bun/global/node_modules/@openparachute/notes/package.json"
@@ -202,6 +210,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         findGlobalInstall: () => null,
         log: (l) => logs.push(l),
       });
@@ -243,6 +252,7 @@ describe("install", () => {
           return 0;
         },
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -252,12 +262,12 @@ describe("install", () => {
     }
   });
 
-  test("warns when manifest entry lands outside the canonical port range", async () => {
-    // Historically the notes PWA wrote 5173 (Vite's dev default). Canonical
-    // is 1939–1949; warn so integrators know their service could conflict
-    // with other software on the box, but don't block — forks may
-    // intentionally deviate.
-    const { path, cleanup } = makeTempPath();
+  test("CLI overrides a non-canonical port written by init when canonical is free", async () => {
+    // Pre-#53 the CLI deferred to whatever port the service's init wrote
+    // (e.g. 5173, Vite's dev default for notes). With CLI-as-port-authority
+    // the canonical slot wins when free: the manifest is updated and the
+    // .env carries PORT=<canonical> so the next daemon boot binds it.
+    const { path, configDir, cleanup } = makeTempPath();
     try {
       const logs: string[] = [];
       const code = await install("notes", {
@@ -277,13 +287,46 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
-      expect(logs.join("\n")).toMatch(/registered on port 5173/);
-      expect(logs.join("\n")).toMatch(/outside the canonical Parachute range/);
+      expect(logs.join("\n")).toMatch(/Updated services\.json port to 1942/);
+      expect(logs.join("\n")).toMatch(/registered on port 1942/);
+      expect(logs.join("\n")).not.toMatch(/outside the canonical Parachute range/);
+      const entry = findService("parachute-notes", path);
+      expect(entry?.port).toBe(1942);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("warns when canonical range is exhausted and assignment falls outside", async () => {
+    // Defensive: if every canonical slot 1939–1949 is occupied (probe says
+    // so), assignPort falls outside the range and surfaces a warning so
+    // operators can free a slot or accept the conflict risk.
+    const { path, configDir, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        // Every canonical slot is taken.
+        portProbe: async () => true,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/canonical range.*1939–1949.*is full/);
+      expect(joined).toMatch(/outside the canonical Parachute range/);
+      const entry = findService("parachute-vault", path);
+      expect(entry?.port).toBeGreaterThan(1949);
     } finally {
       cleanup();
     }
@@ -294,7 +337,7 @@ describe("install", () => {
     // reverted on launch eve (Apr 22). Accepted for one release cycle so
     // anyone who ran `parachute install lens` during the ~3-day window
     // keeps working; removed after launch users have re-installed.
-    const { path, cleanup } = makeTempPath();
+    const { path, configDir, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
       const logs: string[] = [];
@@ -304,8 +347,10 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -342,6 +387,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(logs.join("\n")).not.toMatch(/outside the canonical/);
@@ -351,7 +397,7 @@ describe("install", () => {
   });
 
   test("skips init when spec has none (scribe)", async () => {
-    const { path, cleanup } = makeTempPath();
+    const { path, configDir, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
       const logs: string[] = [];
@@ -361,8 +407,10 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -381,7 +429,7 @@ describe("install", () => {
     // The scribe motivator: package isn't published to npm yet, so `bun add -g`
     // 404s. If bun link already points the global node_modules at a local
     // checkout, detect that and proceed to init + seeding.
-    const { path, cleanup } = makeTempPath();
+    const { path, configDir, cleanup } = makeTempPath();
     try {
       const calls: string[][] = [];
       const logs: string[] = [];
@@ -391,8 +439,10 @@ describe("install", () => {
           return 0;
         },
         manifestPath: path,
+        configDir,
         startService: async () => 0,
         isLinked: (pkg) => pkg === "@openparachute/scribe",
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -422,6 +472,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
         tag: "rc",
       });
@@ -445,6 +496,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         tag: "0.3.0-rc.1",
       });
@@ -469,6 +521,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => true,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
         tag: "rc",
       });
@@ -489,6 +542,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         findGlobalInstall: () => null,
         log: (l) => logs.push(l),
         tag: "rc",
@@ -525,6 +579,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => true,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -562,6 +617,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
         randomToken: () => "test-token-value",
       });
@@ -594,6 +650,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
         randomToken: () => "should-not-fire",
       });
@@ -627,6 +684,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         randomToken: () => "install-vault-side-token",
       });
@@ -659,6 +717,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         randomToken: () => "first-token",
       });
@@ -670,6 +729,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         randomToken: () => "should-not-replace",
       });
@@ -714,6 +774,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         randomToken: () => "should-not-fire",
       });
@@ -739,6 +800,7 @@ describe("install", () => {
           return 0;
         },
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -762,6 +824,7 @@ describe("install", () => {
           return 0;
         },
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         noStart: true,
       });
@@ -786,6 +849,7 @@ describe("install", () => {
           return 0;
         },
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
       });
       expect(code).toBe(0);
@@ -806,6 +870,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 1,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -824,6 +889,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -845,6 +911,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
@@ -868,6 +935,7 @@ describe("install", () => {
         manifestPath: path,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: (l) => logs.push(l),
       });
       const joined = logs.join("\n");
@@ -888,6 +956,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         scribeProvider: "groq",
         scribeKey: "gsk_test_value",
@@ -915,6 +984,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         scribeAvailability: {
           kind: "available",
@@ -941,6 +1011,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         scribeAvailability: { kind: "not-tty" },
       });
@@ -962,6 +1033,7 @@ describe("install", () => {
         configDir,
         startService: async () => 0,
         isLinked: () => false,
+        portProbe: async () => false,
         log: () => {},
         // If the installer were to call setupScribeProvider here, the absent
         // availability seam would default to detecting a real TTY and (in
@@ -970,6 +1042,102 @@ describe("install", () => {
       });
       expect(code).toBe(0);
       expect(existsSync(join(configDir, "scribe", "config.json"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // CLI-as-port-authority (#53). Install assigns the service's port up front
+  // and writes `PORT=<port>` into `<configDir>/<svc>/.env`. lifecycle.start
+  // merges that .env into spawn env, so the next daemon boot binds the port
+  // the CLI picked.
+  test("install writes PORT=<canonical> to .env when the slot is free", async () => {
+    const { path, configDir, cleanup } = makeTempPath();
+    try {
+      const code = await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      const envText = readFileSync(join(configDir, "vault", ".env"), "utf8");
+      expect(envText).toContain("PORT=1940");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("install preserves a pre-existing PORT in .env across re-installs", async () => {
+    const { path, configDir, cleanup } = makeTempPath();
+    try {
+      // First install assigns canonical 1940.
+      await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: () => {},
+      });
+      // Hand-edit .env to use a custom port (operator override).
+      const envPath = join(configDir, "vault", ".env");
+      const original = readFileSync(envPath, "utf8");
+      const edited = original.replace("PORT=1940", "PORT=1947");
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(envPath, edited);
+
+      // Second install must preserve the operator's choice, not stomp it.
+      await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: () => {},
+      });
+      expect(readFileSync(envPath, "utf8")).toContain("PORT=1947");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("install falls back inside the canonical range when the slot is occupied", async () => {
+    const { path, configDir, cleanup } = makeTempPath();
+    try {
+      // Pretend something else is on 1940.
+      upsertService(
+        {
+          name: "squatter-on-vault-port",
+          port: 1940,
+          paths: ["/squatter"],
+          health: "/squatter/health",
+          version: "0.0.0",
+        },
+        path,
+      );
+      const logs: string[] = [];
+      const code = await install("vault", {
+        runner: async () => 0,
+        manifestPath: path,
+        configDir,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      // First reservation slot is 1944.
+      const envText = readFileSync(join(configDir, "vault", ".env"), "utf8");
+      expect(envText).toContain("PORT=1944");
+      const entry = findService("parachute-vault", path);
+      expect(entry?.port).toBe(1944);
+      expect(logs.join("\n")).toMatch(/canonical port 1940 is in use/);
     } finally {
       cleanup();
     }

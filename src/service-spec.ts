@@ -18,9 +18,20 @@ import type { ServiceEntry } from "./services-manifest.ts";
  * (see hub-control.ts) — if something else is on 1939 we fail loudly rather
  * than walking up into a service's slot.
  *
- * Ports outside the range aren't blocked. `parachute install` warns but
- * proceeds, since forks and non-standard deployments sometimes land on other
- * ports intentionally.
+ * **CLI is the port authority.** `parachute install <svc>` picks the port at
+ * install time and writes `PORT=<port>` into `~/.parachute/<svc>/.env`.
+ * lifecycle.start merges that .env into the spawn env, so the next daemon
+ * boot binds the port the CLI assigned. Algorithm (see port-assign.ts):
+ *
+ *   1. Prefer the canonical slot (`spec.seedEntry().port`).
+ *   2. On collision, walk the unassigned range (1944–1949 today).
+ *   3. Range exhausted: assign past 1949 with a warning.
+ *
+ * Idempotent: an existing `PORT=` in .env wins, so re-installs and
+ * operator-edited ports survive across upgrades. Services keep their
+ * compiled-in fallbacks (vault → 1940 etc.) so a stand-alone `bun run`
+ * still works without a CLI-managed .env, but the CLI's PORT wins on any
+ * install it manages.
  *
  * **No speculative reservations.** Future first-party modules claim a slot
  * the moment they ship, not before — pre-reservation for unbuilt things has

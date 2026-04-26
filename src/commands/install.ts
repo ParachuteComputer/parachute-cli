@@ -1,8 +1,10 @@
 import { lstatSync, readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { autoWireScribeAuth } from "../auto-wire.ts";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
+import { assignServicePort } from "../port-assign.ts";
 import {
   CANONICAL_PORT_MAX,
   CANONICAL_PORT_MIN,
@@ -10,7 +12,7 @@ import {
   isCanonicalPort,
   knownServices,
 } from "../service-spec.ts";
-import { findService, upsertService } from "../services-manifest.ts";
+import { findService, readManifest, upsertService } from "../services-manifest.ts";
 import { start as lifecycleStart } from "./lifecycle.ts";
 import { migrateNotice } from "./migrate.ts";
 import {
@@ -97,6 +99,13 @@ export interface InstallOpts {
    * the default sense `process.stdin.isTTY`.
    */
   scribeAvailability?: InteractiveAvailability;
+  /**
+   * Test seam for the canonical-slot TCP probe. Production probes
+   * `127.0.0.1:<port>` with a short timeout; tests inject deterministic
+   * answers. Always returns false in tests so canonical slots stay free
+   * unless the test populates services.json directly.
+   */
+  portProbe?: (port: number) => Promise<boolean>;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -122,6 +131,64 @@ function defaultIsLinked(pkg: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Short-timeout TCP probe of `127.0.0.1:<port>`. Used by `parachute install`
+ * to detect canonical slots that something else is already on. Fail-open:
+ * timeouts and errors return `false` so a flaky probe never blocks an
+ * install.
+ */
+async function defaultPortProbe(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (taken: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(taken);
+    };
+    try {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      socket.setTimeout(150, () => {
+        socket.destroy();
+        finish(false);
+      });
+      socket.on("connect", () => {
+        socket.end();
+        finish(true);
+      });
+      socket.on("error", () => finish(false));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+async function collectOccupiedPorts(
+  manifestPath: string,
+  selfManifestName: string,
+  selfPort: number | undefined,
+  probe: (port: number) => Promise<boolean>,
+): Promise<Set<number>> {
+  const ports = new Set<number>();
+  try {
+    const manifest = readManifest(manifestPath);
+    for (const svc of manifest.services) {
+      if (svc.name === selfManifestName) continue;
+      ports.add(svc.port);
+    }
+  } catch {
+    // Manifest missing or malformed — fall back to the TCP probe alone.
+  }
+  for (let p = CANONICAL_PORT_MIN; p <= CANONICAL_PORT_MAX; p++) {
+    if (selfPort !== undefined && p === selfPort) continue;
+    try {
+      if (await probe(p)) ports.add(p);
+    } catch {
+      // Probe error — fail-open per CLI port-authority policy.
+    }
+  }
+  return ports;
 }
 
 function defaultFindGlobalInstall(pkg: string): string | null {
@@ -204,6 +271,35 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     }
   }
 
+  // CLI-as-port-authority (#53): pick the service's port now and persist it
+  // via `~/.parachute/<svc>/.env`. lifecycle.start merges that .env into the
+  // spawn env (PR #50), so the next daemon boot binds the port we picked.
+  // Idempotent — an existing PORT in .env wins, so re-installs and
+  // user-edited ports survive across upgrades. Compiled-in service-side
+  // fallbacks (vault → 1940 etc.) stay; this just adds a CLI-managed
+  // override.
+  const preInitEntry = findService(spec.manifestName, manifestPath);
+  const probe = opts.portProbe ?? defaultPortProbe;
+  const occupied = await collectOccupiedPorts(
+    manifestPath,
+    spec.manifestName,
+    preInitEntry?.port,
+    probe,
+  );
+  const envPath = join(configDir, resolvedService, ".env");
+  const canonicalPort = spec.seedEntry?.().port ?? preInitEntry?.port;
+  const portResult = assignServicePort({
+    envPath,
+    canonical: canonicalPort,
+    occupied,
+  });
+  if (portResult.warning) {
+    log(`⚠ ${portResult.warning}`);
+  }
+  if (portResult.written) {
+    log(`Wrote PORT=${portResult.port} to ${envPath}.`);
+  }
+
   // Find-or-seed the manifest entry. Re-read after the seed write so a silent
   // upsert failure (filesystem permission, races against an external writer)
   // surfaces as a loud log line instead of a phantom "registered" claim.
@@ -212,7 +308,9 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   // turns silent loss into something an operator can spot.
   let entry = findService(spec.manifestName, manifestPath);
   if (!entry && spec.seedEntry) {
-    const seed = spec.seedEntry();
+    const seedBase = spec.seedEntry();
+    const seed =
+      seedBase.port === portResult.port ? seedBase : { ...seedBase, port: portResult.port };
     upsertService(seed, manifestPath);
     entry = findService(spec.manifestName, manifestPath);
     if (entry) {
@@ -226,6 +324,15 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
       log(`  manifest path: ${manifestPath}`);
       log("  Re-run `parachute install` once the underlying issue is resolved.");
     }
+  } else if (entry && entry.port !== portResult.port) {
+    // init wrote an entry on the canonical port but the CLI assigned a
+    // different one (collision). Reflect the CLI's choice so the hub and
+    // status views stay consistent with the .env we just wrote.
+    upsertService({ ...entry, port: portResult.port }, manifestPath);
+    entry = findService(spec.manifestName, manifestPath);
+    log(
+      `Updated services.json port to ${portResult.port} for ${spec.manifestName} (was ${preInitEntry?.port ?? "—"}).`,
+    );
   }
 
   if (!entry) {
