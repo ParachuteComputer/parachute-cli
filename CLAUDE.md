@@ -1,8 +1,10 @@
-# Parachute CLI
+# Parachute Hub
 
-`parachute` — the top-level CLI. Installs services, runs them as background processes, and exposes them over Tailscale. Coordinator, not a service: each Parachute package (`vault`, `notes`, `scribe`, `channel`) stays standalone; this CLI stitches them together.
+`@openparachute/hub` — the local hub for the Parachute ecosystem. The `parachute` binary is one of its surfaces; the long-running daemon (discovery on `:1939`, soon OAuth issuance) is another. Coordinator, not a service: each Parachute package (`vault`, `notes`, `scribe`, `channel`) stays standalone; the hub stitches them together.
 
-User-facing README is the right intro for operators. This file is for agents and humans working *on* the CLI itself.
+Renamed from `@openparachute/cli` / `parachute-cli` on 2026-04-26 — same binary name (`parachute`), same code, broader role. The "CLI" framing was always partial.
+
+User-facing README is the right intro for operators. This file is for agents and humans working *on* the hub itself.
 
 ## Architecture
 
@@ -70,7 +72,7 @@ Every PR here is reviewer-gated — no direct-to-main, even for one-line fixes. 
 ## Naming
 
 - Domain: `parachute.computer`
-- npm scope: `@openparachute/` (this package: `@openparachute/cli`)
+- npm scope: `@openparachute/` (this package: `@openparachute/hub`; previously `@openparachute/cli` pre-2026-04-26)
 - Bin name: `parachute`
 - Config root: `~/.parachute/` (override with `PARACHUTE_HOME`)
 - Per-service dirs: `~/.parachute/<short>/` (e.g. `~/.parachute/vault/`)

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@openparachute/cli",
+      "name": "@openparachute/hub",
       "devDependencies": {
         "@biomejs/biome": "^1.9.4",
         "@types/bun": "latest",

@@ -14,8 +14,8 @@ async function runCli(
     stderr: "pipe",
     env: {
       ...process.env,
-      HOME: "/tmp/parachute-cli-nonexistent-home",
-      PARACHUTE_HOME: "/tmp/parachute-cli-nonexistent-home",
+      HOME: "/tmp/parachute-hub-nonexistent-home",
+      PARACHUTE_HOME: "/tmp/parachute-hub-nonexistent-home",
       ...env,
     },
   });
@@ -144,8 +144,8 @@ describe("cli per-subcommand help", () => {
       env: {
         ...process.env,
         PATH: "",
-        HOME: "/tmp/parachute-cli-nonexistent-home",
-        PARACHUTE_HOME: "/tmp/parachute-cli-nonexistent-home",
+        HOME: "/tmp/parachute-hub-nonexistent-home",
+        PARACHUTE_HOME: "/tmp/parachute-hub-nonexistent-home",
       },
     });
     const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
@@ -165,8 +165,8 @@ describe("cli per-subcommand help", () => {
       env: {
         ...process.env,
         PATH: "",
-        HOME: "/tmp/parachute-cli-nonexistent-home",
-        PARACHUTE_HOME: "/tmp/parachute-cli-nonexistent-home",
+        HOME: "/tmp/parachute-hub-nonexistent-home",
+        PARACHUTE_HOME: "/tmp/parachute-hub-nonexistent-home",
       },
     });
     const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
