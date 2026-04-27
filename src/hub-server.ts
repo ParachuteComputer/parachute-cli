@@ -13,27 +13,39 @@
  *   /                          → hub.html                (text/html)
  *   /hub.html                  → hub.html                (text/html)
  *   /.well-known/parachute.json → parachute.json         (application/json)
+ *   /.well-known/jwks.json      → JWKS from hub.db        (application/json)
  *   anything else              → 404
  *
  * Invoked as:
- *   bun <this-file> --port <n> --well-known-dir <path>
+ *   bun <this-file> --port <n> --well-known-dir <path> [--db <path>]
  *
  * `--well-known-dir` is the directory containing both `hub.html` and
  * `parachute.json` (both written by `parachute expose`). Kept as one flag so
  * the lifecycle side doesn't have to care how the hub server lays out files.
+ *
+ * `--db` is the path to `hub.db`. JWKS is served live from the DB so key
+ * rotation takes effect on the next request without re-running
+ * `parachute expose`. Defaults to `~/.parachute/hub.db` (overridable via
+ * `$PARACHUTE_HOME`).
  */
 
+import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { hubDbPath, openHubDb } from "./hub-db.ts";
+import { pemToJwk } from "./jwks.ts";
+import { getAllPublicKeys } from "./signing-keys.ts";
 
 interface Args {
   port: number;
   wellKnownDir: string;
+  dbPath: string;
 }
 
 function parseArgs(argv: string[]): Args {
   let port: number | undefined;
   let wellKnownDir: string | undefined;
+  let dbPath: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--port") {
@@ -48,18 +60,28 @@ function parseArgs(argv: string[]): Args {
       const v = argv[++i];
       if (!v) throw new Error("--well-known-dir requires a value");
       wellKnownDir = resolve(v);
+    } else if (a === "--db") {
+      const v = argv[++i];
+      if (!v) throw new Error("--db requires a value");
+      dbPath = resolve(v);
     } else {
       throw new Error(`unknown argument: ${a}`);
     }
   }
   if (port === undefined) throw new Error("--port is required");
   if (wellKnownDir === undefined) throw new Error("--well-known-dir is required");
-  return { port, wellKnownDir };
+  return { port, wellKnownDir, dbPath: dbPath ?? hubDbPath() };
 }
 
-export function hubFetch(wellKnownDir: string): (req: Request) => Response {
+export interface HubFetchDeps {
+  /** Lazily opens (or returns a cached handle to) the hub DB. */
+  getDb: () => Database;
+}
+
+export function hubFetch(wellKnownDir: string, deps?: HubFetchDeps): (req: Request) => Response {
   const hubHtmlPath = join(wellKnownDir, "hub.html");
   const parachuteJsonPath = join(wellKnownDir, "parachute.json");
+  const getDb = deps?.getDb;
 
   return (req) => {
     const url = new URL(req.url);
@@ -98,16 +120,56 @@ export function hubFetch(wellKnownDir: string): (req: Request) => Response {
       });
     }
 
+    if (pathname === "/.well-known/jwks.json") {
+      // JWKS is also a cross-origin fetch target (browser-side OAuth
+      // libraries pull this to verify access tokens). Same wildcard CORS
+      // shape as parachute.json — JWKS is public-by-design (only public
+      // keys leave the server).
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, OPTIONS",
+      };
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders });
+      }
+      if (!getDb) {
+        return new Response('{"error":"jwks unavailable: db not configured"}', {
+          status: 503,
+          headers: { "content-type": "application/json", ...corsHeaders },
+        });
+      }
+      try {
+        const db = getDb();
+        const keys = getAllPublicKeys(db).map((k) => pemToJwk(k.publicKeyPem, k.kid));
+        return new Response(JSON.stringify({ keys }), {
+          headers: { "content-type": "application/json", ...corsHeaders },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return new Response(JSON.stringify({ error: `jwks failed: ${msg}` }), {
+          status: 500,
+          headers: { "content-type": "application/json", ...corsHeaders },
+        });
+      }
+    }
+
     return new Response("not found", { status: 404 });
   };
 }
 
 if (import.meta.main) {
-  const { port, wellKnownDir } = parseArgs(process.argv.slice(2));
+  const { port, wellKnownDir, dbPath } = parseArgs(process.argv.slice(2));
+  let cachedDb: Database | undefined;
+  const getDb = () => {
+    if (!cachedDb) cachedDb = openHubDb(dbPath);
+    return cachedDb;
+  };
   Bun.serve({
     port,
     hostname: "127.0.0.1",
-    fetch: hubFetch(wellKnownDir),
+    fetch: hubFetch(wellKnownDir, { getDb }),
   });
-  console.log(`parachute-hub listening on http://127.0.0.1:${port} (dir=${wellKnownDir})`);
+  console.log(
+    `parachute-hub listening on http://127.0.0.1:${port} (dir=${wellKnownDir}, db=${dbPath})`,
+  );
 }

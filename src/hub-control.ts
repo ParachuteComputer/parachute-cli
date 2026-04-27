@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR } from "./config.ts";
+import { hubDbPath } from "./hub-db.ts";
 import {
   type AliveFn,
   clearPid,
@@ -180,6 +181,8 @@ export async function ensureHubRunning(opts: EnsureHubOpts = {}): Promise<Ensure
     String(chosenPort),
     "--well-known-dir",
     wellKnownDir,
+    "--db",
+    hubDbPath(configDir),
   ];
   const pid = spawner.spawn(cmd, logFile);
   writePid(HUB_SVC, pid, configDir);

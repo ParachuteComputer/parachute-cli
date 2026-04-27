@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { hubFetch } from "../hub-server.ts";
+import { rotateSigningKey } from "../signing-keys.ts";
 
 interface Harness {
   dir: string;
@@ -128,6 +130,74 @@ describe("hubFetch routing", () => {
     try {
       const res = hubFetch(h.dir)(req("/.well-known/parachute.json"));
       expect(res.status).toBe(404);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/.well-known/jwks.json returns the JWKS from the live db", async () => {
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        const k = rotateSigningKey(db);
+        const res = hubFetch(h.dir, { getDb: () => db })(req("/.well-known/jwks.json"));
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe("application/json");
+        expect(res.headers.get("access-control-allow-origin")).toBe("*");
+        const body = (await res.json()) as { keys: Array<{ kid: string; alg: string; n: string }> };
+        expect(body.keys.length).toBe(1);
+        expect(body.keys[0]?.kid).toBe(k.kid);
+        expect(body.keys[0]?.alg).toBe("RS256");
+        expect(body.keys[0]?.n.length).toBeGreaterThan(0);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("OPTIONS preflight on /.well-known/jwks.json returns 204 + CORS without touching the db", async () => {
+    const h = makeHarness();
+    try {
+      // Pass a getDb that throws — preflight must not invoke it.
+      const res = hubFetch(h.dir, {
+        getDb: () => {
+          throw new Error("getDb should not be called for OPTIONS");
+        },
+      })(req("/.well-known/jwks.json", { method: "OPTIONS" }));
+      expect(res.status).toBe(204);
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+      expect(res.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/.well-known/jwks.json returns 503 + CORS when db is not configured", async () => {
+    const h = makeHarness();
+    try {
+      const res = hubFetch(h.dir)(req("/.well-known/jwks.json"));
+      expect(res.status).toBe(503);
+      expect(res.headers.get("content-type")).toBe("application/json");
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/.well-known/jwks.json on an empty db returns {keys: []}", async () => {
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        const res = hubFetch(h.dir, { getDb: () => db })(req("/.well-known/jwks.json"));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ keys: [] });
+      } finally {
+        db.close();
+      }
     } finally {
       h.cleanup();
     }
