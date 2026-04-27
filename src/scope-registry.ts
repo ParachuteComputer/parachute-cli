@@ -66,17 +66,34 @@ export function findUnknownScopes(
 }
 
 /**
- * Read `<bun-globals>/<pkg>/.parachute/module.json` for one registered
- * service and return its `scopes.defines`. Returns null when the module
- * doesn't ship a manifest (first-party today; eventually they all will).
+ * Read `<dir>/.parachute/module.json` and return its `scopes.defines`.
+ * Returns null when no manifest is found.
+ *
+ * Resolution order:
+ *   1. If `installDir` is provided (hub#84 stamps this on every services.json
+ *      row at install time), read directly from there. This is the canonical
+ *      path — services.json's `name` is the manifest's canonical short
+ *      (e.g. "claw"), which doesn't match the npm package name on disk
+ *      (e.g. "nanoclaw" for forks). bun-globals lookup-by-name fails for
+ *      that case; installDir is the source of truth.
+ *   2. Fall back to `<bun-globals>/<packageName>/.parachute/module.json`
+ *      for entries without installDir (older installs, or services that
+ *      registered themselves before hub#84 stamped the field).
  *
  * Tolerant of malformed JSON / validation errors — those are install-time
  * problems, not token-issuance problems. A bad manifest blocking token
  * issuance is the worst kind of cascade failure.
  */
-export function defaultReadModuleScopes(packageName: string): readonly string[] | null {
+export function defaultReadModuleScopes(
+  packageName: string,
+  installDir?: string,
+): readonly string[] | null {
+  const candidates: string[] = [];
+  if (installDir) candidates.push(join(installDir, ".parachute", "module.json"));
   for (const prefix of bunGlobalPrefixes()) {
-    const path = join(prefix, ...packageName.split("/"), ".parachute", "module.json");
+    candidates.push(join(prefix, ...packageName.split("/"), ".parachute", "module.json"));
+  }
+  for (const path of candidates) {
     let raw: unknown;
     try {
       raw = JSON.parse(readFileSync(path, "utf8"));
@@ -112,7 +129,7 @@ export interface LoadDeclaredScopesOpts {
    * walks bun's global prefixes for each registered service's
    * `.parachute/module.json`.
    */
-  readModuleScopes?: (packageName: string) => readonly string[] | null;
+  readModuleScopes?: (packageName: string, installDir?: string) => readonly string[] | null;
 }
 
 /**
@@ -126,14 +143,14 @@ export interface LoadDeclaredScopesOpts {
 export function loadDeclaredScopes(opts: LoadDeclaredScopesOpts = {}): Set<string> {
   const declared = new Set<string>(FIRST_PARTY_SCOPES);
   const readModuleScopes = opts.readModuleScopes ?? defaultReadModuleScopes;
-  let services: { name: string }[];
+  let services: { name: string; installDir?: string }[];
   try {
     services = readServicesManifest(opts.manifestPath).services;
   } catch {
     return declared;
   }
   for (const svc of services) {
-    const defined = readModuleScopes(svc.name);
+    const defined = readModuleScopes(svc.name, svc.installDir);
     if (!defined) continue;
     for (const scope of defined) declared.add(scope);
   }

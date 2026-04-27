@@ -137,6 +137,48 @@ describe("loadDeclaredScopes", () => {
     }
   });
 
+  test("readModuleScopes receives installDir from services.json (closes #85 follow-up)", () => {
+    // Regression: scope-registry was looking up by services.json `name` in
+    // bun-globals. For third-party modules where name (canonical short like
+    // "claw") differs from the npm package name on disk ("nanoclaw" for
+    // forks), that lookup fails and the module's scopes are never declared.
+    // installDir from hub#84 is the correct path source.
+    const { manifestPath, cleanup } = tmp();
+    try {
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          services: [
+            {
+              name: "claw",
+              port: 1944,
+              paths: ["/claw"],
+              health: "/api/health",
+              version: "0.0.0-linked",
+              installDir: "/Users/test/ParachuteComputer/paraclaw",
+            },
+          ],
+        }),
+      );
+      const calls: { pkg: string; installDir: string | undefined }[] = [];
+      const declared = loadDeclaredScopes({
+        manifestPath,
+        readModuleScopes: (pkg, installDir) => {
+          calls.push({ pkg, installDir });
+          return pkg === "claw" ? ["claw:read", "claw:write", "claw:admin"] : null;
+        },
+      });
+      expect(calls).toEqual([
+        { pkg: "claw", installDir: "/Users/test/ParachuteComputer/paraclaw" },
+      ]);
+      expect(declared.has("claw:read")).toBe(true);
+      expect(declared.has("claw:write")).toBe(true);
+      expect(declared.has("claw:admin")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("services with no module.json don't crash the registry", () => {
     const { manifestPath, cleanup } = tmp();
     try {
