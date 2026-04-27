@@ -29,9 +29,7 @@ import {
   WELL_KNOWN_MOUNT,
   WELL_KNOWN_PATH,
   buildWellKnown,
-  isVaultEntry,
   shortName,
-  vaultInstanceName,
   writeWellKnownFile,
 } from "../well-known.ts";
 import { restart } from "./lifecycle.ts";
@@ -105,11 +103,14 @@ export interface ExposeOpts {
 const HUB_DEPENDENT_SHORTS = ["vault"] as const;
 
 /**
- * OAuth paths the hub fronts on behalf of vault (Phase 0: vault implements
- * OAuth, hub owns the public URL). The mount path is what clients see; the
- * target tail is what vault expects. tailscale strips the mount before
- * forwarding, so the target must include vault's `/vault/<name>` prefix to
- * land at the right handler.
+ * OAuth paths the hub serves natively. The mount path is what clients see;
+ * the target is the hub's loopback origin (where `hub-server.ts` is
+ * listening). tailscale strips the mount before forwarding, so the target
+ * must include the same path so the hub-server router sees the full URL.
+ *
+ * Pre-cli#58 (PR (c)) these were proxied to vault's `/vault/<name>/oauth/*`
+ * handlers; after PR (c) the hub IS the OAuth IdP and vault validates
+ * hub-issued JWTs (vault#169).
  */
 const OAUTH_PATHS = [
   "/.well-known/oauth-authorization-server",
@@ -117,14 +118,6 @@ const OAUTH_PATHS = [
   "/oauth/token",
   "/oauth/register",
 ] as const;
-
-/**
- * Single-vault launch assumption: find the first `parachute-vault` entry.
- * Multi-vault OAuth routing is Phase 2+ (design note open-question #4).
- */
-function primaryVault(services: readonly ServiceEntry[]): ServiceEntry | undefined {
-  return services.find((s) => isVaultEntry(s));
-}
 
 /**
  * Remap legacy `paths: ["/"]` entries to `/<shortname>` so they don't collide
@@ -228,21 +221,17 @@ function planEntries(services: readonly ServiceEntry[], hubPort: number): ServeE
     service: "well-known",
   });
 
-  // Phase 0 OAuth seam: hub origin owns the public OAuth URLs; vault owns
-  // the implementation. When vault is installed, mount the four endpoints
-  // at the hub origin and proxy them into vault's `/vault/<name>/oauth/*`.
-  const vault = primaryVault(services);
-  if (vault) {
-    const vaultMount = vault.paths[0] ?? `/vault/${vaultInstanceName(vault)}`;
-    const vaultBase = vaultMount.replace(/\/$/, "");
-    for (const oauthPath of OAUTH_PATHS) {
-      entries.push({
-        kind: "proxy",
-        mount: oauthPath,
-        target: `http://127.0.0.1:${vault.port}${vaultBase}${oauthPath}`,
-        service: `${vault.name}:oauth`,
-      });
-    }
+  // The hub is the OAuth IdP — mount the four endpoints at the canonical
+  // origin and proxy them to the hub's loopback. tailscale strips the mount
+  // before forwarding, so the target keeps the same path (matches the
+  // `serviceProxyTarget` rule of thumb in the doc above).
+  for (const oauthPath of OAUTH_PATHS) {
+    entries.push({
+      kind: "proxy",
+      mount: oauthPath,
+      target: serviceProxyTarget(hubPort, oauthPath),
+      service: "hub:oauth",
+    });
   }
   return entries;
 }
@@ -378,6 +367,13 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   writeHubFile(hubFilePath);
   log(`Wrote ${hubFilePath}`);
 
+  // Resolve the public hub origin before spawning the hub server — it gets
+  // baked into the OAuth `iss` claim via the `--issuer` flag. Falling back to
+  // the request origin would put `http://127.0.0.1:<port>` in tokens, which
+  // any client following RFC 8414 would reject.
+  const hubOrigin =
+    deriveHubOrigin({ override: opts.hubOrigin, exposeFqdn: fqdn }) ?? canonicalOrigin;
+
   let hubPort: number;
   if (opts.skipHub) {
     const existing = readHubPort(configDir);
@@ -391,6 +387,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
       ...(opts.hubEnsureOpts ?? {}),
       configDir,
       wellKnownDir,
+      issuer: hubOrigin,
       log,
     });
     hubPort = hub.port;
@@ -415,8 +412,6 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
     return code;
   }
 
-  const hubOrigin =
-    deriveHubOrigin({ override: opts.hubOrigin, exposeFqdn: fqdn }) ?? canonicalOrigin;
   const state: ExposeState = {
     version: 1,
     layer,
@@ -440,9 +435,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
     log(`✓ Tailnet exposure active. Open: ${canonicalOrigin}/`);
   }
   log(`  Discovery: ${canonicalOrigin}${WELL_KNOWN_MOUNT}`);
-  if (primaryVault(services)) {
-    log(`  OAuth issuer: ${hubOrigin}`);
-  }
+  log(`  OAuth issuer: ${hubOrigin}`);
 
   // Auto-restart services that cache the hub origin. Aaron hit this on launch
   // day: after `expose public` first-run, vault kept its stale (loopback)

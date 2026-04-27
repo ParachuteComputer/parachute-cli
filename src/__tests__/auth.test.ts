@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AuthDeps, type Runner, auth, authHelp } from "../commands/auth.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
+import { validateAccessToken } from "../jwt-sign.ts";
+import {
+  OPERATOR_TOKEN_AUDIENCE,
+  OPERATOR_TOKEN_SCOPES,
+  readOperatorTokenFile,
+} from "../operator-token.ts";
 import { listUsers, verifyPassword } from "../users.ts";
 
 function makeRunner(result: number | (() => Promise<number>) = 0): {
@@ -20,9 +26,10 @@ function makeRunner(result: number | (() => Promise<number>) = 0): {
   return { runner, calls };
 }
 
-function makeTmp(): { dbPath: string; cleanup: () => void } {
+function makeTmp(): { dir: string; dbPath: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "phub-auth-"));
   return {
+    dir,
     dbPath: hubDbPath(dir),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
@@ -91,6 +98,7 @@ describe("parachute auth", () => {
       const code = await auth(["set-password", "--password", "pw"], {
         runner,
         dbPath: tmp.dbPath,
+        configDir: tmp.dir,
         isInteractive: () => false,
       });
       expect(code).toBe(0);
@@ -187,6 +195,7 @@ describe("parachute auth set-password", () => {
     try {
       const deps: AuthDeps = {
         dbPath: tmp.dbPath,
+        configDir: tmp.dir,
         isInteractive: () => false,
       };
       const { code, stdout } = await captureOutput(() =>
@@ -215,6 +224,7 @@ describe("parachute auth set-password", () => {
       const { code } = await captureOutput(() =>
         auth(["set-password", "--username", "aaron", "--password", "pw"], {
           dbPath: tmp.dbPath,
+          configDir: tmp.dir,
           isInteractive: () => false,
         }),
       );
@@ -233,7 +243,7 @@ describe("parachute auth set-password", () => {
   test("updates the existing user's password (single-user mode)", async () => {
     const tmp = makeTmp();
     try {
-      const deps: AuthDeps = { dbPath: tmp.dbPath, isInteractive: () => false };
+      const deps: AuthDeps = { dbPath: tmp.dbPath, configDir: tmp.dir, isInteractive: () => false };
       // First-run create.
       await captureOutput(() => auth(["set-password", "--password", "old"], deps));
       // Update.
@@ -258,7 +268,7 @@ describe("parachute auth set-password", () => {
   test("rejects --username mismatch without --allow-multi", async () => {
     const tmp = makeTmp();
     try {
-      const deps: AuthDeps = { dbPath: tmp.dbPath, isInteractive: () => false };
+      const deps: AuthDeps = { dbPath: tmp.dbPath, configDir: tmp.dir, isInteractive: () => false };
       await captureOutput(() => auth(["set-password", "--password", "p"], deps));
       const { code, stderr } = await captureOutput(() =>
         auth(["set-password", "--username", "second", "--password", "p"], deps),
@@ -273,7 +283,7 @@ describe("parachute auth set-password", () => {
   test("creates a second user with --allow-multi", async () => {
     const tmp = makeTmp();
     try {
-      const deps: AuthDeps = { dbPath: tmp.dbPath, isInteractive: () => false };
+      const deps: AuthDeps = { dbPath: tmp.dbPath, configDir: tmp.dir, isInteractive: () => false };
       await captureOutput(() => auth(["set-password", "--password", "p"], deps));
       const { code } = await captureOutput(() =>
         auth(["set-password", "--username", "second", "--password", "p", "--allow-multi"], deps),
@@ -298,7 +308,11 @@ describe("parachute auth set-password", () => {
     const tmp = makeTmp();
     try {
       const { code, stderr } = await captureOutput(() =>
-        auth(["set-password"], { dbPath: tmp.dbPath, isInteractive: () => false }),
+        auth(["set-password"], {
+          dbPath: tmp.dbPath,
+          configDir: tmp.dir,
+          isInteractive: () => false,
+        }),
       );
       expect(code).toBe(1);
       expect(stderr).toContain("--password is required");
@@ -313,6 +327,7 @@ describe("parachute auth set-password", () => {
       const prompts: string[] = [];
       const deps: AuthDeps = {
         dbPath: tmp.dbPath,
+        configDir: tmp.dir,
         isInteractive: () => true,
         readPassword: async (p) => {
           prompts.push(p);
@@ -341,6 +356,7 @@ describe("parachute auth set-password", () => {
       const answers = ["one", "two"];
       const deps: AuthDeps = {
         dbPath: tmp.dbPath,
+        configDir: tmp.dir,
         isInteractive: () => true,
         readPassword: async () => answers.shift() ?? "",
         readLine: async () => "y",
@@ -358,6 +374,7 @@ describe("parachute auth set-password", () => {
     try {
       const deps: AuthDeps = {
         dbPath: tmp.dbPath,
+        configDir: tmp.dir,
         isInteractive: () => true,
         readPassword: async () => "",
         readLine: async () => "y",
@@ -375,6 +392,7 @@ describe("parachute auth set-password", () => {
     try {
       const deps: AuthDeps = {
         dbPath: tmp.dbPath,
+        configDir: tmp.dir,
         isInteractive: () => true,
         readPassword: async () => "pw",
         readLine: async () => "n",
@@ -391,7 +409,11 @@ describe("parachute auth set-password", () => {
     const tmp = makeTmp();
     try {
       const { code, stderr } = await captureOutput(() =>
-        auth(["set-password", "--lol"], { dbPath: tmp.dbPath, isInteractive: () => false }),
+        auth(["set-password", "--lol"], {
+          dbPath: tmp.dbPath,
+          configDir: tmp.dir,
+          isInteractive: () => false,
+        }),
       );
       expect(code).toBe(1);
       expect(stderr).toContain("unknown flag");
@@ -418,7 +440,7 @@ describe("parachute auth list-users", () => {
   test("lists usernames after a set-password", async () => {
     const tmp = makeTmp();
     try {
-      const deps: AuthDeps = { dbPath: tmp.dbPath, isInteractive: () => false };
+      const deps: AuthDeps = { dbPath: tmp.dbPath, configDir: tmp.dir, isInteractive: () => false };
       await captureOutput(() =>
         auth(["set-password", "--username", "alice", "--password", "p"], deps),
       );
@@ -426,6 +448,106 @@ describe("parachute auth list-users", () => {
       expect(code).toBe(0);
       expect(stdout).toContain("USERNAME");
       expect(stdout).toContain("alice");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
+
+describe("set-password operator-token side-effect", () => {
+  // First-run set-password must seed ~/.parachute/operator.token. Without
+  // this, on-box CLI callers have nothing to present as a bearer when the
+  // hub starts requiring auth on every request (no loopback bypass).
+  test("creates operator.token on first-run, signed against active key, audience=operator", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      const { code, stdout } = await captureOutput(() =>
+        auth(["set-password", "--password", "pw"], deps),
+      );
+      expect(code).toBe(0);
+      expect(stdout).toContain("operator token");
+      const tokenOnDisk = await readOperatorTokenFile(tmp.dir);
+      expect(tokenOnDisk).not.toBeNull();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, tokenOnDisk ?? "");
+        expect(validated.payload.aud).toBe(OPERATOR_TOKEN_AUDIENCE);
+        expect(validated.payload.scope).toBe(OPERATOR_TOKEN_SCOPES.join(" "));
+        const users = listUsers(db);
+        expect(validated.payload.sub).toBe(users[0]?.id);
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  // Password reset rotates the file too — old token stays valid until its
+  // 1y TTL expires (the hub doesn't track operator-token jtis), but the
+  // file always carries the freshest one.
+  test("password update overwrites operator.token with a fresh JWT", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "old"], deps));
+      const first = await readOperatorTokenFile(tmp.dir);
+      // Sleep a beat to make sure the new JWT has a different iat — JWT
+      // claims are second-precision.
+      await new Promise((r) => setTimeout(r, 1100));
+      await captureOutput(() => auth(["set-password", "--password", "new"], deps));
+      const second = await readOperatorTokenFile(tmp.dir);
+      expect(second).not.toBeNull();
+      expect(second).not.toBe(first);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
+
+describe("parachute auth rotate-operator", () => {
+  test("mints a fresh token, overwrites the file, exits 0", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const before = await readOperatorTokenFile(tmp.dir);
+      await new Promise((r) => setTimeout(r, 1100));
+      const { code, stdout } = await captureOutput(() => auth(["rotate-operator"], deps));
+      expect(code).toBe(0);
+      expect(stdout).toContain("Rotated operator token");
+      const after = await readOperatorTokenFile(tmp.dir);
+      expect(after).not.toBeNull();
+      expect(after).not.toBe(before);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("with no users yet, exits 1 with a hint to run set-password", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      const { code, stderr } = await captureOutput(() => auth(["rotate-operator"], deps));
+      expect(code).toBe(1);
+      expect(stderr).toContain("set-password");
     } finally {
       tmp.cleanup();
     }

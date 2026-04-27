@@ -42,6 +42,11 @@ export interface SignAccessTokenOpts {
   clientId: string;
   /** Override the jti (defaults to random base64url(16)). Used by tests. */
   jti?: string;
+  /**
+   * Override the default 15-minute access-token TTL. Long-lived tokens
+   * (operator-token, ~1y) pass an explicit value here.
+   */
+  ttlSeconds?: number;
   now?: () => Date;
 }
 
@@ -60,7 +65,7 @@ export async function signAccessToken(
   const jti = opts.jti ?? randomBytes(16).toString("base64url");
   const nowMs = (opts.now?.() ?? new Date()).getTime();
   const iat = Math.floor(nowMs / 1000);
-  const exp = iat + ACCESS_TOKEN_TTL_SECONDS;
+  const exp = iat + (opts.ttlSeconds ?? ACCESS_TOKEN_TTL_SECONDS);
   const token = await new SignJWT({
     scope: opts.scopes.join(" "),
     client_id: opts.clientId,
