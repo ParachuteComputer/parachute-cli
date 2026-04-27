@@ -8,11 +8,13 @@ import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { validateAccessToken } from "../jwt-sign.ts";
 import {
   authorizationServerMetadata,
+  buildServicesCatalog,
   handleAuthorizeGet,
   handleAuthorizePost,
   handleRegister,
   handleToken,
 } from "../oauth-handlers.ts";
+import type { ServicesManifest } from "../services-manifest.ts";
 import { SESSION_TTL_MS, buildSessionCookie, createSession } from "../sessions.ts";
 import { createUser } from "../users.ts";
 
@@ -40,6 +42,36 @@ function authorizeUrl(params: Record<string, string>): string {
   const u = new URL("/oauth/authorize", ISSUER);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
   return u.toString();
+}
+
+const FIXTURE_MANIFEST: ServicesManifest = {
+  services: [
+    {
+      name: "parachute-vault",
+      port: 1940,
+      paths: ["/vault/default"],
+      health: "/health",
+      version: "0.3.0",
+    },
+    {
+      name: "parachute-scribe",
+      port: 1943,
+      paths: ["/scribe"],
+      health: "/health",
+      version: "0.3.0-rc.1",
+    },
+    {
+      name: "parachute-notes",
+      port: 1942,
+      paths: ["/notes"],
+      health: "/notes/health",
+      version: "0.3.0",
+    },
+  ],
+};
+
+function fixtureLoadServicesManifest(): ServicesManifest {
+  return FIXTURE_MANIFEST;
 }
 
 describe("authorizationServerMetadata", () => {
@@ -379,7 +411,10 @@ describe("handleToken — full OAuth dance", () => {
         body: tokenForm,
         headers: { "content-type": "application/x-www-form-urlencoded" },
       });
-      const tokenRes = await handleToken(db, tokenReq, { issuer: ISSUER });
+      const tokenRes = await handleToken(db, tokenReq, {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
       expect(tokenRes.status).toBe(200);
       const tokenBody = (await tokenRes.json()) as {
         access_token: string;
@@ -387,6 +422,7 @@ describe("handleToken — full OAuth dance", () => {
         token_type: string;
         expires_in: number;
         scope: string;
+        services: Record<string, { url: string; version: string }>;
       };
       expect(tokenBody.token_type).toBe("Bearer");
       expect(tokenBody.scope).toBe("vault:read");
@@ -401,6 +437,13 @@ describe("handleToken — full OAuth dance", () => {
       expect(payload.iss).toBe(ISSUER);
       expect(payload.scope).toBe("vault:read");
       expect(payload.client_id).toBe(reg.client.clientId);
+
+      // closes #81 — services catalog tells the client where vault lives so
+      // notes doesn't have to re-probe /.well-known/parachute.json. A
+      // vault:read token only sees the vault entry.
+      expect(tokenBody.services).toEqual({
+        vault: { url: `${ISSUER}/vault/default`, version: "0.3.0" },
+      });
     } finally {
       cleanup();
     }
@@ -779,6 +822,105 @@ describe("handleToken — full OAuth dance", () => {
     } finally {
       cleanup();
     }
+  });
+
+  // closes #81 — services-catalog filtering + multi-service shape.
+  test("services catalog omits services the token has no scope for", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "scribe:transcribe",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const consentRes = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER },
+      );
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code ?? "",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const res = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: tokenForm,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        services: Record<string, { url: string; version: string }>;
+      };
+      expect(body.services).toEqual({
+        scribe: { url: `${ISSUER}/scribe`, version: "0.3.0-rc.1" },
+      });
+      expect(body.services.vault).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("services catalog includes every service the token has a scope for", async () => {
+    // buildServicesCatalog is a pure helper — exercise the multi-scope shape
+    // here without re-running the full PKCE dance.
+    const catalog = buildServicesCatalog(FIXTURE_MANIFEST, ISSUER, [
+      "vault:read",
+      "scribe:transcribe",
+    ]);
+    expect(catalog).toEqual({
+      vault: { url: `${ISSUER}/vault/default`, version: "0.3.0" },
+      scribe: { url: `${ISSUER}/scribe`, version: "0.3.0-rc.1" },
+    });
+  });
+
+  test("services catalog is empty when the token has no resource-prefixed scopes", () => {
+    expect(buildServicesCatalog(FIXTURE_MANIFEST, ISSUER, [])).toEqual({});
+    // hub-only scopes don't reference any installed module catalog entry.
+    expect(buildServicesCatalog(FIXTURE_MANIFEST, ISSUER, ["hub:admin"])).toEqual({});
+  });
+
+  // closes #81 — vault URL must follow paths[0] from services.json, NOT a
+  // hardcoded `/vault/default`. Users who installed with `--vault-name work`
+  // have `paths: ["/vault/work"]` and the catalog must reflect that.
+  test("services catalog reads paths[0] verbatim — handles custom vault names", () => {
+    const customManifest: ServicesManifest = {
+      services: [
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/work"],
+          health: "/health",
+          version: "0.3.0",
+        },
+      ],
+    };
+    expect(buildServicesCatalog(customManifest, ISSUER, ["vault:read"])).toEqual({
+      vault: { url: `${ISSUER}/vault/work`, version: "0.3.0" },
+    });
   });
 });
 

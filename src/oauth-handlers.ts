@@ -47,6 +47,10 @@ import { type AuthorizeFormParams, renderConsent, renderError, renderLogin } fro
 import { FIRST_PARTY_SCOPES } from "./scope-explanations.ts";
 import { findUnknownScopes, loadDeclaredScopes } from "./scope-registry.ts";
 import {
+  type ServicesManifest,
+  readManifest as readServicesManifest,
+} from "./services-manifest.ts";
+import {
   SESSION_TTL_MS,
   buildSessionCookie,
   createSession,
@@ -54,6 +58,7 @@ import {
   parseSessionCookie,
 } from "./sessions.ts";
 import { getUserByUsername, verifyPassword } from "./users.ts";
+import { isVaultEntry, shortName } from "./well-known.ts";
 
 export interface OAuthDeps {
   /** Hub origin used for `iss`, `authorization_endpoint`, etc. */
@@ -68,6 +73,65 @@ export interface OAuthDeps {
    * See cli#71 + `oauth-scopes.md`.
    */
   loadDeclaredScopes?: () => ReadonlySet<string>;
+  /**
+   * Resolve the installed-services manifest used to populate the `services`
+   * catalog in /oauth/token responses (cli#81). Production reads
+   * `~/.parachute/services.json`; tests inject a fixture.
+   */
+  loadServicesManifest?: () => ServicesManifest;
+}
+
+export interface ServicesCatalogEntry {
+  url: string;
+  version: string;
+}
+
+export type ServicesCatalog = Record<string, ServicesCatalogEntry>;
+
+/**
+ * Build the `services` map embedded in /oauth/token responses. Each entry maps
+ * a short service name (`vault`, `scribe`, `notes`, …) to its absolute URL +
+ * version, so OAuth clients don't have to re-probe `/.well-known/parachute.json`
+ * to know where vault lives.
+ *
+ * URL source: `entry.paths[0]` from services.json verbatim — never hardcode
+ * `/vault/default`. Users who installed with `parachute install vault
+ * --vault-name work` have `paths: ["/vault/work"]` in their manifest, and the
+ * catalog URL must follow that. The custom-vault-name regression test in
+ * oauth-handlers.test.ts pins this.
+ *
+ * Filtering: only services for which the token has at least one scope are
+ * included. A scope `vault:read` admits the `vault` service; a token with only
+ * `scribe:transcribe` gets a catalog with no vault entry. The check is on the
+ * audience prefix (`<aud>:<verb>`) — same shape `inferAudience` uses.
+ *
+ * Multi-vault: Phase 1 collapses every vault entry under the single key
+ * `vault`, first matching `parachute-vault*` row wins. Per-vault keys
+ * (`services.vault.work.url` or `services["vault:work"].url`) are deferred
+ * to a future design once notes ships its vault picker; multi-vault clients
+ * need to probe `/.well-known/parachute.json` for the full vaults array
+ * until then.
+ */
+export function buildServicesCatalog(
+  manifest: ServicesManifest,
+  issuer: string,
+  scopes: readonly string[],
+): ServicesCatalog {
+  const audiences = new Set<string>();
+  for (const s of scopes) {
+    const colon = s.indexOf(":");
+    if (colon > 0) audiences.add(s.slice(0, colon));
+  }
+  const base = issuer.replace(/\/$/, "");
+  const catalog: ServicesCatalog = {};
+  for (const entry of manifest.services) {
+    const path = entry.paths[0] ?? "/";
+    const key = isVaultEntry(entry) ? "vault" : shortName(entry.name);
+    if (!audiences.has(key)) continue;
+    if (catalog[key]) continue; // first vault wins; deterministic for clients
+    catalog[key] = { url: `${base}${path}`, version: entry.version };
+  }
+  return catalog;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -431,12 +495,18 @@ async function handleTokenAuthorizationCode(
     scopes: redeemed.scopes,
     now: deps.now,
   });
+  const services = buildServicesCatalog(
+    (deps.loadServicesManifest ?? readServicesManifest)(),
+    deps.issuer,
+    redeemed.scopes,
+  );
   return jsonResponse({
     access_token: access.token,
     token_type: "Bearer",
     expires_in: ACCESS_TOKEN_TTL_SECONDS,
     refresh_token: refresh.token,
     scope: redeemed.scopes.join(" "),
+    services,
   });
 }
 
@@ -498,12 +568,18 @@ async function handleTokenRefresh(
     scopes: row.scopes,
     now: deps.now,
   });
+  const services = buildServicesCatalog(
+    (deps.loadServicesManifest ?? readServicesManifest)(),
+    deps.issuer,
+    row.scopes,
+  );
   return jsonResponse({
     access_token: access.token,
     token_type: "Bearer",
     expires_in: ACCESS_TOKEN_TTL_SECONDS,
     refresh_token: refresh.token,
     scope: row.scopes.join(" "),
+    services,
   });
 }
 
