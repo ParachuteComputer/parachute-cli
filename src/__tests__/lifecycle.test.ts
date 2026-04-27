@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { logs, restart, start, stop } from "../commands/lifecycle.ts";
@@ -48,12 +48,62 @@ function seedNotes(manifestPath: string): void {
   );
 }
 
+interface ThirdPartySeed {
+  installDir: string;
+  manifestName?: string;
+  startCmd?: readonly string[];
+  port?: number;
+}
+
+/**
+ * Seed a third-party services.json row + write a `.parachute/module.json` at
+ * `installDir`. Mirrors what `parachute install /tmp/foo` produces in
+ * production: row carries `installDir`, lifecycle resolves spec from the
+ * filesystem.
+ */
+function seedThirdParty(
+  manifestPath: string,
+  configDirRoot: string,
+  name: string,
+  opts: ThirdPartySeed,
+): string {
+  const installDir = opts.installDir;
+  mkdirSync(join(installDir, ".parachute"), { recursive: true });
+  const manifest = {
+    name,
+    manifestName: opts.manifestName ?? name,
+    kind: "api" as const,
+    port: opts.port ?? 1944,
+    paths: [`/${name}`],
+    health: `/${name}/health`,
+    ...(opts.startCmd ? { startCmd: opts.startCmd } : {}),
+  };
+  writeFileSync(join(installDir, ".parachute", "module.json"), JSON.stringify(manifest));
+  upsertService(
+    {
+      name: opts.manifestName ?? name,
+      port: opts.port ?? 1944,
+      paths: [`/${name}`],
+      health: `/${name}/health`,
+      version: "0.0.1",
+      installDir,
+    },
+    manifestPath,
+  );
+  return configDirRoot;
+}
+
 interface SpawnerStub {
-  spawn: (cmd: readonly string[], logFile: string, env?: Record<string, string>) => number;
+  spawn: (
+    cmd: readonly string[],
+    logFile: string,
+    opts?: { env?: Record<string, string>; cwd?: string },
+  ) => number;
   calls: Array<{
     cmd: readonly string[];
     logFile: string;
     env?: Record<string, string>;
+    cwd?: string;
   }>;
 }
 
@@ -62,12 +112,13 @@ function makeSpawner(pidSequence: number[]): SpawnerStub {
     cmd: readonly string[];
     logFile: string;
     env?: Record<string, string>;
+    cwd?: string;
   }> = [];
   let i = 0;
   return {
     calls,
-    spawn(cmd, logFile, env) {
-      calls.push({ cmd: [...cmd], logFile, env });
+    spawn(cmd, logFile, opts) {
+      calls.push({ cmd: [...cmd], logFile, env: opts?.env, cwd: opts?.cwd });
       return pidSequence[i++] ?? 99999;
     },
   };
@@ -428,6 +479,141 @@ describe("parachute start", () => {
       h.cleanup();
     }
   });
+
+  test("third-party module starts via installDir module.json with cwd", async () => {
+    // hub#83: services.json rows that carry installDir resolve their spec
+    // from `<installDir>/.parachute/module.json` at lifecycle time. Spawn
+    // gets cwd=installDir so manifest-declared relative paths work.
+    const h = makeHarness();
+    try {
+      const installDir = join(h.configDir, "_pkg-claw");
+      seedThirdParty(h.manifestPath, h.configDir, "claw", {
+        installDir,
+        startCmd: ["bun", "web/server/src/server.ts"],
+        port: 1944,
+      });
+      const spawner = makeSpawner([8080]);
+      const code = await start("claw", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls).toHaveLength(1);
+      expect(spawner.calls[0]?.cmd).toEqual(["bun", "web/server/src/server.ts"]);
+      expect(spawner.calls[0]?.cwd).toBe(installDir);
+      expect(readPid("claw", h.configDir)).toBe(8080);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("third-party with no installDir errors as unknown service", async () => {
+    // A row whose name isn't a known short name AND has no installDir is
+    // unmanageable — we have no way to find a spec for it.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "mystery",
+          port: 1944,
+          paths: ["/mystery"],
+          health: "/mystery/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      const lines: string[] = [];
+      const code = await start("mystery", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => lines.push(l),
+      });
+      expect(code).toBe(1);
+      expect(lines.join("\n")).toMatch(/unknown service "mystery"/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("start (no svc) sweeps both first-party and third-party rows", async () => {
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      const installDir = join(h.configDir, "_pkg-claw");
+      seedThirdParty(h.manifestPath, h.configDir, "claw", {
+        installDir,
+        startCmd: ["bun", "server.ts"],
+        port: 1944,
+      });
+      const spawner = makeSpawner([4242, 8080]);
+      const code = await start(undefined, {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        spawner,
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(spawner.calls).toHaveLength(2);
+      const cmds = spawner.calls.map((c) => c.cmd);
+      expect(cmds).toContainEqual(["parachute-vault", "serve"]);
+      expect(cmds).toContainEqual(["bun", "server.ts"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("third-party with malformed module.json fails clearly", async () => {
+    const h = makeHarness();
+    try {
+      const installDir = join(h.configDir, "_pkg-broken");
+      mkdirSync(join(installDir, ".parachute"), { recursive: true });
+      writeFileSync(join(installDir, ".parachute", "module.json"), "{ not valid json");
+      upsertService(
+        {
+          name: "broken",
+          port: 1944,
+          paths: ["/broken"],
+          health: "/broken/health",
+          version: "0.0.1",
+          installDir,
+        },
+        h.manifestPath,
+      );
+      const lines: string[] = [];
+      const code = await start("broken", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => lines.push(l),
+      });
+      expect(code).toBe(1);
+      expect(lines.join("\n")).toMatch(/broken: invalid module\.json/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("third-party with no startCmd in module.json reports lifecycle-unsupported", async () => {
+    const h = makeHarness();
+    try {
+      const installDir = join(h.configDir, "_pkg-noop");
+      seedThirdParty(h.manifestPath, h.configDir, "noop", {
+        installDir,
+        port: 1945,
+      });
+      const lines: string[] = [];
+      const code = await start("noop", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => lines.push(l),
+      });
+      expect(code).toBe(1);
+      expect(lines.join("\n")).toMatch(/lifecycle not yet supported/);
+    } finally {
+      h.cleanup();
+    }
+  });
 });
 
 describe("parachute stop", () => {
@@ -601,6 +787,29 @@ describe("parachute logs", () => {
       });
       expect(code).toBe(1);
       expect(lines.join("\n")).toMatch(/unknown service/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("third-party module name with installDir is recognised", async () => {
+    const h = makeHarness();
+    try {
+      const installDir = join(h.configDir, "_pkg-claw");
+      seedThirdParty(h.manifestPath, h.configDir, "claw", {
+        installDir,
+        startCmd: ["bun", "server.ts"],
+      });
+      const p = ensureLogPath("claw", h.configDir);
+      writeFileSync(p, "claw line 1\nclaw line 2\n");
+      const lines: string[] = [];
+      const code = await logs("claw", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => lines.push(l),
+      });
+      expect(code).toBe(0);
+      expect(lines).toEqual(["claw line 1", "claw line 2"]);
     } finally {
       h.cleanup();
     }

@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import type { ModuleManifest } from "./module-manifest.ts";
+import { type ModuleManifest, readModuleManifest } from "./module-manifest.ts";
 import type { ServiceEntry } from "./services-manifest.ts";
 
 /**
@@ -403,11 +403,9 @@ export function knownServices(): string[] {
 
 /**
  * Resolve the runtime spec for a known short name. Returns undefined for
- * unknown names; third-party modules installed via `module.json` don't get
- * a runtime spec out of this lookup yet — that's a follow-up. For now,
- * lifecycle / status / expose treat unknown names as "we have a
- * services.json row but no spec" (skip lifecycle, fall back to defaults
- * for URL / exposure), exactly as before.
+ * unknown names; third-party modules installed via `module.json` resolve
+ * via {@link getSpecFromInstallDir} instead, since their spec isn't
+ * compiled in.
  */
 export function getSpec(short: string): ServiceSpec | undefined {
   const fb = FIRST_PARTY_FALLBACKS[short];
@@ -417,6 +415,31 @@ export function getSpec(short: string): ServiceSpec | undefined {
     manifest: fb.manifest,
     extras: fb.extras,
   });
+}
+
+/**
+ * Resolve a third-party module's runtime spec by reading its
+ * `<installDir>/.parachute/module.json` fresh. Re-reading at lifecycle time
+ * (rather than baking the spec into services.json at install) means the
+ * module can ship `startCmd` updates without a re-install.
+ *
+ * Returns null when the manifest is missing — caller falls back to the
+ * "lifecycle not yet supported" message (same shape as a first-party spec
+ * with no startCmd). Throws ModuleManifestError on a malformed manifest;
+ * lifecycle catches and surfaces it as a per-service failure rather than
+ * crashing the whole sweep.
+ *
+ * `packageName` is informational only — the spec carries it forward for
+ * diagnostics. Lifecycle doesn't care; install passes it through from the
+ * services.json row's name.
+ */
+export async function getSpecFromInstallDir(
+  installDir: string,
+  packageName: string,
+): Promise<ServiceSpec | null> {
+  const manifest = await readModuleManifest(installDir);
+  if (!manifest) return null;
+  return composeServiceSpec({ packageName, manifest });
 }
 
 /**
