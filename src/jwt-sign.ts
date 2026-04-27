@@ -40,6 +40,13 @@ export interface SignAccessTokenOpts {
   /** Module short name (vault, notes, …) or "hub" — sets `aud`. */
   audience: string;
   clientId: string;
+  /**
+   * Hub origin — sets the `iss` claim. Required: every consumer (vault,
+   * scribe, channel) validates `iss` against `PARACHUTE_HUB_ORIGIN`, and a
+   * missing claim is rejected. Callers derive this via `deriveHubOrigin()`
+   * or thread it from `OAuthDeps.issuer`.
+   */
+  issuer: string;
   /** Override the jti (defaults to random base64url(16)). Used by tests. */
   jti?: string;
   /**
@@ -72,6 +79,7 @@ export async function signAccessToken(
   })
     .setProtectedHeader({ alg: SIGNING_ALGORITHM, kid: key.kid })
     .setSubject(opts.sub)
+    .setIssuer(opts.issuer)
     .setIssuedAt(iat)
     .setExpirationTime(exp)
     .setAudience(opts.audience)
@@ -127,10 +135,16 @@ export interface ValidatedAccessToken {
  * up the matching key from `signing_keys`. Active + recently-retired keys
  * (whatever's in JWKS) are accepted; older retired keys throw. Expiry is
  * checked by `jose` automatically.
+ *
+ * Pass `expectedIssuer` to enforce that the JWT's `iss` claim matches what
+ * this hub advertises — the same check vault performs against its own
+ * `PARACHUTE_HUB_ORIGIN`. Defense in depth: tokens forged or replayed from
+ * a different issuer get rejected at validation as well as issuance.
  */
 export async function validateAccessToken(
   db: Database,
   token: string,
+  expectedIssuer?: string,
 ): Promise<ValidatedAccessToken> {
   const header = decodeProtectedHeader(token);
   const kid = header.kid;
@@ -138,7 +152,11 @@ export async function validateAccessToken(
   const match = getAllPublicKeys(db).find((k) => k.kid === kid);
   if (!match) throw new Error(`validateAccessToken: unknown or expired kid ${kid}`);
   const pub = await importSPKI(match.publicKeyPem, SIGNING_ALGORITHM);
-  const { payload } = await jwtVerify(token, pub);
+  const { payload } = await jwtVerify(
+    token,
+    pub,
+    expectedIssuer ? { issuer: expectedIssuer } : undefined,
+  );
   return { payload, kid };
 }
 

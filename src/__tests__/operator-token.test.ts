@@ -28,6 +28,8 @@ function makeHarness(): Harness {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+const TEST_ISSUER = "http://127.0.0.1:1939";
+
 describe("mintOperatorToken", () => {
   test("returns a JWT with operator audience, broad scopes, and ~1y TTL", async () => {
     const h = makeHarness();
@@ -36,12 +38,14 @@ describe("mintOperatorToken", () => {
       try {
         rotateSigningKey(db);
         const minted = await mintOperatorToken(db, "user-abc", {
+          issuer: TEST_ISSUER,
           now: () => new Date("2026-04-26T00:00:00Z"),
         });
         expect(minted.token.split(".")).toHaveLength(3);
-        const validated = await validateAccessToken(db, minted.token);
+        const validated = await validateAccessToken(db, minted.token, TEST_ISSUER);
         expect(validated.payload.sub).toBe("user-abc");
         expect(validated.payload.aud).toBe(OPERATOR_TOKEN_AUDIENCE);
+        expect(validated.payload.iss).toBe(TEST_ISSUER);
         expect(validated.payload.scope).toBe(OPERATOR_TOKEN_SCOPES.join(" "));
         const exp = validated.payload.exp ?? 0;
         const iat = validated.payload.iat ?? 0;
@@ -115,12 +119,16 @@ describe("issueOperatorToken", () => {
       const db = openHubDb(hubDbPath(h.dir));
       try {
         rotateSigningKey(db);
-        const issued = await issueOperatorToken(db, "user-xyz", { dir: h.dir });
+        const issued = await issueOperatorToken(db, "user-xyz", {
+          dir: h.dir,
+          issuer: TEST_ISSUER,
+        });
         expect(issued.path).toBe(join(h.dir, OPERATOR_TOKEN_FILENAME));
         const fromDisk = await readOperatorTokenFile(h.dir);
         expect(fromDisk).toBe(issued.token);
-        const validated = await validateAccessToken(db, issued.token);
+        const validated = await validateAccessToken(db, issued.token, TEST_ISSUER);
         expect(validated.payload.sub).toBe("user-xyz");
+        expect(validated.payload.iss).toBe(TEST_ISSUER);
       } finally {
         db.close();
       }

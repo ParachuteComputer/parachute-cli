@@ -16,8 +16,13 @@
  *   - `2fa` — TOTP enroll/disable/backup-codes.
  */
 
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { CONFIG_DIR } from "../config.ts";
+import { readExposeState } from "../expose-state.ts";
+import { HUB_DEFAULT_PORT, readHubPort } from "../hub-control.ts";
 import { openHubDb } from "../hub-db.ts";
+import { deriveHubOrigin } from "../hub-origin.ts";
 import { issueOperatorToken } from "../operator-token.ts";
 import { rotateSigningKey } from "../signing-keys.ts";
 import {
@@ -104,6 +109,34 @@ export interface AuthDeps {
    * `configDir()` (i.e. `~/.parachute/`). Tests point at a tmp dir.
    */
   configDir?: string;
+  /**
+   * Override the hub origin written into the operator token's `iss` claim.
+   * When unset, derived from `expose-state.json` → hub.port → canonical
+   * `http://127.0.0.1:1939`, mirroring the resolution `parachute start` uses
+   * for `PARACHUTE_HUB_ORIGIN` so the token's iss matches what services see.
+   */
+  hubOrigin?: string;
+}
+
+/**
+ * Resolve the hub origin used as `iss` for operator tokens. Mirrors
+ * lifecycle.resolveHubOrigin's order, but falls back to the canonical
+ * loopback (`http://127.0.0.1:1939`) instead of `undefined` — operator
+ * tokens MUST carry an issuer, and on first-run before any expose has
+ * happened the canonical loopback is what services will validate against.
+ */
+function resolveHubIssuer(override: string | undefined, configDir: string): string {
+  if (override) {
+    const fromOverride = deriveHubOrigin({ override });
+    if (fromOverride) return fromOverride;
+  }
+  const state = readExposeState(join(configDir, "expose-state.json"));
+  if (state?.hubOrigin) return state.hubOrigin;
+  const exposeFqdn = state?.canonicalFqdn;
+  return (
+    deriveHubOrigin({ exposeFqdn, hubPort: readHubPort(configDir) }) ??
+    `http://127.0.0.1:${HUB_DEFAULT_PORT}`
+  );
 }
 
 function defaultRotateKey(): { kid: string; createdAt: string } {
@@ -262,7 +295,10 @@ async function runSetPassword(args: readonly string[], deps: AuthDeps): Promise<
       if (target) {
         await setPassword(db, target.id, password);
         console.log(`Updated password for "${target.username}".`);
-        const issued = await issueOperatorToken(db, target.id, { dir: deps.configDir });
+        const issued = await issueOperatorToken(db, target.id, {
+          dir: deps.configDir,
+          issuer: resolveHubIssuer(deps.hubOrigin, deps.configDir ?? CONFIG_DIR),
+        });
         console.log(`Refreshed operator token at ${issued.path}.`);
         return 0;
       }
@@ -288,7 +324,10 @@ async function runSetPassword(args: readonly string[], deps: AuthDeps): Promise<
     try {
       const u = await createUser(db, targetUsername, password, { allowMulti: flags.allowMulti });
       console.log(`Created hub user "${u.username}" (id=${u.id}).`);
-      const issued = await issueOperatorToken(db, u.id, { dir: deps.configDir });
+      const issued = await issueOperatorToken(db, u.id, {
+        dir: deps.configDir,
+        issuer: resolveHubIssuer(deps.hubOrigin, deps.configDir ?? CONFIG_DIR),
+      });
       console.log(`Wrote operator token to ${issued.path} (mode 0600).`);
       return 0;
     } catch (err) {
@@ -318,7 +357,10 @@ async function runRotateOperator(deps: AuthDeps): Promise<number> {
       );
       return 1;
     }
-    const issued = await issueOperatorToken(db, owner.id, { dir: deps.configDir });
+    const issued = await issueOperatorToken(db, owner.id, {
+      dir: deps.configDir,
+      issuer: resolveHubIssuer(deps.hubOrigin, deps.configDir ?? CONFIG_DIR),
+    });
     console.log("Rotated operator token.");
     console.log(`  user:       ${owner.username}`);
     console.log(`  path:       ${issued.path}`);

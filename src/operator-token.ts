@@ -35,6 +35,13 @@ export function operatorTokenPath(dir: string = configDir()): string {
 }
 
 export interface MintOperatorTokenOpts {
+  /**
+   * Hub origin — written into the JWT's `iss` claim. On-box services
+   * (vault, scribe, channel) reject tokens whose `iss` doesn't match the
+   * `PARACHUTE_HUB_ORIGIN` they were started with. Callers derive this via
+   * `deriveHubOrigin()`.
+   */
+  issuer: string;
   /** Override the JWT-sign clock — tests pin time. */
   now?: () => Date;
   /** Override the random jti — tests pin it. */
@@ -46,13 +53,14 @@ export interface MintOperatorTokenOpts {
 export async function mintOperatorToken(
   db: Database,
   userId: string,
-  opts: MintOperatorTokenOpts = {},
+  opts: MintOperatorTokenOpts,
 ): Promise<{ token: string; jti: string; expiresAt: string }> {
   return signAccessToken(db, {
     sub: userId,
     scopes: OPERATOR_TOKEN_SCOPES,
     audience: opts.audience ?? OPERATOR_TOKEN_AUDIENCE,
     clientId: OPERATOR_TOKEN_CLIENT_ID,
+    issuer: opts.issuer,
     ttlSeconds: OPERATOR_TOKEN_TTL_SECONDS,
     ...(opts.jti !== undefined ? { jti: opts.jti } : {}),
     ...(opts.now !== undefined ? { now: opts.now } : {}),
@@ -107,7 +115,7 @@ export interface IssueOperatorTokenResult {
 export async function issueOperatorToken(
   db: Database,
   userId: string,
-  opts: MintOperatorTokenOpts & { dir?: string } = {},
+  opts: MintOperatorTokenOpts & { dir?: string },
 ): Promise<IssueOperatorTokenResult> {
   const minted = await mintOperatorToken(db, userId, opts);
   const path = await writeOperatorTokenFile(minted.token, opts.dir);

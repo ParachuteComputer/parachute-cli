@@ -37,6 +37,7 @@ describe("signAccessToken", () => {
         scopes: ["vault.read", "vault.write"],
         audience: "vault",
         clientId: "notes-pwa",
+        issuer: "https://hub.example",
       });
       const header = decodeProtectedHeader(token);
       expect(header.alg).toBe("RS256");
@@ -65,6 +66,7 @@ describe("signAccessToken", () => {
         scopes: ["vault.read"],
         audience: "vault",
         clientId: "c",
+        issuer: "https://hub.example",
       });
       const count = (
         db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM tokens").get() ?? {
@@ -72,6 +74,43 @@ describe("signAccessToken", () => {
         }
       ).n;
       expect(count).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("sets `iss` claim from opts.issuer (closes #77)", async () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const issuer = "http://127.0.0.1:1939";
+      const { token } = await signAccessToken(db, {
+        sub: "user-1",
+        scopes: ["vault.read"],
+        audience: "vault",
+        clientId: "c",
+        issuer,
+      });
+      const payload = decodeJwt(token);
+      expect(payload.iss).toBe(issuer);
+      // Validation accepts the matching issuer.
+      const { payload: validated } = await validateAccessToken(db, token, issuer);
+      expect(validated.iss).toBe(issuer);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("validateAccessToken rejects a token with a mismatched iss (defense in depth)", async () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const { token } = await signAccessToken(db, {
+        sub: "user-1",
+        scopes: [],
+        audience: "vault",
+        clientId: "c",
+        issuer: "http://127.0.0.1:1939",
+      });
+      await expect(validateAccessToken(db, token, "https://other.example")).rejects.toThrow();
     } finally {
       cleanup();
     }
@@ -174,6 +213,7 @@ describe("validateAccessToken", () => {
         scopes: ["s"],
         audience: "vault",
         clientId: "c",
+        issuer: "https://hub.example",
       });
       const { payload, kid } = await validateAccessToken(db, token);
       expect(payload.sub).toBe("u");
@@ -191,6 +231,7 @@ describe("validateAccessToken", () => {
         scopes: [],
         audience: "vault",
         clientId: "c",
+        issuer: "https://hub.example",
       });
       // Rotate — old key becomes retired but stays in JWKS for 24h.
       rotateSigningKey(db);
@@ -209,6 +250,7 @@ describe("validateAccessToken", () => {
         scopes: [],
         audience: "vault",
         clientId: "c",
+        issuer: "https://hub.example",
       });
       // Force the prior active key past 24h retention.
       const past = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();

@@ -421,6 +421,7 @@ async function handleTokenAuthorizationCode(
     scopes: redeemed.scopes,
     audience,
     clientId: redeemed.clientId,
+    issuer: deps.issuer,
     now: deps.now,
   });
   const refresh = signRefreshToken(db, {
@@ -487,6 +488,7 @@ async function handleTokenRefresh(
     scopes: row.scopes,
     audience,
     clientId: row.clientId,
+    issuer: deps.issuer,
     now: deps.now,
   });
   const refresh = signRefreshToken(db, {
