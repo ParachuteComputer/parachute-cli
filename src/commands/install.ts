@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -57,6 +57,15 @@ export interface InstallOpts {
    * Defaults to a symlink check against bun's global node_modules prefix.
    */
   isLinked?: (pkg: string) => boolean;
+  /**
+   * Returns the absolute path a global symlink points at, or null if no
+   * symlink exists. Used by local-path installs to skip a redundant
+   * `bun add -g <abspath>` when the path is already wired up — repeatedly
+   * `bun add -g <abspath>`'ing the same path appends duplicate entries to
+   * `~/.bun/install/global/package.json` until the lockfile parser breaks
+   * (hub#89). Defaults to a `readlink` against bun's global prefixes.
+   */
+  linkedPath?: (pkg: string) => string | null;
   /**
    * Optional npm dist-tag or exact version to install. When set, the
    * `bun add -g` call is composed as `<package>@<tag>` so RC testers can
@@ -152,6 +161,24 @@ function defaultIsLinked(pkg: string): boolean {
     }
   }
   return false;
+}
+
+function defaultLinkedPath(pkg: string): string | null {
+  // bun has two install shapes for "linked-style" globals:
+  //   - `bun link`: <prefix>/node_modules/<pkg> is itself a symlink to source.
+  //   - `bun add -g <abspath>`: <prefix>/node_modules/<pkg> is a real dir
+  //     whose entries (package.json, etc.) are file-level symlinks to source.
+  // Resolving <prefix>/node_modules/<pkg>/package.json follows the link to
+  // the source package.json in either shape; dirname is the source dir.
+  for (const prefix of bunGlobalPrefixes()) {
+    const pkgJson = join(prefix, ...pkg.split("/"), "package.json");
+    try {
+      return dirname(realpathSync(pkgJson));
+    } catch {
+      // Not present at this prefix; try the next.
+    }
+  }
+  return null;
 }
 
 /**
@@ -375,18 +402,37 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   const now = opts.now ?? (() => new Date());
   const log = opts.log ?? ((line) => console.log(line));
   const isLinked = opts.isLinked ?? defaultIsLinked;
+  const linkedPath = opts.linkedPath ?? defaultLinkedPath;
   const findGlobalInstall = opts.findGlobalInstall ?? defaultFindGlobalInstall;
   const readManifest = opts.readManifest ?? readModuleManifest;
 
   const target = resolveInstallTarget(input, opts, log);
   if (!target) return 1;
 
-  // bun-add gate: skipped only for first-party packages already bun-linked
-  // locally (the scribe motivator — package isn't on npm yet, link beats
-  // add). Local-path installs always go through `bun add -g <abspath>` so
-  // bun's link plumbing produces a binary on PATH.
+  // bun-add gate: skip when the package is already wired up.
+  //   - first-party + isLinked: scribe-style `bun link` against an unpublished
+  //     local checkout. `bun add -g` would 404.
+  //   - local-path + symlink already points at this path: re-installing the
+  //     same checkout. `bun add -g <abspath>` accumulates duplicate entries
+  //     in `~/.bun/install/global/package.json` until bun's lockfile parser
+  //     gives up (hub#89 — caught during paraclaw smoke testing 2026-04-27).
+  // Otherwise run `bun add -g <spec>` so bun's link plumbing produces a
+  // binary on PATH.
+  const localAlreadyLinkedTo = target.kind === "local-path" ? linkedPath(target.packageName) : null;
+  // Compare via realpath on the input side too, so symlinks in the path
+  // the user typed don't make us miss an existing match.
+  let targetReal: string | undefined;
+  if (target.kind === "local-path") {
+    try {
+      targetReal = realpathSync(target.absPath);
+    } catch {
+      targetReal = target.absPath;
+    }
+  }
   if (target.kind === "first-party" && isLinked(target.packageName)) {
     log(`${target.packageName} is already linked globally (bun link) — skipping bun add.`);
+  } else if (target.kind === "local-path" && localAlreadyLinkedTo === targetReal) {
+    log(`${target.packageName} is already linked at ${target.absPath} — skipping bun add.`);
   } else {
     const addSpec =
       target.kind === "local-path"
