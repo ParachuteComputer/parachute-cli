@@ -124,6 +124,14 @@ export interface EnsureHubOpts {
   reservedPorts?: Iterable<number>;
   /** How long to wait after spawn before claiming readiness. Short — tests set to 0. */
   readyWaitMs?: number;
+  /**
+   * Public origin to use as the OAuth `iss` claim and as the base for the
+   * authorization-server metadata document. Forwarded to the hub server as
+   * `--issuer <url>`. When omitted, the hub falls back to the request's own
+   * origin — fine for loopback testing, wrong under tailscale where the
+   * request origin is `http://127.0.0.1:<port>`.
+   */
+  issuer?: string;
   log?: (line: string) => void;
 }
 
@@ -183,6 +191,7 @@ export async function ensureHubRunning(opts: EnsureHubOpts = {}): Promise<Ensure
     wellKnownDir,
     "--db",
     hubDbPath(configDir),
+    ...(opts.issuer ? ["--issuer", opts.issuer] : []),
   ];
   const pid = spawner.spawn(cmd, logFile);
   writePid(HUB_SVC, pid, configDir);

@@ -18,6 +18,7 @@
 
 import { createInterface } from "node:readline/promises";
 import { openHubDb } from "../hub-db.ts";
+import { issueOperatorToken } from "../operator-token.ts";
 import { rotateSigningKey } from "../signing-keys.ts";
 import {
   SingleUserModeError,
@@ -41,7 +42,12 @@ export const defaultRunner: Runner = {
 };
 
 const VAULT_FORWARDED_SUBCOMMANDS = new Set(["2fa"]);
-const HUB_LOCAL_SUBCOMMANDS = new Set(["rotate-key", "set-password", "list-users"]);
+const HUB_LOCAL_SUBCOMMANDS = new Set([
+  "rotate-key",
+  "set-password",
+  "list-users",
+  "rotate-operator",
+]);
 
 export function authHelp(): string {
   return `parachute auth — ecosystem identity commands (password + two-factor authentication)
@@ -55,6 +61,7 @@ Usage:
   parachute auth 2fa disable           Disable 2FA (requires password)
   parachute auth 2fa backup-codes      Regenerate backup codes
   parachute auth rotate-key            Rotate the hub's JWT signing key
+  parachute auth rotate-operator       Mint a fresh ~/.parachute/operator.token
 
 set-password and list-users are hub-local — they read/write
 ~/.parachute/hub.db. set-password is interactive by default (prompts for
@@ -73,6 +80,11 @@ you see "not found on PATH", install vault first:
 rotate-key generates a fresh RSA-2048 keypair and retires the previous
 one. The retired key keeps appearing in /.well-known/jwks.json for 24
 hours so cached client copies keep validating until their TTL expires.
+
+rotate-operator mints a fresh long-lived operator token at
+~/.parachute/operator.token (mode 0600). Local CLI tools read this file
+as their bearer when calling on-box services. set-password also writes
+the file on first-run / password reset.
 `;
 }
 
@@ -87,6 +99,11 @@ export interface AuthDeps {
   isInteractive?: () => boolean;
   /** Override the hub-db path. Tests point at a tmp dir. */
   dbPath?: string;
+  /**
+   * Override the directory where `operator.token` is written. Defaults to
+   * `configDir()` (i.e. `~/.parachute/`). Tests point at a tmp dir.
+   */
+  configDir?: string;
 }
 
 function defaultRotateKey(): { kid: string; createdAt: string } {
@@ -245,6 +262,8 @@ async function runSetPassword(args: readonly string[], deps: AuthDeps): Promise<
       if (target) {
         await setPassword(db, target.id, password);
         console.log(`Updated password for "${target.username}".`);
+        const issued = await issueOperatorToken(db, target.id, { dir: deps.configDir });
+        console.log(`Refreshed operator token at ${issued.path}.`);
         return 0;
       }
     }
@@ -269,6 +288,8 @@ async function runSetPassword(args: readonly string[], deps: AuthDeps): Promise<
     try {
       const u = await createUser(db, targetUsername, password, { allowMulti: flags.allowMulti });
       console.log(`Created hub user "${u.username}" (id=${u.id}).`);
+      const issued = await issueOperatorToken(db, u.id, { dir: deps.configDir });
+      console.log(`Wrote operator token to ${issued.path} (mode 0600).`);
       return 0;
     } catch (err) {
       if (err instanceof SingleUserModeError) {
@@ -281,6 +302,31 @@ async function runSetPassword(args: readonly string[], deps: AuthDeps): Promise<
       }
       throw err;
     }
+  } finally {
+    db.close();
+  }
+}
+
+async function runRotateOperator(deps: AuthDeps): Promise<number> {
+  const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
+  try {
+    const users = listUsers(db);
+    const owner = users[0];
+    if (!owner) {
+      console.error(
+        "no hub users yet — run `parachute auth set-password` to create the first one before issuing an operator token",
+      );
+      return 1;
+    }
+    const issued = await issueOperatorToken(db, owner.id, { dir: deps.configDir });
+    console.log("Rotated operator token.");
+    console.log(`  user:       ${owner.username}`);
+    console.log(`  path:       ${issued.path}`);
+    console.log(`  expires_at: ${issued.expiresAt}`);
+    console.log(
+      "Previous tokens stay valid until they expire — the hub does not revoke them. Treat operator.token like an SSH key.",
+    );
+    return 0;
   } finally {
     db.close();
   }
@@ -346,6 +392,15 @@ export async function auth(args: readonly string[], deps: AuthDeps | Runner = {}
     }
     if (sub === "list-users") {
       return runListUsers(normalized);
+    }
+    if (sub === "rotate-operator") {
+      try {
+        return await runRotateOperator(normalized);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`parachute auth rotate-operator: ${msg}`);
+        return 1;
+      }
     }
   }
 

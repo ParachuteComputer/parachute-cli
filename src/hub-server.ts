@@ -10,14 +10,18 @@
  * that localhost backing.
  *
  * Routes (all bound to 127.0.0.1):
- *   /                          → hub.html                (text/html)
- *   /hub.html                  → hub.html                (text/html)
- *   /.well-known/parachute.json → parachute.json         (application/json)
- *   /.well-known/jwks.json      → JWKS from hub.db        (application/json)
- *   anything else              → 404
+ *   /                                         → hub.html
+ *   /hub.html                                 → hub.html
+ *   /.well-known/parachute.json               → parachute.json
+ *   /.well-known/jwks.json                    → JWKS from hub.db
+ *   /.well-known/oauth-authorization-server   → RFC 8414 metadata (issuer, endpoints)
+ *   /oauth/authorize  (GET + POST)            → login → consent → auth code
+ *   /oauth/token      (POST)                  → authorization_code + refresh_token grants
+ *   /oauth/register   (POST)                  → RFC 7591 dynamic client registration
+ *   anything else                             → 404
  *
  * Invoked as:
- *   bun <this-file> --port <n> --well-known-dir <path> [--db <path>]
+ *   bun <this-file> --port <n> --well-known-dir <path> [--db <path>] [--issuer <url>]
  *
  * `--well-known-dir` is the directory containing both `hub.html` and
  * `parachute.json` (both written by `parachute expose`). Kept as one flag so
@@ -34,18 +38,27 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
 import { pemToJwk } from "./jwks.ts";
+import {
+  authorizationServerMetadata,
+  handleAuthorizeGet,
+  handleAuthorizePost,
+  handleRegister,
+  handleToken,
+} from "./oauth-handlers.ts";
 import { getAllPublicKeys } from "./signing-keys.ts";
 
 interface Args {
   port: number;
   wellKnownDir: string;
   dbPath: string;
+  issuer: string | undefined;
 }
 
 function parseArgs(argv: string[]): Args {
   let port: number | undefined;
   let wellKnownDir: string | undefined;
   let dbPath: string | undefined;
+  let issuer: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--port") {
@@ -64,24 +77,43 @@ function parseArgs(argv: string[]): Args {
       const v = argv[++i];
       if (!v) throw new Error("--db requires a value");
       dbPath = resolve(v);
+    } else if (a === "--issuer") {
+      const v = argv[++i];
+      if (!v) throw new Error("--issuer requires a value");
+      issuer = v.replace(/\/+$/, "");
     } else {
       throw new Error(`unknown argument: ${a}`);
     }
   }
   if (port === undefined) throw new Error("--port is required");
   if (wellKnownDir === undefined) throw new Error("--well-known-dir is required");
-  return { port, wellKnownDir, dbPath: dbPath ?? hubDbPath() };
+  return { port, wellKnownDir, dbPath: dbPath ?? hubDbPath(), issuer };
 }
 
 export interface HubFetchDeps {
   /** Lazily opens (or returns a cached handle to) the hub DB. */
   getDb: () => Database;
+  /**
+   * Hub origin used as the OAuth `iss` claim and to build the authorization-
+   * server metadata document. When omitted, OAuth endpoints fall back to the
+   * request's own origin — fine for local dev, surprising under a reverse
+   * proxy where the request origin is the loopback.
+   */
+  issuer?: string;
 }
 
-export function hubFetch(wellKnownDir: string, deps?: HubFetchDeps): (req: Request) => Response {
+export function hubFetch(
+  wellKnownDir: string,
+  deps?: HubFetchDeps,
+): (req: Request) => Response | Promise<Response> {
   const hubHtmlPath = join(wellKnownDir, "hub.html");
   const parachuteJsonPath = join(wellKnownDir, "parachute.json");
   const getDb = deps?.getDb;
+  const configuredIssuer = deps?.issuer;
+
+  const oauthDeps = (req: Request) => ({
+    issuer: configuredIssuer ?? new URL(req.url).origin,
+  });
 
   return (req) => {
     const url = new URL(req.url);
@@ -153,12 +185,55 @@ export function hubFetch(wellKnownDir: string, deps?: HubFetchDeps): (req: Reque
       }
     }
 
+    if (pathname === "/.well-known/oauth-authorization-server") {
+      // Public discovery doc — clients pull this cross-origin to find the
+      // authorize/token endpoints. Same wildcard CORS shape as the JWKS
+      // and the parachute manifest.
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, OPTIONS",
+      };
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders });
+      }
+      const res = authorizationServerMetadata(oauthDeps(req));
+      // Fold CORS into the existing JSON response.
+      const merged = new Headers(res.headers);
+      for (const [k, v] of Object.entries(corsHeaders)) merged.set(k, v);
+      return new Response(res.body, { status: res.status, headers: merged });
+    }
+
+    if (pathname === "/oauth/authorize") {
+      if (!getDb) {
+        return new Response("hub db not configured", { status: 503 });
+      }
+      if (req.method === "GET") return handleAuthorizeGet(getDb(), req, oauthDeps(req));
+      if (req.method === "POST") return handleAuthorizePost(getDb(), req, oauthDeps(req));
+      return new Response("method not allowed", { status: 405 });
+    }
+
+    if (pathname === "/oauth/token") {
+      if (!getDb) {
+        return new Response("hub db not configured", { status: 503 });
+      }
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      return handleToken(getDb(), req, oauthDeps(req));
+    }
+
+    if (pathname === "/oauth/register") {
+      if (!getDb) {
+        return new Response("hub db not configured", { status: 503 });
+      }
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      return handleRegister(getDb(), req, oauthDeps(req));
+    }
+
     return new Response("not found", { status: 404 });
   };
 }
 
 if (import.meta.main) {
-  const { port, wellKnownDir, dbPath } = parseArgs(process.argv.slice(2));
+  const { port, wellKnownDir, dbPath, issuer } = parseArgs(process.argv.slice(2));
   let cachedDb: Database | undefined;
   const getDb = () => {
     if (!cachedDb) cachedDb = openHubDb(dbPath);
@@ -167,9 +242,11 @@ if (import.meta.main) {
   Bun.serve({
     port,
     hostname: "127.0.0.1",
-    fetch: hubFetch(wellKnownDir, { getDb }),
+    fetch: hubFetch(wellKnownDir, { getDb, issuer }),
   });
   console.log(
-    `parachute-hub listening on http://127.0.0.1:${port} (dir=${wellKnownDir}, db=${dbPath})`,
+    `parachute-hub listening on http://127.0.0.1:${port} (dir=${wellKnownDir}, db=${dbPath}${
+      issuer ? `, issuer=${issuer}` : ""
+    })`,
   );
 }

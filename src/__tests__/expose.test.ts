@@ -475,7 +475,7 @@ describe("expose tailnet up", () => {
     }
   });
 
-  test("emits 4 OAuth proxies targeting vault when vault is installed", async () => {
+  test("emits 4 OAuth proxies targeting the hub origin (hub IS the IdP)", async () => {
     const h = makeHarness();
     try {
       seedServices(h.manifestPath);
@@ -508,17 +508,15 @@ describe("expose tailnet up", () => {
           oauthTargets.set(mount, c[c.length - 1] ?? "");
         }
       }
-      expect(oauthTargets.get("/.well-known/oauth-authorization-server")).toBe(
-        "http://127.0.0.1:1940/vault/default/.well-known/oauth-authorization-server",
+      expect(oauthTargets.get("/.well-known/oauth-authorization-server")).toMatch(
+        /^http:\/\/127\.0\.0\.1:\d+\/\.well-known\/oauth-authorization-server$/,
       );
-      expect(oauthTargets.get("/oauth/authorize")).toBe(
-        "http://127.0.0.1:1940/vault/default/oauth/authorize",
+      expect(oauthTargets.get("/oauth/authorize")).toMatch(
+        /^http:\/\/127\.0\.0\.1:\d+\/oauth\/authorize$/,
       );
-      expect(oauthTargets.get("/oauth/token")).toBe(
-        "http://127.0.0.1:1940/vault/default/oauth/token",
-      );
-      expect(oauthTargets.get("/oauth/register")).toBe(
-        "http://127.0.0.1:1940/vault/default/oauth/register",
+      expect(oauthTargets.get("/oauth/token")).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/oauth\/token$/);
+      expect(oauthTargets.get("/oauth/register")).toMatch(
+        /^http:\/\/127\.0\.0\.1:\d+\/oauth\/register$/,
       );
 
       const state = readExposeState(h.statePath);
@@ -528,7 +526,7 @@ describe("expose tailnet up", () => {
     }
   });
 
-  test("skips OAuth proxies when no vault is installed", async () => {
+  test("emits OAuth proxies even when no vault is installed (hub IS the IdP)", async () => {
     const h = makeHarness();
     try {
       upsertService(
@@ -560,10 +558,15 @@ describe("expose tailnet up", () => {
       const serveCalls = calls.filter(
         (c) => c[0] === "tailscale" && c[1] === "serve" && c.includes("--bg"),
       );
-      // No vault → no OAuth proxies. Hub + well-known + notes = 3.
-      expect(serveCalls).toHaveLength(3);
-      const mounts = serveCalls.map((c) => c.find((a) => a.startsWith("--set-path=")));
-      expect(mounts.every((m) => m !== undefined && !m.includes("/oauth/"))).toBe(true);
+      // Hub + well-known + notes + 4 OAuth proxies = 7. The hub serves OAuth
+      // regardless of which services are installed.
+      expect(serveCalls).toHaveLength(7);
+      const oauthMounts = serveCalls
+        .map((c) => c.find((a) => a.startsWith("--set-path=")))
+        .filter(
+          (m): m is string => !!m && (m.includes("/oauth/") || m.endsWith("authorization-server")),
+        );
+      expect(oauthMounts).toHaveLength(4);
     } finally {
       h.cleanup();
     }
