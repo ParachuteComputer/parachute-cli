@@ -45,6 +45,7 @@ import {
 } from "./jwt-sign.ts";
 import { type AuthorizeFormParams, renderConsent, renderError, renderLogin } from "./oauth-ui.ts";
 import { FIRST_PARTY_SCOPES } from "./scope-explanations.ts";
+import { findUnknownScopes, loadDeclaredScopes } from "./scope-registry.ts";
 import {
   SESSION_TTL_MS,
   buildSessionCookie,
@@ -59,6 +60,14 @@ export interface OAuthDeps {
   issuer: string;
   /** Override the clock for deterministic tests. */
   now?: () => Date;
+  /**
+   * Resolve the declared-scope set the issuer is willing to sign. Production
+   * walks `services.json` + each module's `.parachute/module.json`
+   * `scopes.defines` and unions with `FIRST_PARTY_SCOPES`. Tests inject a
+   * pinned set so the gate is deterministic without a fixture services.json.
+   * See cli#71 + `oauth-scopes.md`.
+   */
+  loadDeclaredScopes?: () => ReadonlySet<string>;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -389,6 +398,23 @@ async function handleTokenAuthorizationCode(
   } catch (err) {
     return mapAuthCodeError(err);
   }
+  // Scope-validation gate (cli#71). Reject any requested scope that the
+  // issuer never declared — `FIRST_PARTY_SCOPES` ∪ each module's `module.json`
+  // `scopes.defines`. Per RFC 6749 §5.2: `error: "invalid_scope"`. We add
+  // `invalid_scopes: [...]` as an extension field so clients can report the
+  // exact culprits without re-parsing the description string.
+  const declared = (deps.loadDeclaredScopes ?? loadDeclaredScopes)();
+  const unknown = findUnknownScopes(redeemed.scopes, declared);
+  if (unknown.length > 0) {
+    return jsonResponse(
+      {
+        error: "invalid_scope",
+        error_description: `unknown scopes: ${unknown.join(", ")}`,
+        invalid_scopes: unknown,
+      },
+      400,
+    );
+  }
   const audience = inferAudience(redeemed.scopes);
   const access = await signAccessToken(db, {
     sub: redeemed.userId,
@@ -509,15 +535,16 @@ function mapAuthCodeError(err: unknown): Response {
 }
 
 /**
- * Picks the JWT `aud` claim based on the requested scopes. `vault.*` →
- * "vault", `notes.*` → "notes", etc. Falls back to "hub" for hub-only
- * scopes or empty scopes. This will become a more deliberate scope
- * registry in PR (d) / cli#56; for now, prefix-match is enough.
+ * Picks the JWT `aud` claim based on the requested scopes. `vault:*` →
+ * "vault", `scribe:*` → "scribe", etc. Falls back to "hub" for hub-only
+ * scopes or empty scopes. The split character is `:` per
+ * `parachute-patterns/patterns/oauth-scopes.md`; the previous `.` form was
+ * never canonical (cli#71 caught it during the scope-validation cutover).
  */
 function inferAudience(scopes: string[]): string {
   for (const s of scopes) {
-    const dot = s.indexOf(".");
-    if (dot > 0) return s.slice(0, dot);
+    const colon = s.indexOf(":");
+    if (colon > 0) return s.slice(0, colon);
   }
   return "hub";
 }
