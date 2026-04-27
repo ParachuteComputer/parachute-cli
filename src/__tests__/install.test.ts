@@ -1170,9 +1170,14 @@ describe("install", () => {
       });
       expect(code).toBe(0);
       expect(calls[0]).toEqual(["bun", "add", "-g", "@acme/widget"]);
-      const seeded = findService("@acme/widget", path);
-      expect(seeded?.name).toBe("@acme/widget");
+      // hub#85: third-party rows are keyed by `manifest.name` (canonical
+      // short — what `parachute start <svc>` accepts), not `manifestName`.
+      const seeded = findService("widget", path);
+      expect(seeded?.name).toBe("widget");
       expect(seeded?.port).toBe(1950);
+      expect(findService("@acme/widget", path)).toBeUndefined();
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for widget/);
+      expect(logs.join("\n")).toMatch(/widget registered on port 1950/);
     } finally {
       cleanup();
     }
@@ -1256,8 +1261,10 @@ describe("install", () => {
       });
       expect(code).toBe(0);
       expect(calls[0]).toEqual(["bun", "add", "-g", pkgDir]);
-      const seeded = findService("@local/demo", path);
-      expect(seeded?.name).toBe("@local/demo");
+      // hub#85: third-party row keys by `manifest.name`, not `manifestName`.
+      const seeded = findService("demo", path);
+      expect(seeded?.name).toBe("demo");
+      expect(findService("@local/demo", path)).toBeUndefined();
       // hub#83: lifecycle needs installDir to find module.json + spawn cwd.
       expect(seeded?.installDir).toBe(pkgDir);
     } finally {
@@ -1292,8 +1299,57 @@ describe("install", () => {
         findGlobalInstall: () => `${fakePrefix}/package.json`,
       });
       expect(code).toBe(0);
-      const seeded = findService("@vendor/widget", path);
+      // hub#85: third-party row keys by `manifest.name`, not `manifestName`.
+      const seeded = findService("widget", path);
       expect(seeded?.installDir).toBe(fakePrefix);
+      expect(findService("@vendor/widget", path)).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("third-party with diverging name/manifestName keys services.json by name (hub#85)", async () => {
+    // Repro for parachute-hub#85: paraclaw ships `name: "claw",
+    // manifestName: "paraclaw"`. Install used to seed services.json under
+    // `paraclaw` (the npm label) while lifecycle looks up by `claw` (the
+    // canonical short) → "unknown service". Fix: services.json key is
+    // always `manifest.name` for third-party.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const startCalls: string[] = [];
+      const logs: string[] = [];
+      const code = await install("paraclaw", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async (short) => {
+          startCalls.push(short);
+          return 0;
+        },
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => ({
+          name: "claw",
+          manifestName: "paraclaw",
+          kind: "api",
+          port: 1945,
+          paths: ["/claw"],
+          health: "/claw/health",
+          startCmd: ["bun", "server.ts"],
+        }),
+        findGlobalInstall: () => "/fake/prefix/paraclaw/package.json",
+      });
+      expect(code).toBe(0);
+      // services.json is keyed by `name`, not `manifestName`.
+      expect(findService("claw", path)?.name).toBe("claw");
+      expect(findService("paraclaw", path)).toBeUndefined();
+      // Auto-start receives the canonical short name (= manifest.name).
+      expect(startCalls).toEqual(["claw"]);
+      // Log lines speak in the canonical short name too.
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/Seeded services\.json entry for claw/);
+      expect(joined).toMatch(/claw registered on port 1945/);
+      expect(joined).not.toMatch(/Seeded services\.json entry for paraclaw/);
     } finally {
       cleanup();
     }

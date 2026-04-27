@@ -469,6 +469,14 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
     manifest,
     extras,
   });
+  // services.json key. Third-party modules key by `manifest.name` (canonical
+  // short — what `parachute start <svc>` accepts). First-party services keep
+  // keying by `manifestName` ("parachute-vault" etc.) because the upstream
+  // services write themselves to services.json under that name; switching the
+  // CLI seed alone would create dueling rows. The first-party migration to
+  // name-keyed rows happens when each upstream ships its own module.json
+  // (parachute-hub#56 follow-ups). See parachute-hub#85.
+  const entryName = target.kind === "first-party" ? spec.manifestName : manifest.name;
 
   if (spec.init) {
     log(`Running ${spec.init.join(" ")}…`);
@@ -486,14 +494,9 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   // user-edited ports survive across upgrades. Compiled-in service-side
   // fallbacks (vault → 1940 etc.) stay; this just adds a CLI-managed
   // override.
-  const preInitEntry = findService(spec.manifestName, manifestPath);
+  const preInitEntry = findService(entryName, manifestPath);
   const probe = opts.portProbe ?? defaultPortProbe;
-  const occupied = await collectOccupiedPorts(
-    manifestPath,
-    spec.manifestName,
-    preInitEntry?.port,
-    probe,
-  );
+  const occupied = await collectOccupiedPorts(manifestPath, entryName, preInitEntry?.port, probe);
   const envPath = join(configDir, short, ".env");
   const canonicalPort = spec.seedEntry?.().port ?? preInitEntry?.port;
   const portResult = assignServicePort({
@@ -514,20 +517,24 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   // parachute-hub#44 reported notes not appearing in services.json on a fresh
   // bun 1.2.x install; the gate logic was already correct, but a verify-step
   // turns silent loss into something an operator can spot.
-  let entry = findService(spec.manifestName, manifestPath);
+  let entry = findService(entryName, manifestPath);
   if (!entry && spec.seedEntry) {
     const seedBase = spec.seedEntry();
+    // seedEntryFromManifest sets `name = manifest.manifestName`; for
+    // third-party we override to `entryName` (= manifest.name) so the row
+    // matches the lifecycle lookup key. First-party leaves it alone.
+    const withName = seedBase.name === entryName ? seedBase : { ...seedBase, name: entryName };
     const seed =
-      seedBase.port === portResult.port ? seedBase : { ...seedBase, port: portResult.port };
+      withName.port === portResult.port ? withName : { ...withName, port: portResult.port };
     upsertService(seed, manifestPath);
-    entry = findService(spec.manifestName, manifestPath);
+    entry = findService(entryName, manifestPath);
     if (entry) {
       log(
-        `Seeded services.json entry for ${spec.manifestName} (placeholder; service's own boot will overwrite).`,
+        `Seeded services.json entry for ${entryName} (placeholder; service's own boot will overwrite).`,
       );
     } else {
       log(
-        `⚠ tried to seed services.json entry for ${spec.manifestName}, but the readback came back empty.`,
+        `⚠ tried to seed services.json entry for ${entryName}, but the readback came back empty.`,
       );
       log(`  manifest path: ${manifestPath}`);
       log("  Re-run `parachute install` once the underlying issue is resolved.");
@@ -537,9 +544,9 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
     // different one (collision). Reflect the CLI's choice so the hub and
     // status views stay consistent with the .env we just wrote.
     upsertService({ ...entry, port: portResult.port }, manifestPath);
-    entry = findService(spec.manifestName, manifestPath);
+    entry = findService(entryName, manifestPath);
     log(
-      `Updated services.json port to ${portResult.port} for ${spec.manifestName} (was ${preInitEntry?.port ?? "—"}).`,
+      `Updated services.json port to ${portResult.port} for ${entryName} (was ${preInitEntry?.port ?? "—"}).`,
     );
   }
 
@@ -551,15 +558,15 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   // the manifest, which doesn't know its own install location).
   if (entry && installDir && entry.installDir !== installDir) {
     upsertService({ ...entry, installDir }, manifestPath);
-    entry = findService(spec.manifestName, manifestPath);
+    entry = findService(entryName, manifestPath);
   }
 
   if (!entry) {
     log(
-      `Installed, but no services.json entry for "${spec.manifestName}" yet. Run \`parachute status\` after the service has started.`,
+      `Installed, but no services.json entry for "${entryName}" yet. Run \`parachute status\` after the service has started.`,
     );
   } else {
-    log(`✓ ${spec.manifestName} registered on port ${entry.port}`);
+    log(`✓ ${entryName} registered on port ${entry.port}`);
     if (!isCanonicalPort(entry.port)) {
       log(
         `⚠ port ${entry.port} is outside the canonical Parachute range (${CANONICAL_PORT_MIN}–${CANONICAL_PORT_MAX}); may conflict with other software.`,
@@ -628,17 +635,17 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   // last line of the install always reflects ground truth, not an early
   // snapshot. Surfaced by parachute-hub#44 — defensive logging that turns a
   // missing entry into a visible failure rather than a silent one.
-  let finalEntry = findService(spec.manifestName, manifestPath);
+  let finalEntry = findService(entryName, manifestPath);
   // Re-stamp installDir if the service's first boot rewrote the row without
   // it. Lifecycle commands beyond install (start/stop/restart/logs) need it
   // present; we own this field, services don't have to know it exists.
   if (finalEntry && installDir && finalEntry.installDir !== installDir) {
     upsertService({ ...finalEntry, installDir }, manifestPath);
-    finalEntry = findService(spec.manifestName, manifestPath);
+    finalEntry = findService(entryName, manifestPath);
   }
   if (!finalEntry) {
     log(
-      `⚠ ${spec.manifestName} is not in services.json after install. \`parachute status\` won't see it. Re-run install or file a bug.`,
+      `⚠ ${entryName} is not in services.json after install. \`parachute status\` won't see it. Re-run install or file a bug.`,
     );
   }
 
