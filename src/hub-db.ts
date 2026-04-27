@@ -39,6 +39,31 @@ const MIGRATIONS: readonly Migration[] = [
         WHERE retired_at IS NULL;
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE tokens (
+        jti TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        client_id TEXT NOT NULL,
+        scopes TEXT NOT NULL,
+        refresh_token_hash TEXT,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX tokens_user ON tokens (user_id);
+      CREATE INDEX tokens_active_refresh ON tokens (refresh_token_hash)
+        WHERE refresh_token_hash IS NOT NULL AND revoked_at IS NULL;
+    `,
+  },
 ];
 
 export function openHubDb(path: string = hubDbPath()): Database {
