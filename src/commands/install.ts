@@ -1,16 +1,24 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { autoWireScribeAuth } from "../auto-wire.ts";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
+import {
+  type ModuleManifest,
+  ModuleManifestError,
+  readModuleManifest,
+  validateModuleManifest,
+} from "../module-manifest.ts";
 import { assignServicePort } from "../port-assign.ts";
 import {
   CANONICAL_PORT_MAX,
   CANONICAL_PORT_MIN,
-  getSpec,
+  FIRST_PARTY_FALLBACKS,
+  type FirstPartyFallback,
+  type ServiceSpec,
+  composeServiceSpec,
   isCanonicalPort,
-  knownServices,
 } from "../service-spec.ts";
 import { findService, readManifest, upsertService } from "../services-manifest.ts";
 import { start as lifecycleStart } from "./lifecycle.ts";
@@ -106,6 +114,19 @@ export interface InstallOpts {
    * unless the test populates services.json directly.
    */
   portProbe?: (port: number) => Promise<boolean>;
+  /**
+   * Test seam for reading `<packageDir>/.parachute/module.json`. Production
+   * uses the real file reader; tests inject a map from package-dir → manifest
+   * (or throw to simulate malformed JSON). Returns null when the package
+   * doesn't ship a manifest.
+   */
+  readManifest?: (packageDir: string) => Promise<ModuleManifest | null>;
+  /**
+   * Test seam for reading `<absPath>/package.json` during local-path install.
+   * Production reads + parses the file; tests inject a stub. Returns the
+   * package's `name` (used to find the install dir post-bun-add).
+   */
+  readPackageName?: (absPath: string) => string | null;
 }
 
 async function defaultRunner(cmd: readonly string[]): Promise<number> {
@@ -206,7 +227,138 @@ function defaultFindGlobalInstall(pkg: string): string | null {
   return null;
 }
 
-export async function install(service: string, opts: InstallOpts = {}): Promise<number> {
+function defaultReadPackageName(absPath: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(absPath, "package.json"), "utf8"));
+    return typeof parsed?.name === "string" && parsed.name.length > 0 ? parsed.name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the installed package's `.parachute/module.json`.
+ *
+ * Returns `null` when the package doesn't ship one (first-party falls back to
+ * the vendored manifest; third-party hard-errors at the call site). Returns
+ * `"error"` when the manifest exists but is malformed (or the install
+ * directory itself can't be located post-install) — caller treats both as
+ * an install-aborting error and the helper has already logged.
+ */
+async function readInstalledManifest(
+  target: ResolvedTarget,
+  deps: {
+    findGlobalInstall: (pkg: string) => string | null;
+    readManifest: (packageDir: string) => Promise<ModuleManifest | null>;
+    log: (line: string) => void;
+  },
+): Promise<ModuleManifest | null | "error"> {
+  let packageDir: string | null = null;
+  if (target.kind === "local-path") {
+    // The local checkout itself is the source. We could also re-read from
+    // bun's globals after install, but reading the original avoids any
+    // weirdness with bun symlinking the dir vs. copying it.
+    packageDir = target.absPath;
+  } else {
+    const pkgJsonPath = deps.findGlobalInstall(target.packageName);
+    if (!pkgJsonPath) {
+      // First-party fallback path (typical in tests): we don't actually need
+      // a real install dir — the vendored manifest covers us.
+      if (target.kind === "first-party") return null;
+      // Third-party: bun-add succeeded but we couldn't locate the install dir.
+      // Caller already logged a probe-list — just say nothing's there.
+      return null;
+    }
+    packageDir = dirname(pkgJsonPath);
+  }
+  try {
+    return await deps.readManifest(packageDir);
+  } catch (err) {
+    if (err instanceof ModuleManifestError) {
+      deps.log(`✗ ${target.packageName}: invalid .parachute/module.json — ${err.message}`);
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      deps.log(`✗ ${target.packageName}: failed to read .parachute/module.json — ${msg}`);
+    }
+    return "error";
+  }
+}
+
+/**
+ * What `parachute install <input>` resolved to. The CLI accepts three forms,
+ * and the resolution decides everything downstream — package name to bun-add,
+ * whether a vendored fallback applies, whether a missing
+ * `.parachute/module.json` is a hard error.
+ */
+type ResolvedTarget =
+  | {
+      readonly kind: "first-party";
+      readonly short: string;
+      readonly packageName: string;
+      readonly fallback: FirstPartyFallback;
+    }
+  | {
+      readonly kind: "npm";
+      readonly packageName: string;
+    }
+  | {
+      readonly kind: "local-path";
+      readonly absPath: string;
+      readonly packageName: string;
+    };
+
+/**
+ * Map an `<input>` (shortname / npm package / absolute path) to a target.
+ * Returns null on resolution failure (with logs already written).
+ *
+ * Order matters: first-party shortnames win over a hypothetical npm package
+ * literally named "vault", and absolute-path detection has to come before the
+ * "anything else is npm" fallback.
+ */
+function resolveInstallTarget(
+  input: string,
+  opts: InstallOpts,
+  log: (line: string) => void,
+): ResolvedTarget | null {
+  // Aliases (lens → notes) apply only to shortnames — npm packages and
+  // absolute paths pass through unaltered.
+  const aliased = SERVICE_ALIASES[input];
+  const candidate = aliased ?? input;
+
+  const fb = FIRST_PARTY_FALLBACKS[candidate];
+  if (fb) {
+    if (aliased !== undefined) {
+      log(`"${input}" has been renamed to "${aliased}"; installing ${aliased}.`);
+    }
+    return {
+      kind: "first-party",
+      short: candidate,
+      packageName: fb.package,
+      fallback: fb,
+    };
+  }
+
+  if (input.startsWith("/")) {
+    if (!existsSync(input)) {
+      log(`unknown service: "${input}" (path does not exist)`);
+      return null;
+    }
+    const readName = opts.readPackageName ?? defaultReadPackageName;
+    const packageName = readName(input);
+    if (!packageName) {
+      log(`✗ ${input} has no readable package.json — can't install as a Parachute module.`);
+      return null;
+    }
+    return { kind: "local-path", absPath: input, packageName };
+  }
+
+  // Anything else is treated as an npm package (bare or @scope/name). The
+  // module.json contract gates this — third-party packages without a
+  // manifest fail post-install with a clear error, not silently.
+  return { kind: "npm", packageName: input };
+}
+
+export async function install(input: string, opts: InstallOpts = {}): Promise<number> {
   const runner = opts.runner ?? defaultRunner;
   const manifestPath = opts.manifestPath ?? SERVICES_MANIFEST_PATH;
   const configDir = opts.configDir ?? CONFIG_DIR;
@@ -214,24 +366,24 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   const log = opts.log ?? ((line) => console.log(line));
   const isLinked = opts.isLinked ?? defaultIsLinked;
   const findGlobalInstall = opts.findGlobalInstall ?? defaultFindGlobalInstall;
+  const readManifest = opts.readManifest ?? readModuleManifest;
 
-  const aliased = SERVICE_ALIASES[service];
-  if (aliased !== undefined) {
-    log(`"${service}" has been renamed to "${aliased}"; installing ${aliased}.`);
-  }
-  const resolvedService = aliased ?? service;
+  const target = resolveInstallTarget(input, opts, log);
+  if (!target) return 1;
 
-  const spec = getSpec(resolvedService);
-  if (!spec) {
-    log(`unknown service: "${resolvedService}"`);
-    log(`known services: ${knownServices().join(", ")}`);
-    return 1;
-  }
-
-  if (isLinked(spec.package)) {
-    log(`${spec.package} is already linked globally (bun link) — skipping bun add.`);
+  // bun-add gate: skipped only for first-party packages already bun-linked
+  // locally (the scribe motivator — package isn't on npm yet, link beats
+  // add). Local-path installs always go through `bun add -g <abspath>` so
+  // bun's link plumbing produces a binary on PATH.
+  if (target.kind === "first-party" && isLinked(target.packageName)) {
+    log(`${target.packageName} is already linked globally (bun link) — skipping bun add.`);
   } else {
-    const addSpec = opts.tag ? `${spec.package}@${opts.tag}` : spec.package;
+    const addSpec =
+      target.kind === "local-path"
+        ? target.absPath
+        : opts.tag
+          ? `${target.packageName}@${opts.tag}`
+          : target.packageName;
     log(`Installing ${addSpec}…`);
     const addCode = await runner(["bun", "add", "-g", addSpec]);
     if (addCode !== 0) {
@@ -242,9 +394,11 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
       // Bailing here on exit code alone means the caller-visible install
       // fails and downstream init/seed never runs — so probe the global
       // prefix before treating non-zero as fatal.
-      const foundAt = findGlobalInstall(spec.package);
+      const foundAt = findGlobalInstall(target.packageName);
       if (foundAt) {
-        log(`bun add reported exit ${addCode} but ${spec.package} is installed at ${foundAt}.`);
+        log(
+          `bun add reported exit ${addCode} but ${target.packageName} is installed at ${foundAt}.`,
+        );
         log(
           "Known bun 1.2.x lockfile quirk — the package landed despite the warning. Proceeding. `bun upgrade` to 1.3.x avoids it.",
         );
@@ -261,6 +415,50 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
       }
     }
   }
+
+  // Read the installed `.parachute/module.json` (target convention). For
+  // first-party we fall back to the vendored manifest when absent; for
+  // third-party (npm / local-path) the manifest is the contract — its
+  // absence hard-errors here. See
+  // `parachute-patterns/patterns/module-json-extensibility.md`.
+  const installedManifest = await readInstalledManifest(target, {
+    findGlobalInstall,
+    readManifest,
+    log,
+  });
+  if (installedManifest === "error") return 1;
+
+  let manifest: ModuleManifest;
+  let extras = undefined as FirstPartyFallback["extras"] | undefined;
+  if (target.kind === "first-party") {
+    manifest = installedManifest ?? target.fallback.manifest;
+    extras = target.fallback.extras;
+  } else {
+    if (!installedManifest) {
+      log(`✗ ${target.packageName} does not ship .parachute/module.json — not a Parachute module.`);
+      log(
+        "  Authors: see parachute-patterns/patterns/module-json-extensibility.md for the contract.",
+      );
+      return 1;
+    }
+    // Third-party `name` collides with a first-party shortname → reject
+    // before we mint a services.json row that would hide a real first-party
+    // install. (Scope namespace is also `name`; collision == squatting.)
+    if (FIRST_PARTY_FALLBACKS[installedManifest.name] !== undefined) {
+      log(
+        `✗ ${target.packageName}: module name "${installedManifest.name}" collides with a first-party Parachute module.`,
+      );
+      return 1;
+    }
+    manifest = installedManifest;
+  }
+
+  const short = target.kind === "first-party" ? target.short : manifest.name;
+  const spec: ServiceSpec = composeServiceSpec({
+    packageName: target.packageName,
+    manifest,
+    extras,
+  });
 
   if (spec.init) {
     log(`Running ${spec.init.join(" ")}…`);
@@ -286,7 +484,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     preInitEntry?.port,
     probe,
   );
-  const envPath = join(configDir, resolvedService, ".env");
+  const envPath = join(configDir, short, ".env");
   const canonicalPort = spec.seedEntry?.().port ?? preInitEntry?.port;
   const portResult = assignServicePort({
     envPath,
@@ -368,7 +566,7 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
   // ourselves if it was already running, mirroring the auto-wire pattern.
   // Failure here doesn't fail the install: a flaky restart shouldn't undo a
   // successful `bun add`.
-  if (resolvedService === "scribe") {
+  if (short === "scribe") {
     const setupOpts: SetupScribeProviderOpts = { configDir, log };
     if (opts.scribeProvider) setupOpts.preselectProvider = opts.scribeProvider;
     if (opts.scribeKey) setupOpts.preselectKey = opts.scribeKey;
@@ -389,11 +587,9 @@ export async function install(service: string, opts: InstallOpts = {}): Promise<
     const startService =
       opts.startService ??
       ((short: string) => lifecycleStart(short, { manifestPath, configDir, log }));
-    const startCode = await startService(resolvedService);
+    const startCode = await startService(short);
     if (startCode !== 0) {
-      log(
-        `⚠ ${resolvedService} didn't start cleanly. Run manually: parachute start ${resolvedService}`,
-      );
+      log(`⚠ ${short} didn't start cleanly. Run manually: parachute start ${short}`);
     }
   }
 
