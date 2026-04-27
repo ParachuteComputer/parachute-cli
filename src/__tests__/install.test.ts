@@ -53,7 +53,7 @@ describe("install", () => {
       expect(code).toBe(0);
       expect(calls[0]).toEqual(["bun", "add", "-g", "@openparachute/vault"]);
       expect(calls[1]).toEqual(["parachute-vault", "init"]);
-      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for parachute-vault/);
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for vault/);
       const seeded = findService("parachute-vault", path);
       expect(seeded?.port).toBe(1940);
       expect(seeded?.version).toBe("0.0.0-linked");
@@ -190,7 +190,7 @@ describe("install", () => {
       expect(code).toBe(0);
       const seeded = findService("parachute-notes", path);
       expect(seeded?.port).toBe(1942);
-      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for parachute-notes/);
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for notes/);
       expect(logs.join("\n")).toMatch(/bun 1\.2\.x lockfile quirk/);
     } finally {
       cleanup();
@@ -256,7 +256,7 @@ describe("install", () => {
         log: (l) => logs.push(l),
       });
       expect(code).toBe(0);
-      expect(logs.join("\n")).toMatch(/parachute-vault is not in services\.json after install/);
+      expect(logs.join("\n")).toMatch(/vault is not in services\.json after install/);
     } finally {
       cleanup();
     }
@@ -419,7 +419,7 @@ describe("install", () => {
       // scribe has no init, so seedEntry fires — no authoritative entry to defer to.
       const seeded = findService("parachute-scribe", path);
       expect(seeded?.port).toBe(1943);
-      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for parachute-scribe/);
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for scribe/);
     } finally {
       cleanup();
     }
@@ -1170,9 +1170,47 @@ describe("install", () => {
       });
       expect(code).toBe(0);
       expect(calls[0]).toEqual(["bun", "add", "-g", "@acme/widget"]);
-      const seeded = findService("@acme/widget", path);
-      expect(seeded?.name).toBe("@acme/widget");
+      const seeded = findService("widget", path);
+      expect(seeded?.name).toBe("widget");
       expect(seeded?.port).toBe(1950);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("third-party install seeds services.json by manifest.name (closes #85)", async () => {
+    // Regression: install previously seeded the row under `manifestName`
+    // ("paraclaw" / "@acme/widget"), but lifecycle's resolveTargets looks up
+    // by `manifest.name` ("claw" / "widget") for third-party. The mismatch
+    // left every third-party install unreachable to `parachute start <name>`.
+    // Pin the contract: services.json key MUST be `manifest.name`.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("@acme/diverging", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => ({
+          name: "div",
+          manifestName: "@acme/diverging",
+          kind: "api",
+          port: 1955,
+          paths: ["/div"],
+          health: "/healthz",
+        }),
+        findGlobalInstall: () => "/fake/prefix/@acme/diverging/package.json",
+      });
+      expect(code).toBe(0);
+      // Services.json keyed by name (not manifestName) — that's what lifecycle reads.
+      expect(findService("div", path)).toBeDefined();
+      expect(findService("@acme/diverging", path)).toBeUndefined();
+      // User-facing log uses the canonical short, matching what they'd type.
+      expect(logs.join("\n")).toMatch(/Seeded services\.json entry for div/);
+      expect(logs.join("\n")).toMatch(/✓ div registered on port 1955/);
     } finally {
       cleanup();
     }
@@ -1256,8 +1294,8 @@ describe("install", () => {
       });
       expect(code).toBe(0);
       expect(calls[0]).toEqual(["bun", "add", "-g", pkgDir]);
-      const seeded = findService("@local/demo", path);
-      expect(seeded?.name).toBe("@local/demo");
+      const seeded = findService("demo", path);
+      expect(seeded?.name).toBe("demo");
       // hub#83: lifecycle needs installDir to find module.json + spawn cwd.
       expect(seeded?.installDir).toBe(pkgDir);
     } finally {
@@ -1292,7 +1330,7 @@ describe("install", () => {
         findGlobalInstall: () => `${fakePrefix}/package.json`,
       });
       expect(code).toBe(0);
-      const seeded = findService("@vendor/widget", path);
+      const seeded = findService("widget", path);
       expect(seeded?.installDir).toBe(fakePrefix);
     } finally {
       cleanup();
