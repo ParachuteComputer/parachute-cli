@@ -1,0 +1,480 @@
+/**
+ * Branded HTML templates for the OAuth login + consent + error screens.
+ *
+ * Pulled out of `oauth-handlers.ts` so the handlers stay focused on protocol
+ * logic and the templates stay focused on presentation. Pure functions —
+ * no DB access, no side channels.
+ *
+ * Design choices:
+ *   - **No external font CDN.** OAuth screens see who's logging in and what
+ *     they're authorizing; loading fonts from Google would leak that to a
+ *     third party. We use system-font fallbacks that approximate the
+ *     parachute.computer brand (Instrument Serif → Georgia for headings,
+ *     DM Sans → -apple-system for body, ui-monospace for `<code>`).
+ *   - **Inline CSS in `<style>`.** Single-file delivery; no extra round-trip
+ *     for a stylesheet, no caching headaches when the hub is bound to a
+ *     loopback origin.
+ *   - **Scope explanations come from `scope-explanations.ts`.** First-party
+ *     scopes get a one-sentence operator-facing label; admin scopes get a
+ *     red border so the operator looks twice. Unknown scopes (third-party
+ *     module scopes that the hub doesn't know about) render verbatim.
+ *   - **No JavaScript.** Entirely form-based. Submit is the only interaction.
+ */
+import { type ScopeExplanation, explainScope } from "./scope-explanations.ts";
+
+/** Brand palette — kept in sync with parachute.computer/style.css. */
+const PALETTE = {
+  bg: "#faf8f4",
+  bgSoft: "#f3f0ea",
+  fg: "#2c2a26",
+  fgMuted: "#6b6860",
+  fgDim: "#9a9690",
+  accent: "#4a7c59",
+  accentHover: "#3d6849",
+  accentSoft: "rgba(74, 124, 89, 0.08)",
+  border: "#e4e0d8",
+  borderLight: "#ece9e2",
+  cardBg: "#ffffff",
+  danger: "#a3392b",
+  dangerSoft: "rgba(163, 57, 43, 0.08)",
+} as const;
+
+const FONT_SERIF = `Georgia, "Times New Roman", serif`;
+const FONT_SANS = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
+const FONT_MONO = `ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace`;
+
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export interface AuthorizeFormParams {
+  clientId: string;
+  redirectUri: string;
+  responseType: string;
+  scope: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  state: string | null;
+}
+
+export interface LoginViewProps {
+  params: AuthorizeFormParams;
+  errorMessage?: string;
+}
+
+export interface ConsentViewProps {
+  params: AuthorizeFormParams;
+  clientName: string;
+  clientId: string;
+  scopes: string[];
+}
+
+export interface ErrorViewProps {
+  title: string;
+  message: string;
+  status: number;
+}
+
+export function renderLogin(props: LoginViewProps): string {
+  const { params, errorMessage } = props;
+  const error = errorMessage ? `<p class="error-banner">${escapeHtml(errorMessage)}</p>` : "";
+  const body = `
+    <div class="card">
+      <div class="card-header">
+        <div class="brand">
+          <span class="brand-mark">⌬</span>
+          <span class="brand-name">Parachute</span>
+        </div>
+        <h1>Sign in</h1>
+        <p class="subtitle">to continue to your hub</p>
+      </div>
+      ${error}
+      <form method="POST" action="/oauth/authorize" class="auth-form">
+        <input type="hidden" name="__action" value="login" />
+        ${renderHiddenInputs(params)}
+        <label class="field">
+          <span class="field-label">Username</span>
+          <input type="text" name="username" autocomplete="username" autofocus required />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="btn btn-primary">Sign in</button>
+      </form>
+    </div>`;
+  return baseDocument("Sign in to Parachute Hub", body);
+}
+
+export function renderConsent(props: ConsentViewProps): string {
+  const { params, clientName, clientId, scopes } = props;
+  const scopeRows =
+    scopes.length === 0
+      ? `<li class="scope scope-empty">No scopes requested — the app gets a session token only.</li>`
+      : scopes.map(renderScopeRow).join("\n");
+  const body = `
+    <div class="card">
+      <div class="card-header">
+        <div class="brand">
+          <span class="brand-mark">⌬</span>
+          <span class="brand-name">Parachute</span>
+        </div>
+        <h1>Authorize <span class="client-name">${escapeHtml(clientName)}</span>?</h1>
+        <p class="subtitle">
+          This app is requesting access to your Parachute account.
+        </p>
+        <p class="client-meta">
+          <span class="client-meta-label">client_id</span>
+          <code>${escapeHtml(clientId)}</code>
+        </p>
+      </div>
+      <section class="scopes">
+        <h2 class="scopes-title">Permissions requested</h2>
+        <ul class="scope-list">${scopeRows}</ul>
+      </section>
+      <form method="POST" action="/oauth/authorize" class="auth-form consent-form">
+        <input type="hidden" name="__action" value="consent" />
+        ${renderHiddenInputs(params)}
+        <div class="button-row">
+          <button type="submit" name="approve" value="yes" class="btn btn-primary">Approve</button>
+          <button type="submit" name="approve" value="no" class="btn btn-secondary">Deny</button>
+        </div>
+      </form>
+    </div>`;
+  return baseDocument(`Authorize ${clientName}`, body);
+}
+
+export function renderError(props: ErrorViewProps): string {
+  const body = `
+    <div class="card">
+      <div class="card-header">
+        <div class="brand">
+          <span class="brand-mark">⌬</span>
+          <span class="brand-name">Parachute</span>
+        </div>
+        <h1 class="error-title">${escapeHtml(props.title)}</h1>
+        <p class="subtitle">${escapeHtml(props.message)}</p>
+      </div>
+      <p class="error-help">
+        If you reached this from a third-party app, the app's OAuth configuration
+        may be wrong. You can safely close this window.
+      </p>
+    </div>`;
+  return baseDocument(props.title, body);
+}
+
+function renderScopeRow(scope: string): string {
+  const explanation = explainScope(scope);
+  if (!explanation) {
+    return `<li class="scope scope-unknown">
+      <code class="scope-name">${escapeHtml(scope)}</code>
+      <span class="scope-label scope-label-muted">Defined by the requesting app — no built-in description.</span>
+    </li>`;
+  }
+  const cls = `scope scope-${explanation.level}`;
+  const badge = badgeForLevel(explanation);
+  return `<li class="${cls}">
+      <div class="scope-head">
+        <code class="scope-name">${escapeHtml(scope)}</code>
+        ${badge}
+      </div>
+      <span class="scope-label">${escapeHtml(explanation.label)}</span>
+    </li>`;
+}
+
+function badgeForLevel(explanation: ScopeExplanation): string {
+  switch (explanation.level) {
+    case "admin":
+      return `<span class="badge badge-admin">admin</span>`;
+    case "write":
+      return `<span class="badge badge-write">write</span>`;
+    case "send":
+      return `<span class="badge badge-send">send</span>`;
+    case "read":
+      return `<span class="badge badge-read">read</span>`;
+  }
+}
+
+export function renderHiddenInputs(p: AuthorizeFormParams): string {
+  const fields: [string, string][] = [
+    ["client_id", p.clientId],
+    ["redirect_uri", p.redirectUri],
+    ["response_type", p.responseType],
+    ["scope", p.scope],
+    ["code_challenge", p.codeChallenge],
+    ["code_challenge_method", p.codeChallengeMethod],
+  ];
+  if (p.state) fields.push(["state", p.state]);
+  return fields
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}" />`)
+    .join("\n        ");
+}
+
+function baseDocument(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <style>${STYLES}</style>
+</head>
+<body>
+  <main>
+${body}
+  </main>
+</body>
+</html>`;
+}
+
+const STYLES = `
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: ${FONT_SANS};
+    background: ${PALETTE.bg};
+    color: ${PALETTE.fg};
+    line-height: 1.55;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  main {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 1.5rem;
+  }
+  .card {
+    width: 100%;
+    max-width: 30rem;
+    background: ${PALETTE.cardBg};
+    border: 1px solid ${PALETTE.border};
+    border-radius: 12px;
+    padding: 2rem 1.75rem;
+    box-shadow: 0 1px 2px rgba(44, 42, 38, 0.04), 0 8px 24px rgba(44, 42, 38, 0.06);
+  }
+  .card-header { margin-bottom: 1.5rem; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: ${PALETTE.accent};
+    font-weight: 500;
+    font-size: 0.95rem;
+    margin-bottom: 1.25rem;
+  }
+  .brand-mark { font-size: 1.1rem; line-height: 1; }
+  .brand-name { letter-spacing: 0.01em; }
+  h1 {
+    font-family: ${FONT_SERIF};
+    font-weight: 400;
+    font-size: 1.75rem;
+    line-height: 1.2;
+    margin: 0 0 0.4rem;
+    color: ${PALETTE.fg};
+  }
+  h1 .client-name {
+    font-style: italic;
+    color: ${PALETTE.accent};
+  }
+  .subtitle {
+    margin: 0;
+    color: ${PALETTE.fgMuted};
+    font-size: 0.95rem;
+  }
+  .client-meta {
+    margin: 0.75rem 0 0;
+    font-size: 0.8rem;
+    color: ${PALETTE.fgDim};
+    display: flex;
+    gap: 0.4rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .client-meta-label { text-transform: uppercase; letter-spacing: 0.05em; }
+  .client-meta code {
+    font-family: ${FONT_MONO};
+    font-size: 0.78rem;
+    background: ${PALETTE.bgSoft};
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    color: ${PALETTE.fgMuted};
+    word-break: break-all;
+  }
+
+  .auth-form { display: flex; flex-direction: column; gap: 0.9rem; }
+  .field { display: flex; flex-direction: column; gap: 0.35rem; }
+  .field-label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: ${PALETTE.fgMuted};
+    letter-spacing: 0.01em;
+  }
+  input[type=text], input[type=password] {
+    font: inherit;
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid ${PALETTE.border};
+    border-radius: 6px;
+    background: ${PALETTE.bg};
+    color: ${PALETTE.fg};
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  input[type=text]:focus, input[type=password]:focus {
+    outline: none;
+    border-color: ${PALETTE.accent};
+    background: ${PALETTE.cardBg};
+    box-shadow: 0 0 0 3px ${PALETTE.accentSoft};
+  }
+
+  .btn {
+    font: inherit;
+    font-weight: 500;
+    padding: 0.65rem 1.25rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    min-height: 2.5rem;
+  }
+  .btn-primary {
+    background: ${PALETTE.accent};
+    color: ${PALETTE.cardBg};
+    margin-top: 0.4rem;
+  }
+  .btn-primary:hover { background: ${PALETTE.accentHover}; }
+  .btn-secondary {
+    background: ${PALETTE.cardBg};
+    color: ${PALETTE.fgMuted};
+    border-color: ${PALETTE.border};
+  }
+  .btn-secondary:hover {
+    color: ${PALETTE.fg};
+    border-color: ${PALETTE.fgDim};
+  }
+  .button-row {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+  }
+  .button-row .btn { flex: 1; }
+  .consent-form { gap: 0; }
+
+  .error-banner {
+    background: ${PALETTE.dangerSoft};
+    border: 1px solid ${PALETTE.danger};
+    border-radius: 6px;
+    color: ${PALETTE.danger};
+    padding: 0.6rem 0.8rem;
+    margin: 0 0 1rem;
+    font-size: 0.9rem;
+  }
+  .error-title { color: ${PALETTE.danger}; }
+  .error-help {
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid ${PALETTE.borderLight};
+    color: ${PALETTE.fgMuted};
+    font-size: 0.88rem;
+  }
+
+  .scopes { margin: 0 0 1.5rem; }
+  .scopes-title {
+    font-family: ${FONT_SANS};
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: ${PALETTE.fgMuted};
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 0.6rem;
+  }
+  .scope-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .scope {
+    border: 1px solid ${PALETTE.border};
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    background: ${PALETTE.bg};
+  }
+  .scope-empty {
+    color: ${PALETTE.fgMuted};
+    font-size: 0.9rem;
+    background: ${PALETTE.bgSoft};
+    border-style: dashed;
+  }
+  .scope-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.2rem;
+    flex-wrap: wrap;
+  }
+  .scope-name {
+    font-family: ${FONT_MONO};
+    font-size: 0.85rem;
+    color: ${PALETTE.fg};
+  }
+  .scope-label {
+    font-size: 0.88rem;
+    color: ${PALETTE.fgMuted};
+    display: block;
+  }
+  .scope-label-muted { color: ${PALETTE.fgDim}; font-style: italic; }
+  .scope-admin {
+    border-color: ${PALETTE.danger};
+    background: ${PALETTE.dangerSoft};
+  }
+  .scope-admin .scope-name { color: ${PALETTE.danger}; }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    line-height: 1.4;
+  }
+  .badge-read { background: ${PALETTE.bgSoft}; color: ${PALETTE.fgMuted}; }
+  .badge-write { background: ${PALETTE.accentSoft}; color: ${PALETTE.accent}; }
+  .badge-send { background: ${PALETTE.accentSoft}; color: ${PALETTE.accent}; }
+  .badge-admin { background: ${PALETTE.danger}; color: ${PALETTE.cardBg}; }
+
+  @media (max-width: 480px) {
+    main { padding: 0.75rem; }
+    .card { padding: 1.5rem 1.25rem; border-radius: 10px; }
+    h1 { font-size: 1.5rem; }
+    .button-row { flex-direction: column; }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1815; color: #e8e4dc; }
+    .card { background: #25221d; border-color: #3a362f; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
+    h1 { color: #f0ece4; }
+    .subtitle, .field-label { color: #a8a29a; }
+    input[type=text], input[type=password] { background: #1f1c18; border-color: #3a362f; color: #e8e4dc; }
+    input[type=text]:focus, input[type=password]:focus { background: #25221d; }
+    .scope { background: #1f1c18; border-color: #3a362f; }
+    .scope-name { color: #e8e4dc; }
+    .client-meta code { background: #1f1c18; color: #a8a29a; }
+    .btn-secondary { background: #25221d; border-color: #3a362f; color: #a8a29a; }
+    .btn-secondary:hover { color: #e8e4dc; border-color: #6b6860; }
+    .error-help { border-color: #3a362f; color: #a8a29a; }
+    .scope-empty { background: #1a1815; }
+  }
+`;
