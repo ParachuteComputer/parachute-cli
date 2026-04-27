@@ -94,15 +94,23 @@ export type ServicesCatalog = Record<string, ServicesCatalogEntry>;
  * version, so OAuth clients don't have to re-probe `/.well-known/parachute.json`
  * to know where vault lives.
  *
+ * URL source: `entry.paths[0]` from services.json verbatim — never hardcode
+ * `/vault/default`. Users who installed with `parachute install vault
+ * --vault-name work` have `paths: ["/vault/work"]` in their manifest, and the
+ * catalog URL must follow that. The custom-vault-name regression test in
+ * oauth-handlers.test.ts pins this.
+ *
  * Filtering: only services for which the token has at least one scope are
  * included. A scope `vault:read` admits the `vault` service; a token with only
  * `scribe:transcribe` gets a catalog with no vault entry. The check is on the
  * audience prefix (`<aud>:<verb>`) — same shape `inferAudience` uses.
  *
  * Multi-vault: Phase 1 collapses every vault entry under the single key
- * `vault`, using the first matching `parachute-vault*` row from services.json.
- * Per-vault keys (`services.vault.work.url` etc.) are deferred to a future
- * design once notes ships its vault picker.
+ * `vault`, first matching `parachute-vault*` row wins. Per-vault keys
+ * (`services.vault.work.url` or `services["vault:work"].url`) are deferred
+ * to a future design once notes ships its vault picker; multi-vault clients
+ * need to probe `/.well-known/parachute.json` for the full vaults array
+ * until then.
  */
 export function buildServicesCatalog(
   manifest: ServicesManifest,

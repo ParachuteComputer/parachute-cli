@@ -902,6 +902,26 @@ describe("handleToken — full OAuth dance", () => {
     // hub-only scopes don't reference any installed module catalog entry.
     expect(buildServicesCatalog(FIXTURE_MANIFEST, ISSUER, ["hub:admin"])).toEqual({});
   });
+
+  // closes #81 — vault URL must follow paths[0] from services.json, NOT a
+  // hardcoded `/vault/default`. Users who installed with `--vault-name work`
+  // have `paths: ["/vault/work"]` and the catalog must reflect that.
+  test("services catalog reads paths[0] verbatim — handles custom vault names", () => {
+    const customManifest: ServicesManifest = {
+      services: [
+        {
+          name: "parachute-vault",
+          port: 1940,
+          paths: ["/vault/work"],
+          health: "/health",
+          version: "0.3.0",
+        },
+      ],
+    };
+    expect(buildServicesCatalog(customManifest, ISSUER, ["vault:read"])).toEqual({
+      vault: { url: `${ISSUER}/vault/work`, version: "0.3.0" },
+    });
+  });
 });
 
 describe("handleRegister — RFC 7591 DCR", () => {
