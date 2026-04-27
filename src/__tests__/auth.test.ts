@@ -93,9 +93,41 @@ describe("authHelp", () => {
     expect(h).toContain("parachute auth 2fa enroll");
     expect(h).toContain("parachute auth 2fa disable");
     expect(h).toContain("parachute auth 2fa backup-codes");
+    expect(h).toContain("parachute auth rotate-key");
   });
 
   test("mentions the vault-install hint", () => {
     expect(h).toContain("parachute install vault");
+  });
+
+  test("explains rotate-key is hub-local and the 24h JWKS retention", () => {
+    expect(h).toContain("hub-local");
+    expect(h).toContain("24 hours");
+  });
+});
+
+describe("parachute auth rotate-key", () => {
+  test("invokes the rotate hook and exits 0; does not spawn vault", async () => {
+    const { runner, calls } = makeRunner(0);
+    let hookCalls = 0;
+    const code = await auth(["rotate-key"], {
+      runner,
+      rotateKey: () => {
+        hookCalls++;
+        return { kid: "test-kid-abc", createdAt: "2026-04-26T00:00:00.000Z" };
+      },
+    });
+    expect(code).toBe(0);
+    expect(hookCalls).toBe(1);
+    expect(calls).toEqual([]);
+  });
+
+  test("propagates rotate errors as exit 1", async () => {
+    const code = await auth(["rotate-key"], {
+      rotateKey: () => {
+        throw new Error("disk full");
+      },
+    });
+    expect(code).toBe(1);
   });
 });
