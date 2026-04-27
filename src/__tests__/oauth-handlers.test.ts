@@ -77,7 +77,7 @@ describe("handleAuthorizeGet", () => {
           response_type: "code",
           code_challenge: challenge,
           code_challenge_method: "S256",
-          scope: "vault.read",
+          scope: "vault:read",
           state: "xyz",
         }),
       );
@@ -111,7 +111,7 @@ describe("handleAuthorizeGet", () => {
           response_type: "code",
           code_challenge: challenge,
           code_challenge_method: "S256",
-          scope: "vault.read",
+          scope: "vault:read",
         }),
         {
           headers: {
@@ -124,7 +124,7 @@ describe("handleAuthorizeGet", () => {
       const html = await res.text();
       expect(html).toContain("Authorize");
       expect(html).toContain("MyApp");
-      expect(html).toContain("vault.read");
+      expect(html).toContain("vault:read");
       expect(html).toContain('name="__action" value="consent"');
     } finally {
       cleanup();
@@ -209,7 +209,7 @@ describe("handleAuthorizePost — login submit", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault.read",
+        scope: "vault:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
       });
@@ -273,7 +273,7 @@ describe("handleAuthorizePost — consent submit", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault.read",
+        scope: "vault:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
         state: "abc123",
@@ -310,7 +310,7 @@ describe("handleAuthorizePost — consent submit", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault.read",
+        scope: "vault:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
         state: "abc",
@@ -350,7 +350,7 @@ describe("handleToken — full OAuth dance", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault.read",
+        scope: "vault:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
       });
@@ -389,15 +389,15 @@ describe("handleToken — full OAuth dance", () => {
         scope: string;
       };
       expect(tokenBody.token_type).toBe("Bearer");
-      expect(tokenBody.scope).toBe("vault.read");
+      expect(tokenBody.scope).toBe("vault:read");
       expect(tokenBody.refresh_token.length).toBeGreaterThan(20);
 
       // JWT must verify against the hub's signing keys, with the right sub +
-      // aud (vault.read → "vault").
+      // aud (vault:read → "vault").
       const { payload } = await validateAccessToken(db, tokenBody.access_token);
       expect(payload.sub).toBe(user.id);
       expect(payload.aud).toBe("vault");
-      expect(payload.scope).toBe("vault.read");
+      expect(payload.scope).toBe("vault:read");
       expect(payload.client_id).toBe(reg.client.clientId);
     } finally {
       cleanup();
@@ -472,7 +472,7 @@ describe("handleToken — full OAuth dance", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault.read",
+        scope: "vault:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
       });
@@ -611,6 +611,173 @@ describe("handleToken — full OAuth dance", () => {
       cleanup();
     }
   });
+
+  // cli#71 — scope-validation gate at /oauth/token. The hub must not sign a
+  // JWT carrying scopes the issuer never declared.
+  test("unknown scope at /oauth/token returns invalid_scope (400)", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read frobnicate:everything",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const consentRes = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER },
+      );
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code ?? "",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const res = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: tokenForm,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_scope");
+      expect(err.error_description).toMatch(/frobnicate:everything/);
+      expect(err.invalid_scopes).toEqual(["frobnicate:everything"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("third-party scope from injected declared set is accepted", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "widget:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const consentRes = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER },
+      );
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code ?? "",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const declared = new Set(["widget:read"]);
+      const res = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: tokenForm,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadDeclaredScopes: () => declared },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { scope: string };
+      expect(body.scope).toBe("widget:read");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("per-resource narrowing (vault:work:read against declared vault:read)", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:work:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const consentRes = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER },
+      );
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code ?? "",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const res = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: tokenForm,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { scope: string };
+      expect(body.scope).toBe("vault:work:read");
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("handleRegister — RFC 7591 DCR", () => {
@@ -621,7 +788,7 @@ describe("handleRegister — RFC 7591 DCR", () => {
         method: "POST",
         body: JSON.stringify({
           redirect_uris: ["https://app.example/cb"],
-          scope: "vault.read",
+          scope: "vault:read",
           client_name: "MyApp",
         }),
         headers: { "content-type": "application/json" },
