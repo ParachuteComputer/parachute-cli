@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { logs, restart, start, stop } from "../commands/lifecycle.ts";
+import {
+  defaultAlive,
+  defaultKill,
+  defaultSpawner,
+  logs,
+  restart,
+  start,
+  stop,
+} from "../commands/lifecycle.ts";
 import { writeHubPort } from "../hub-control.ts";
 import { ensureLogPath, logPath, readPid, writePid } from "../process-state.ts";
 import { upsertService } from "../services-manifest.ts";
@@ -812,6 +820,121 @@ describe("parachute logs", () => {
       expect(lines).toEqual(["claw line 1", "claw line 2"]);
     } finally {
       h.cleanup();
+    }
+  });
+});
+
+describe("process-group lifecycle (hub#88)", () => {
+  // Spawn a wrapper that forks a long-running grandchild (sleep), wait for
+  // both to come up, then check that the wrapper PID equals its PGID — the
+  // post-fix invariant that makes group-kill safe. Without `detached: true`
+  // the child inherits the test runner's PGID and group-kill would target
+  // the wrong tree.
+  test("defaultSpawner puts child in its own process group", async () => {
+    const h = makeHarness();
+    try {
+      const logFile = ensureLogPath("test", h.configDir);
+      const pid = defaultSpawner.spawn(["sh", "-c", "sleep 2 & wait"], logFile);
+      try {
+        // Resolve the child's PGID via ps; the kernel reports it as a
+        // numeric column. PGID == PID means our setsid-equivalent worked.
+        const ps = Bun.spawnSync(["ps", "-o", "pgid=", "-p", String(pid)]);
+        const pgid = Number.parseInt(ps.stdout.toString().trim(), 10);
+        expect(pgid).toBe(pid);
+      } finally {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {}
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  // The smoking-gun scenario from #88: a wrapper (sh) forks a grandchild
+  // (sleep) that keeps a resource — here, just stays alive. SIGKILL on the
+  // wrapper PID alone leaves the grandchild running. With detached spawn +
+  // group-kill, both go down. We assert by checking the grandchild's PID
+  // is no longer kill-able after `defaultKill`.
+  test("defaultKill takes down the wrapper and its grandchildren together", async () => {
+    const h = makeHarness();
+    try {
+      const logFile = ensureLogPath("test", h.configDir);
+      // Wrapper sh forks `sleep 30 & echo $!` so we capture the grandchild
+      // PID via the log file, then `wait` so the wrapper sticks around as
+      // a parent (mirrors `pnpm exec tsx`'s shape).
+      const wrapperPid = defaultSpawner.spawn(
+        ["sh", "-c", "sleep 30 & echo $! >&2; wait"],
+        logFile,
+      );
+      // Give the grandchild time to start and the log line to flush.
+      await new Promise((r) => setTimeout(r, 200));
+      const log = await Bun.file(logFile).text();
+      const grandchildPid = Number.parseInt(log.trim().split("\n").pop() ?? "", 10);
+      expect(grandchildPid).toBeGreaterThan(0);
+      expect(grandchildPid).not.toBe(wrapperPid);
+      // Both should be alive before kill.
+      expect(() => process.kill(grandchildPid, 0)).not.toThrow();
+
+      defaultKill(wrapperPid, "SIGKILL");
+
+      // Reap + wait for the grandchild to exit; on macOS the kernel may
+      // take a tick to deliver the signal.
+      await new Promise((r) => setTimeout(r, 200));
+      let grandchildStillAlive = true;
+      try {
+        process.kill(grandchildPid, 0);
+      } catch {
+        grandchildStillAlive = false;
+      }
+      expect(grandchildStillAlive).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  // defaultAlive's post-fix semantics: returns true while any group member
+  // is alive (the wrapper stays in the group as long as it's running),
+  // false after the group drains.
+  test("defaultAlive reports group liveness for detached children", async () => {
+    const h = makeHarness();
+    try {
+      const logFile = ensureLogPath("test", h.configDir);
+      const pid = defaultSpawner.spawn(["sh", "-c", "sleep 2"], logFile);
+      try {
+        expect(defaultAlive(pid)).toBe(true);
+      } finally {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {}
+      }
+      // Wait for the kill to drain the group, then re-check.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(defaultAlive(pid)).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  // Legacy pidfile compatibility: a pre-detached pidfile holds a positive
+  // PID whose pgid is the parent shell, not the pid itself. defaultAlive
+  // must fall back to a bare-pid check so the next `stop` actually runs;
+  // defaultKill must fall back to a bare-pid signal so it can be reaped.
+  test("defaultAlive + defaultKill fall back to bare-pid for legacy (non-detached) processes", async () => {
+    // Spawn a non-detached child to simulate a legacy pidfile (pre-fix
+    // start). It shares the test runner's pgid, so kill(-pid, 0) will
+    // ESRCH and we should fall back.
+    const proc = Bun.spawn(["sh", "-c", "sleep 5"], { stdio: ["ignore", "ignore", "ignore"] });
+    const pid = proc.pid;
+    try {
+      expect(defaultAlive(pid)).toBe(true);
+      defaultKill(pid, "SIGKILL");
+      await new Promise((r) => setTimeout(r, 100));
+      expect(defaultAlive(pid)).toBe(false);
+    } finally {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
     }
   });
 });

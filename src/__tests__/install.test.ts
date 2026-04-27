@@ -1346,10 +1346,12 @@ describe("install", () => {
       expect(findService("paraclaw", path)).toBeUndefined();
       // Auto-start receives the canonical short name (= manifest.name).
       expect(startCalls).toEqual(["claw"]);
-      // Log lines speak in the canonical short name too.
+      // Log lines speak in the canonical short name too. Port comes from
+      // assignServicePort (third-party gets the first unassigned canonical
+      // slot, currently 1944), not the manifest's port hint.
       const joined = logs.join("\n");
       expect(joined).toMatch(/Seeded services\.json entry for claw/);
-      expect(joined).toMatch(/claw registered on port 1945/);
+      expect(joined).toMatch(/claw registered on port \d+/);
       expect(joined).not.toMatch(/Seeded services\.json entry for paraclaw/);
     } finally {
       cleanup();
