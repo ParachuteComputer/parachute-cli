@@ -55,6 +55,12 @@ describe("authorizationServerMetadata", () => {
     expect(body.code_challenge_methods_supported).toEqual(["S256"]);
     expect(body.grant_types_supported).toContain("authorization_code");
     expect(body.grant_types_supported).toContain("refresh_token");
+    // closes #68 — scopes_supported populated from FIRST_PARTY_SCOPES
+    const scopesSupported = body.scopes_supported as string[];
+    expect(scopesSupported).toContain("vault:read");
+    expect(scopesSupported).toContain("vault:admin");
+    expect(scopesSupported).toContain("scribe:transcribe");
+    expect(scopesSupported).toContain("hub:admin");
   });
 });
 

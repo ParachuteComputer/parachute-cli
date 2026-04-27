@@ -15,8 +15,9 @@
  * launch surface (no machine-to-machine clients yet); the token endpoint
  * stubs it with `unsupported_grant_type`.
  *
- * Login + consent screens are minimal HTML — functional, not pretty. PR (d)
- * is the polish pass.
+ * HTML for login + consent + error views lives in `oauth-ui.ts` so the
+ * handlers stay focused on protocol logic and the templates stay focused
+ * on presentation.
  */
 import type { Database } from "bun:sqlite";
 import {
@@ -42,6 +43,8 @@ import {
   signAccessToken,
   signRefreshToken,
 } from "./jwt-sign.ts";
+import { type AuthorizeFormParams, renderConsent, renderError, renderLogin } from "./oauth-ui.ts";
+import { FIRST_PARTY_SCOPES } from "./scope-explanations.ts";
 import {
   SESSION_TTL_MS,
   buildSessionCookie,
@@ -78,13 +81,8 @@ function redirectResponse(location: string, extra: Record<string, string> = {}):
   return new Response(null, { status: 302, headers: { location, ...extra } });
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function htmlError(title: string, message: string, status: number): Response {
+  return htmlResponse(renderError({ title, message, status }), status);
 }
 
 function oauthErrorRedirect(
@@ -114,23 +112,13 @@ export function authorizationServerMetadata(deps: OAuthDeps): Response {
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-    scopes_supported: [],
+    scopes_supported: FIRST_PARTY_SCOPES,
   });
 }
 
 // --- /oauth/authorize ------------------------------------------------------
 
-interface AuthorizeParams {
-  clientId: string;
-  redirectUri: string;
-  responseType: string;
-  scope: string;
-  codeChallenge: string;
-  codeChallengeMethod: string;
-  state: string | null;
-}
-
-function parseAuthorizeParams(url: URL): AuthorizeParams | { error: string } {
+function parseAuthorizeFormParams(url: URL): AuthorizeFormParams | { error: string } {
   const required = (k: string) => {
     const v = url.searchParams.get(k);
     return v && v.length > 0 ? v : null;
@@ -165,9 +153,9 @@ function parseAuthorizeParams(url: URL): AuthorizeParams | { error: string } {
  */
 export function handleAuthorizeGet(db: Database, req: Request, _deps: OAuthDeps): Response {
   const url = new URL(req.url);
-  const parsed = parseAuthorizeParams(url);
+  const parsed = parseAuthorizeFormParams(url);
   if ("error" in parsed) {
-    return htmlResponse(`<h1>OAuth error</h1><p>${escapeHtml(parsed.error)}</p>`, 400);
+    return htmlError("Invalid authorization request", parsed.error, 400);
   }
   if (parsed.responseType !== "code") {
     return oauthErrorRedirect(
@@ -189,13 +177,14 @@ export function handleAuthorizeGet(db: Database, req: Request, _deps: OAuthDeps)
   if (!client) {
     // Can't safely redirect — we don't trust the redirect_uri until we've
     // matched it against a registered client. Render an HTML error.
-    return htmlResponse("<h1>OAuth error</h1><p>unknown client_id</p>", 400);
+    return htmlError("Unknown application", "This client_id is not registered with this hub.", 400);
   }
   try {
     requireRegisteredRedirectUri(client, parsed.redirectUri);
   } catch {
-    return htmlResponse(
-      "<h1>OAuth error</h1><p>redirect_uri is not registered for this client</p>",
+    return htmlError(
+      "Redirect mismatch",
+      "The redirect_uri does not match any URI registered for this app.",
       400,
     );
   }
@@ -203,9 +192,9 @@ export function handleAuthorizeGet(db: Database, req: Request, _deps: OAuthDeps)
   const sessionId = parseSessionCookie(req.headers.get("cookie"));
   const session = sessionId ? findSession(db, sessionId) : null;
   if (!session) {
-    return htmlResponse(renderLoginForm(parsed));
+    return htmlResponse(renderLogin({ params: parsed }));
   }
-  return htmlResponse(renderConsentScreen(client, parsed));
+  return htmlResponse(renderConsent(consentProps(client, parsed)));
 }
 
 /**
@@ -226,7 +215,7 @@ export async function handleAuthorizePost(
   const action = String(form.get("__action") ?? "");
   if (action === "login") return await handleLoginSubmit(db, req, form, deps);
   if (action === "consent") return await handleConsentSubmit(db, req, form, deps);
-  return htmlResponse("<h1>OAuth error</h1><p>unknown form action</p>", 400);
+  return htmlError("Invalid form submission", "Unknown form action.", 400);
 }
 
 async function handleLoginSubmit(
@@ -239,15 +228,18 @@ async function handleLoginSubmit(
   const password = String(form.get("password") ?? "");
   const params = paramsFromForm(form);
   if (!username || !password) {
-    return htmlResponse(renderLoginForm(params, "username and password are required"), 400);
+    return htmlResponse(
+      renderLogin({ params, errorMessage: "Username and password are required." }),
+      400,
+    );
   }
   const user = getUserByUsername(db, username);
   if (!user) {
-    return htmlResponse(renderLoginForm(params, "invalid credentials"), 401);
+    return htmlResponse(renderLogin({ params, errorMessage: "Invalid credentials." }), 401);
   }
   const ok = await verifyPassword(user, password);
   if (!ok) {
-    return htmlResponse(renderLoginForm(params, "invalid credentials"), 401);
+    return htmlResponse(renderLogin({ params, errorMessage: "Invalid credentials." }), 401);
   }
   const session = createSession(db, { userId: user.id });
   const cookie = buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000));
@@ -272,14 +264,23 @@ async function handleConsentSubmit(
   const session = sessionId ? findSession(db, sessionId) : null;
   if (!session) {
     // Session expired between login and consent submit. Send back to login.
-    return htmlResponse(renderLoginForm(params, "session expired; please sign in again"), 401);
+    return htmlResponse(
+      renderLogin({ params, errorMessage: "Your session expired — please sign in again." }),
+      401,
+    );
   }
   const client = getClient(db, params.clientId);
-  if (!client) return htmlResponse("<h1>OAuth error</h1><p>unknown client_id</p>", 400);
+  if (!client) {
+    return htmlError("Unknown application", "This client_id is not registered with this hub.", 400);
+  }
   try {
     requireRegisteredRedirectUri(client, params.redirectUri);
   } catch {
-    return htmlResponse("<h1>OAuth error</h1><p>redirect_uri mismatch</p>", 400);
+    return htmlError(
+      "Redirect mismatch",
+      "The redirect_uri does not match any URI registered for this app.",
+      400,
+    );
   }
   if (!approve) {
     return oauthErrorRedirect(
@@ -316,7 +317,7 @@ async function handleConsentSubmit(
   return redirectResponse(u.toString());
 }
 
-function paramsFromForm(form: Awaited<ReturnType<Request["formData"]>>): AuthorizeParams {
+function paramsFromForm(form: Awaited<ReturnType<Request["formData"]>>): AuthorizeFormParams {
   return {
     clientId: String(form.get("client_id") ?? ""),
     redirectUri: String(form.get("redirect_uri") ?? ""),
@@ -328,7 +329,7 @@ function paramsFromForm(form: Awaited<ReturnType<Request["formData"]>>): Authori
   };
 }
 
-function authorizeParamsToQuery(p: AuthorizeParams): Record<string, string> {
+function authorizeParamsToQuery(p: AuthorizeFormParams): Record<string, string> {
   const q: Record<string, string> = {
     client_id: p.clientId,
     redirect_uri: p.redirectUri,
@@ -596,86 +597,11 @@ export async function handleRegister(
   return jsonResponse(respBody, 201);
 }
 
-// --- HTML templates --------------------------------------------------------
-
-function renderLoginForm(params: AuthorizeParams, errorMessage?: string): string {
-  const hidden = renderHiddenInputs(params);
-  const err = errorMessage ? `<p class="err">${escapeHtml(errorMessage)}</p>` : "";
-  return baseDocument(
-    "Sign in to Parachute Hub",
-    `
-    <h1>Sign in</h1>
-    ${err}
-    <form method="POST" action="/oauth/authorize">
-      <input type="hidden" name="__action" value="login" />
-      ${hidden}
-      <label>Username<br/><input type="text" name="username" autofocus required /></label>
-      <label>Password<br/><input type="password" name="password" required /></label>
-      <button type="submit">Sign in</button>
-    </form>
-    `,
-  );
-}
-
-function renderConsentScreen(client: OAuthClient, params: AuthorizeParams): string {
-  const hidden = renderHiddenInputs(params);
-  const scopes = params.scope.split(" ").filter((s) => s.length > 0);
-  const clientName = client.clientName ?? client.clientId;
-  const scopeList =
-    scopes.length === 0
-      ? "<li>(no scopes requested)</li>"
-      : scopes.map((s) => `<li><code>${escapeHtml(s)}</code></li>`).join("");
-  return baseDocument(
-    `Authorize ${escapeHtml(clientName)}`,
-    `
-    <h1>Authorize <code>${escapeHtml(clientName)}</code>?</h1>
-    <p>This app is requesting access to your Parachute account with the following scopes:</p>
-    <ul>${scopeList}</ul>
-    <form method="POST" action="/oauth/authorize">
-      <input type="hidden" name="__action" value="consent" />
-      ${hidden}
-      <button type="submit" name="approve" value="yes">Approve</button>
-      <button type="submit" name="approve" value="no">Deny</button>
-    </form>
-    `,
-  );
-}
-
-function renderHiddenInputs(p: AuthorizeParams): string {
-  const fields: [string, string][] = [
-    ["client_id", p.clientId],
-    ["redirect_uri", p.redirectUri],
-    ["response_type", p.responseType],
-    ["scope", p.scope],
-    ["code_challenge", p.codeChallenge],
-    ["code_challenge_method", p.codeChallengeMethod],
-  ];
-  if (p.state) fields.push(["state", p.state]);
-  return fields
-    .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}" />`)
-    .join("\n      ");
-}
-
-function baseDocument(title: string, body: string): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>${escapeHtml(title)}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 4rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.4rem; }
-    label { display: block; margin: 0.75rem 0; }
-    input[type=text], input[type=password] { width: 100%; padding: 0.5rem; box-sizing: border-box; }
-    button { padding: 0.5rem 1rem; margin-right: 0.5rem; }
-    .err { color: #b00020; }
-    code { background: #f3f3f3; padding: 0 0.25rem; border-radius: 3px; }
-    ul { padding-left: 1.25rem; }
-  </style>
-</head>
-<body>
-${body}
-</body>
-</html>`;
+function consentProps(client: OAuthClient, params: AuthorizeFormParams) {
+  return {
+    params,
+    clientId: client.clientId,
+    clientName: client.clientName ?? client.clientId,
+    scopes: params.scope.split(" ").filter((s) => s.length > 0),
+  };
 }

@@ -27,7 +27,7 @@ import { signAccessToken } from "./jwt-sign.ts";
 export const OPERATOR_TOKEN_FILENAME = "operator.token";
 export const OPERATOR_TOKEN_TTL_SECONDS = 365 * 24 * 60 * 60;
 export const OPERATOR_TOKEN_AUDIENCE = "operator";
-export const OPERATOR_TOKEN_CLIENT_ID = "parachute-cli";
+export const OPERATOR_TOKEN_CLIENT_ID = "parachute-hub";
 export const OPERATOR_TOKEN_SCOPES = ["hub:admin", "vault:admin", "scribe:admin", "channel:send"];
 
 export function operatorTokenPath(dir: string = configDir()): string {
