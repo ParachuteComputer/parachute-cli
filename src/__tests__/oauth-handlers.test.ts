@@ -393,10 +393,12 @@ describe("handleToken — full OAuth dance", () => {
       expect(tokenBody.refresh_token.length).toBeGreaterThan(20);
 
       // JWT must verify against the hub's signing keys, with the right sub +
-      // aud (vault:read → "vault").
-      const { payload } = await validateAccessToken(db, tokenBody.access_token);
+      // aud (vault:read → "vault") and iss matching the configured issuer
+      // (closes #77 — vault rejects tokens with a missing or mismatched iss).
+      const { payload } = await validateAccessToken(db, tokenBody.access_token, ISSUER);
       expect(payload.sub).toBe(user.id);
       expect(payload.aud).toBe("vault");
+      expect(payload.iss).toBe(ISSUER);
       expect(payload.scope).toBe("vault:read");
       expect(payload.client_id).toBe(reg.client.clientId);
     } finally {
