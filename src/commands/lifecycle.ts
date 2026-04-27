@@ -5,6 +5,7 @@ import { readEnvFileValues } from "../env-file.ts";
 import { readExposeState } from "../expose-state.ts";
 import { readHubPort } from "../hub-control.ts";
 import { HUB_ORIGIN_ENV, deriveHubOrigin } from "../hub-origin.ts";
+import { ModuleManifestError } from "../module-manifest.ts";
 import {
   type AliveFn,
   clearPid,
@@ -15,7 +16,13 @@ import {
   readPid,
   writePid,
 } from "../process-state.ts";
-import { getSpec, knownServices, shortNameForManifest } from "../service-spec.ts";
+import {
+  type ServiceSpec,
+  getSpec,
+  getSpecFromInstallDir,
+  knownServices,
+  shortNameForManifest,
+} from "../service-spec.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
 
 /**
@@ -26,18 +33,30 @@ import { type ServiceEntry, readManifest } from "../services-manifest.ts";
  * `env`, when provided, is merged into the child's environment on top of the
  * parent's — today's only caller is `start`, which injects
  * PARACHUTE_HUB_ORIGIN so vault's OAuth issuer matches the hub URL.
+ *
+ * `cwd`, when provided, is the child's working directory. Set to the
+ * service's installDir for third-party modules so manifest-declared
+ * relative startCmds (e.g. `["bun", "web/server/src/server.ts"]`) resolve
+ * against the package root.
  */
+export interface SpawnerOptions {
+  env?: Record<string, string>;
+  cwd?: string;
+}
+
 export interface Spawner {
-  spawn(cmd: readonly string[], logFile: string, env?: Record<string, string>): number;
+  spawn(cmd: readonly string[], logFile: string, opts?: SpawnerOptions): number;
 }
 
 export const defaultSpawner: Spawner = {
-  spawn(cmd, logFile, env) {
+  spawn(cmd, logFile, opts) {
     const fd = openSync(logFile, "a");
-    const proc = Bun.spawn([...cmd], {
+    const spawnOpts: Parameters<typeof Bun.spawn>[1] = {
       stdio: ["ignore", fd, fd],
-      env: env ? { ...process.env, ...env } : undefined,
-    });
+    };
+    if (opts?.env) spawnOpts.env = { ...process.env, ...opts.env };
+    if (opts?.cwd) spawnOpts.cwd = opts.cwd;
+    const proc = Bun.spawn([...cmd], spawnOpts);
     proc.unref();
     return proc.pid;
   },
@@ -120,41 +139,92 @@ function resolveHubOrigin(override: string | undefined, configDir: string): stri
   return deriveHubOrigin({ exposeFqdn, hubPort: readHubPort(configDir) });
 }
 
+interface ResolvedTarget {
+  short: string;
+  entry: ServiceEntry;
+  /**
+   * Lifecycle spec resolved at request time. First-party comes from
+   * `getSpec(short)`; third-party comes from
+   * `getSpecFromInstallDir(entry.installDir, ...)`. May be undefined when
+   * a row has neither — lifecycle prints "lifecycle not yet supported"
+   * for that service rather than crashing the whole sweep.
+   */
+  spec: ServiceSpec | undefined;
+}
+
+async function specForEntry(
+  short: string,
+  entry: ServiceEntry,
+): Promise<{ spec: ServiceSpec | undefined; error?: string }> {
+  const firstParty = getSpec(short);
+  if (firstParty) return { spec: firstParty };
+  if (!entry.installDir) return { spec: undefined };
+  try {
+    const spec = await getSpecFromInstallDir(entry.installDir, entry.name);
+    return { spec: spec ?? undefined };
+  } catch (err) {
+    if (err instanceof ModuleManifestError) {
+      return { spec: undefined, error: err.message };
+    }
+    throw err;
+  }
+}
+
 /**
  * Services selected by the `[svc]` positional. `undefined` targets every
- * installed service (looked up via the manifest). Unknown names get a
- * friendly error up front rather than a confusing spawn failure downstream.
+ * manageable service (first-party shortnames OR third-party rows that
+ * carry `installDir`). Unknown names get a friendly error up front rather
+ * than a confusing spawn failure downstream.
+ *
+ * Third-party modules are addressed by the `name` field from their
+ * `module.json` (which is what install copied to `entry.name` for
+ * third-party). First-party are addressed by their short name (vault,
+ * notes, …) and matched via `shortNameForManifest`.
  */
-function resolveTargets(
+async function resolveTargets(
   svc: string | undefined,
   manifestPath: string,
-): { targets: Array<{ short: string; entry: ServiceEntry }> } | { error: string } {
+): Promise<{ targets: ResolvedTarget[] } | { error: string }> {
   const manifest = readManifest(manifestPath);
   if (manifest.services.length === 0) {
     return { error: "No services installed yet. Try: parachute install vault" };
   }
 
   if (svc !== undefined) {
-    const spec = getSpec(svc);
-    if (!spec) {
-      return {
-        error: `unknown service "${svc}". known: ${knownServices().join(", ")}`,
-      };
+    // Try first-party (svc is a short name → known fallback).
+    const firstPartySpec = getSpec(svc);
+    if (firstPartySpec) {
+      const entry = manifest.services.find((s) => s.name === firstPartySpec.manifestName);
+      if (!entry) {
+        return { error: `${svc} isn't installed. Run \`parachute install ${svc}\` first.` };
+      }
+      return { targets: [{ short: svc, entry, spec: firstPartySpec }] };
     }
-    const entry = manifest.services.find((s) => s.name === spec.manifestName);
-    if (!entry) {
-      return {
-        error: `${svc} isn't installed. Run \`parachute install ${svc}\` first.`,
-      };
+    // Third-party: match a services.json row by name. Third-party rows
+    // carry `installDir`; without it we have no way to resolve a spec.
+    const entry = manifest.services.find((s) => s.name === svc);
+    if (entry?.installDir) {
+      const { spec, error } = await specForEntry(svc, entry);
+      if (error) return { error: `${svc}: invalid module.json — ${error}` };
+      return { targets: [{ short: svc, entry, spec }] };
     }
-    return { targets: [{ short: svc, entry }] };
+    return {
+      error: `unknown service "${svc}". known: ${knownServices().join(", ")}`,
+    };
   }
 
-  const targets: Array<{ short: string; entry: ServiceEntry }> = [];
+  const targets: ResolvedTarget[] = [];
   for (const entry of manifest.services) {
     const short = shortNameForManifest(entry.name);
-    if (!short) continue;
-    targets.push({ short, entry });
+    if (short) {
+      const spec = getSpec(short);
+      targets.push({ short, entry, spec });
+      continue;
+    }
+    if (entry.installDir) {
+      const { spec } = await specForEntry(entry.name, entry);
+      targets.push({ short: entry.name, entry, spec });
+    }
   }
   if (targets.length === 0) {
     return { error: "No manageable services in services.json." };
@@ -164,14 +234,14 @@ function resolveTargets(
 
 export async function start(svc: string | undefined, opts: LifecycleOpts = {}): Promise<number> {
   const r = resolve(opts);
-  const picked = resolveTargets(svc, r.manifestPath);
+  const picked = await resolveTargets(svc, r.manifestPath);
   if ("error" in picked) {
     r.log(picked.error);
     return 1;
   }
 
   let failures = 0;
-  for (const { short, entry } of picked.targets) {
+  for (const { short, entry, spec } of picked.targets) {
     const state = processState(short, r.configDir, r.alive);
     if (state.status === "running") {
       r.log(`${short} already running (pid ${state.pid}).`);
@@ -182,7 +252,6 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
       clearPid(short, r.configDir);
     }
 
-    const spec = getSpec(short);
     const cmd = spec?.startCmd?.(entry);
     if (!cmd || cmd.length === 0) {
       r.log(`${short}: lifecycle not yet supported for this service.`);
@@ -200,9 +269,16 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
     const fileEnv = readEnvFileValues(join(r.configDir, short, ".env"));
     const env: Record<string, string> = { ...fileEnv };
     if (r.hubOrigin) env[HUB_ORIGIN_ENV] = r.hubOrigin;
-    const envForSpawn = Object.keys(env).length > 0 ? env : undefined;
+    const spawnerOpts: { env?: Record<string, string>; cwd?: string } = {};
+    if (Object.keys(env).length > 0) spawnerOpts.env = env;
+    // Third-party modules ship clean relative startCmds — `cwd: installDir`
+    // makes those resolve. First-party fallbacks use absolute / PATH binaries
+    // so their cwd is irrelevant; passing it doesn't hurt.
+    if (entry.installDir) spawnerOpts.cwd = entry.installDir;
+    const passOpts =
+      spawnerOpts.env !== undefined || spawnerOpts.cwd !== undefined ? spawnerOpts : undefined;
     try {
-      const pid = r.spawner.spawn(cmd, logFile, envForSpawn);
+      const pid = r.spawner.spawn(cmd, logFile, passOpts);
       writePid(short, pid, r.configDir);
       r.log(`✓ ${short} started (pid ${pid}); logs: ${logFile}`);
       if (r.hubOrigin) r.log(`  ${HUB_ORIGIN_ENV}=${r.hubOrigin}`);
@@ -217,7 +293,7 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
 
 export async function stop(svc: string | undefined, opts: LifecycleOpts = {}): Promise<number> {
   const r = resolve(opts);
-  const picked = resolveTargets(svc, r.manifestPath);
+  const picked = await resolveTargets(svc, r.manifestPath);
   if ("error" in picked) {
     r.log(picked.error);
     return 1;
@@ -274,6 +350,7 @@ export async function restart(svc: string | undefined, opts: LifecycleOpts = {})
 
 export interface LogsOpts {
   configDir?: string;
+  manifestPath?: string;
   log?: (line: string) => void;
   /** Tail stream — if omitted, uses `tail -n <lines> -f <file>` via spawn. */
   tailSpawner?: Spawner;
@@ -284,14 +361,22 @@ export interface LogsOpts {
 
 export async function logs(svc: string, opts: LogsOpts = {}): Promise<number> {
   const configDir = opts.configDir ?? CONFIG_DIR;
+  const manifestPath = opts.manifestPath ?? SERVICES_MANIFEST_PATH;
   const log = opts.log ?? ((line) => console.log(line));
   const lines = opts.lines ?? 200;
   const follow = opts.follow ?? false;
 
-  const spec = getSpec(svc);
-  if (!spec) {
-    log(`unknown service "${svc}". known: ${knownServices().join(", ")}`);
-    return 1;
+  // logs only needs a valid short name to find the log file. First-party
+  // wins via the spec lookup; third-party rows match by `entry.name`. We
+  // don't need the full spec here — we just need to confirm the name maps
+  // to something the CLI manages.
+  const isFirstParty = getSpec(svc) !== undefined;
+  if (!isFirstParty) {
+    const entry = readManifest(manifestPath).services.find((s) => s.name === svc);
+    if (!entry?.installDir) {
+      log(`unknown service "${svc}". known: ${knownServices().join(", ")}`);
+      return 1;
+    }
   }
 
   const path = logPathFor(svc, configDir);

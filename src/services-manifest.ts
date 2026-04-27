@@ -34,6 +34,17 @@ export interface ServiceEntry {
   tagline?: string;
   /** Opt-in or opt-out of public-facing expose layers. See PublicExposure. */
   publicExposure?: PublicExposure;
+  /**
+   * Absolute path to the installed package directory. Set at install time
+   * for both npm-installed (`bunGlobalPrefixes()/<package>`) and local-path
+   * installs (`<absPath>`); first-party fallbacks may leave it absent.
+   *
+   * Lifecycle (`parachute start`) reads `<installDir>/.parachute/module.json`
+   * to recover startCmd for third-party modules whose spec isn't in
+   * FIRST_PARTY_FALLBACKS, and spawns with `cwd: installDir` so manifests
+   * can use clean relative paths in their `startCmd`.
+   */
+  installDir?: string;
 }
 
 export interface ServicesManifest {
@@ -74,6 +85,7 @@ function validateEntry(raw: unknown, where: string): ServiceEntry {
   const displayName = e.displayName;
   const tagline = e.tagline;
   const publicExposure = e.publicExposure;
+  const installDir = e.installDir;
   if (displayName !== undefined && typeof displayName !== "string") {
     throw new ServicesManifestError(`${where}: "displayName" must be a string if present`);
   }
@@ -90,10 +102,14 @@ function validateEntry(raw: unknown, where: string): ServiceEntry {
       `${where}: "publicExposure" must be "allowed" | "loopback" | "auth-required" if present`,
     );
   }
+  if (installDir !== undefined && (typeof installDir !== "string" || installDir.length === 0)) {
+    throw new ServicesManifestError(`${where}: "installDir" must be a non-empty string if present`);
+  }
   const entry: ServiceEntry = { name, port, paths: paths as string[], health, version };
   if (displayName !== undefined) entry.displayName = displayName;
   if (tagline !== undefined) entry.tagline = tagline;
   if (publicExposure !== undefined) entry.publicExposure = publicExposure as PublicExposure;
+  if (installDir !== undefined) entry.installDir = installDir;
   return entry;
 }
 

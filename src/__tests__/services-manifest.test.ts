@@ -174,4 +174,26 @@ describe("services-manifest", () => {
       cleanup();
     }
   });
+
+  test("round-trips optional installDir", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const full: ServiceEntry = { ...vault, installDir: "/abs/path/to/pkg" };
+      upsertService(full, path);
+      expect(readManifest(path).services[0]).toEqual(full);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rejects non-string installDir", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      expect(() => upsertService({ ...vault, installDir: 42 as unknown as string }, path)).toThrow(
+        /installDir/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
 });

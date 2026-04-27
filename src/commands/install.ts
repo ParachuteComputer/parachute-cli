@@ -237,6 +237,27 @@ function defaultReadPackageName(absPath: string): string | null {
 }
 
 /**
+ * Resolve the absolute path to the installed package directory. Local-path
+ * installs are their own source. Npm installs land under a bun globals
+ * prefix; we locate via `findGlobalInstall`. Returns null when the dir
+ * can't be located (first-party fallback path: not fatal; third-party:
+ * the manifest read downstream surfaces the error).
+ */
+function resolveInstallDir(
+  target: ResolvedTarget,
+  findGlobalInstall: (pkg: string) => string | null,
+): string | null {
+  if (target.kind === "local-path") {
+    // The local checkout itself is the source. We could also re-read from
+    // bun's globals after install, but reading the original avoids any
+    // weirdness with bun symlinking the dir vs. copying it.
+    return target.absPath;
+  }
+  const pkgJsonPath = findGlobalInstall(target.packageName);
+  return pkgJsonPath ? dirname(pkgJsonPath) : null;
+}
+
+/**
  * Read the installed package's `.parachute/module.json`.
  *
  * Returns `null` when the package doesn't ship one (first-party falls back to
@@ -247,29 +268,18 @@ function defaultReadPackageName(absPath: string): string | null {
  */
 async function readInstalledManifest(
   target: ResolvedTarget,
+  packageDir: string | null,
   deps: {
-    findGlobalInstall: (pkg: string) => string | null;
     readManifest: (packageDir: string) => Promise<ModuleManifest | null>;
     log: (line: string) => void;
   },
 ): Promise<ModuleManifest | null | "error"> {
-  let packageDir: string | null = null;
-  if (target.kind === "local-path") {
-    // The local checkout itself is the source. We could also re-read from
-    // bun's globals after install, but reading the original avoids any
-    // weirdness with bun symlinking the dir vs. copying it.
-    packageDir = target.absPath;
-  } else {
-    const pkgJsonPath = deps.findGlobalInstall(target.packageName);
-    if (!pkgJsonPath) {
-      // First-party fallback path (typical in tests): we don't actually need
-      // a real install dir — the vendored manifest covers us.
-      if (target.kind === "first-party") return null;
-      // Third-party: bun-add succeeded but we couldn't locate the install dir.
-      // Caller already logged a probe-list — just say nothing's there.
-      return null;
-    }
-    packageDir = dirname(pkgJsonPath);
+  if (!packageDir) {
+    // First-party fallback path (typical in tests): we don't actually need
+    // a real install dir — the vendored manifest covers us.
+    // Third-party: bun-add succeeded but we couldn't locate the install dir;
+    // caller already logged a probe-list — just say nothing's there.
+    return null;
   }
   try {
     return await deps.readManifest(packageDir);
@@ -421,8 +431,8 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   // third-party (npm / local-path) the manifest is the contract — its
   // absence hard-errors here. See
   // `parachute-patterns/patterns/module-json-extensibility.md`.
-  const installedManifest = await readInstalledManifest(target, {
-    findGlobalInstall,
+  const installDir = resolveInstallDir(target, findGlobalInstall);
+  const installedManifest = await readInstalledManifest(target, installDir, {
     readManifest,
     log,
   });
@@ -533,6 +543,17 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
     );
   }
 
+  // Stamp installDir on the row. Lifecycle reads it back to find the
+  // module's `.parachute/module.json` (third-party startCmd) and to spawn
+  // with cwd. Done after seed/port-update so we cover all paths uniformly:
+  // the service's own init may have written the row without installDir, and
+  // the seed itself doesn't carry it (composeServiceSpec → seedEntry uses
+  // the manifest, which doesn't know its own install location).
+  if (entry && installDir && entry.installDir !== installDir) {
+    upsertService({ ...entry, installDir }, manifestPath);
+    entry = findService(spec.manifestName, manifestPath);
+  }
+
   if (!entry) {
     log(
       `Installed, but no services.json entry for "${spec.manifestName}" yet. Run \`parachute status\` after the service has started.`,
@@ -607,7 +628,14 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   // last line of the install always reflects ground truth, not an early
   // snapshot. Surfaced by parachute-hub#44 — defensive logging that turns a
   // missing entry into a visible failure rather than a silent one.
-  const finalEntry = findService(spec.manifestName, manifestPath);
+  let finalEntry = findService(spec.manifestName, manifestPath);
+  // Re-stamp installDir if the service's first boot rewrote the row without
+  // it. Lifecycle commands beyond install (start/stop/restart/logs) need it
+  // present; we own this field, services don't have to know it exists.
+  if (finalEntry && installDir && finalEntry.installDir !== installDir) {
+    upsertService({ ...finalEntry, installDir }, manifestPath);
+    finalEntry = findService(spec.manifestName, manifestPath);
+  }
   if (!finalEntry) {
     log(
       `⚠ ${spec.manifestName} is not in services.json after install. \`parachute status\` won't see it. Re-run install or file a bug.`,

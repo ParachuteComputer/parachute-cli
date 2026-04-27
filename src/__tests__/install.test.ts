@@ -1258,9 +1258,44 @@ describe("install", () => {
       expect(calls[0]).toEqual(["bun", "add", "-g", pkgDir]);
       const seeded = findService("@local/demo", path);
       expect(seeded?.name).toBe("@local/demo");
+      // hub#83: lifecycle needs installDir to find module.json + spawn cwd.
+      expect(seeded?.installDir).toBe(pkgDir);
     } finally {
       cleanup();
       rmSync(pkgDir, { recursive: true, force: true });
+    }
+  });
+
+  test("npm-installed third-party module persists installDir from bun globals", async () => {
+    // hub#83: for `parachute install <npm-pkg>`, installDir is dirname of
+    // the package.json that findGlobalInstall returns. Without this,
+    // lifecycle has no way to locate the module's `.parachute/module.json`
+    // and third-party `parachute start <name>` fails post-install.
+    const { path, cleanup } = makeTempPath();
+    try {
+      const fakePrefix = "/fake/bun-globals/node_modules/@vendor/widget";
+      const code = await install("@vendor/widget", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: () => {},
+        readManifest: async () => ({
+          name: "widget",
+          manifestName: "@vendor/widget",
+          kind: "api",
+          port: 1952,
+          paths: ["/widget"],
+          health: "/widget/health",
+        }),
+        findGlobalInstall: () => `${fakePrefix}/package.json`,
+      });
+      expect(code).toBe(0);
+      const seeded = findService("@vendor/widget", path);
+      expect(seeded?.installDir).toBe(fakePrefix);
+    } finally {
+      cleanup();
     }
   });
 
