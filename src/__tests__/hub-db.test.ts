@@ -58,8 +58,11 @@ describe("openHubDb + migrate", () => {
             "SELECT version, applied_at FROM schema_version",
           )
           .all();
-        expect(rows.length).toBe(1);
-        expect(rows[0]?.version).toBe(1);
+        // Each migration recorded exactly once — re-open is idempotent.
+        const versions = rows.map((r) => r.version).sort();
+        expect(new Set(versions).size).toBe(versions.length);
+        expect(versions).toContain(1);
+        expect(versions).toContain(2);
       } finally {
         db2.close();
       }
@@ -92,6 +95,54 @@ describe("openHubDb + migrate", () => {
           )
           .get("k2");
         expect(row?.retired_at).toBeNull();
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("v2 creates users + tokens tables with the expected columns", () => {
+    const h = makeHarness();
+    try {
+      const db = openHubDb(h.dbPath);
+      try {
+        const tables = (
+          db
+            .query<{ name: string }, []>(
+              "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+            )
+            .all() ?? []
+        ).map((r) => r.name);
+        expect(tables).toContain("users");
+        expect(tables).toContain("tokens");
+        const versions = (
+          db.query<{ version: number }, []>("SELECT version FROM schema_version").all() ?? []
+        ).map((r) => r.version);
+        expect(versions).toContain(2);
+
+        // users.username UNIQUE constraint enforced.
+        db.prepare(
+          "INSERT INTO users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ).run("u1", "owner", "h", "2026-01-01", "2026-01-01");
+        expect(() =>
+          db
+            .prepare(
+              "INSERT INTO users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .run("u2", "owner", "h2", "2026-01-01", "2026-01-01"),
+        ).toThrow();
+
+        // tokens.user_id FK enforced.
+        expect(() =>
+          db
+            .prepare(
+              `INSERT INTO tokens (jti, user_id, client_id, scopes, expires_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+            )
+            .run("t1", "no-such-user", "c", "s", "2030-01-01", "2026-01-01"),
+        ).toThrow();
       } finally {
         db.close();
       }

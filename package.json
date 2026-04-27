@@ -1,6 +1,6 @@
 {
   "name": "@openparachute/hub",
-  "version": "0.3.1-rc.1",
+  "version": "0.3.1-rc.2",
   "description": "parachute — the local hub for the Parachute ecosystem (discovery, ports, lifecycle, soon OAuth).",
   "license": "AGPL-3.0",
   "publishConfig": {
@@ -30,5 +30,9 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "jose": "^6.2.2"
   }
 }
