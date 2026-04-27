@@ -1,8 +1,8 @@
 /**
  * Hub-local SQLite database. Opens `~/.parachute/hub.db` (overridable via
- * `$PARACHUTE_HOME`). Holds anything the hub itself owns — currently just
- * JWT signing keys; user accounts and OAuth state land here in subsequent
- * PRs (cli#58 b/c).
+ * `$PARACHUTE_HOME`). Holds everything the hub owns as the ecosystem's OAuth
+ * issuer — signing keys (v1), users + opaque refresh tokens (v2), OAuth
+ * clients + auth-codes + grants + browser sessions (v3).
  *
  * Each open() runs `migrate()` to bring the schema up to date. A
  * `schema_version` table records every applied migration so re-opens are
@@ -62,6 +62,45 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX tokens_user ON tokens (user_id);
       CREATE INDEX tokens_active_refresh ON tokens (refresh_token_hash)
         WHERE refresh_token_hash IS NOT NULL AND revoked_at IS NULL;
+    `,
+  },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE clients (
+        client_id TEXT PRIMARY KEY,
+        client_secret_hash TEXT,
+        redirect_uris TEXT NOT NULL,
+        scopes TEXT NOT NULL,
+        client_name TEXT,
+        registered_at TEXT NOT NULL
+      );
+      CREATE TABLE auth_codes (
+        code TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL REFERENCES clients(client_id),
+        user_id TEXT NOT NULL REFERENCES users(id),
+        redirect_uri TEXT NOT NULL,
+        scopes TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE grants (
+        user_id TEXT NOT NULL REFERENCES users(id),
+        client_id TEXT NOT NULL REFERENCES clients(client_id),
+        scopes TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, client_id)
+      );
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX sessions_user ON sessions (user_id);
     `,
   },
 ];
