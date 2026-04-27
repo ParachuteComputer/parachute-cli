@@ -1314,13 +1314,14 @@ describe("install", () => {
     // `paraclaw` (the npm label) while lifecycle looks up by `claw` (the
     // canonical short) → "unknown service". Fix: services.json key is
     // always `manifest.name` for third-party.
-    const { path, cleanup } = makeTempPath();
+    const { path, configDir, cleanup } = makeTempPath();
     try {
       const startCalls: string[] = [];
       const logs: string[] = [];
       const code = await install("paraclaw", {
         runner: async () => 0,
         manifestPath: path,
+        configDir,
         startService: async (short) => {
           startCalls.push(short);
           return 0;
