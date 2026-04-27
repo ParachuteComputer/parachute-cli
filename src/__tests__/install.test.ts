@@ -15,7 +15,7 @@ function makeTempPath(): { path: string; configDir: string; cleanup: () => void 
 }
 
 describe("install", () => {
-  test("rejects unknown service with exit 1", async () => {
+  test("rejects third-party package with no module.json (hard error)", async () => {
     const { path, cleanup } = makeTempPath();
     try {
       const logs: string[] = [];
@@ -28,7 +28,7 @@ describe("install", () => {
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
-      expect(logs.join("\n")).toMatch(/unknown service/);
+      expect(logs.join("\n")).toMatch(/does not ship \.parachute\/module\.json/);
     } finally {
       cleanup();
     }
@@ -1138,6 +1138,146 @@ describe("install", () => {
       const entry = findService("parachute-vault", path);
       expect(entry?.port).toBe(1944);
       expect(logs.join("\n")).toMatch(/canonical port 1940 is in use/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("third-party npm package with valid module.json installs", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install("@acme/widget", {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => ({
+          name: "widget",
+          manifestName: "@acme/widget",
+          kind: "api",
+          port: 1950,
+          paths: ["/widget"],
+          health: "/healthz",
+        }),
+        findGlobalInstall: () => "/fake/prefix/@acme/widget/package.json",
+      });
+      expect(code).toBe(0);
+      expect(calls[0]).toEqual(["bun", "add", "-g", "@acme/widget"]);
+      const seeded = findService("@acme/widget", path);
+      expect(seeded?.name).toBe("@acme/widget");
+      expect(seeded?.port).toBe(1950);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("third-party npm package without module.json hard-errors", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("@acme/widget", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => null,
+        findGlobalInstall: () => "/fake/prefix/@acme/widget/package.json",
+      });
+      expect(code).toBe(1);
+      expect(logs.join("\n")).toMatch(/does not ship \.parachute\/module\.json/);
+      expect(logs.join("\n")).toMatch(/module-json-extensibility\.md/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("third-party module name colliding with first-party shortname is rejected", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("@evil/squatter", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => ({
+          name: "vault",
+          manifestName: "@evil/squatter",
+          kind: "api",
+          port: 1950,
+          paths: ["/vault"],
+          health: "/healthz",
+        }),
+        findGlobalInstall: () => "/fake/prefix/@evil/squatter/package.json",
+      });
+      expect(code).toBe(1);
+      expect(logs.join("\n")).toMatch(/collides with a first-party/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("local absolute path resolves package name + module.json", async () => {
+    const { path, cleanup } = makeTempPath();
+    const pkgDir = mkdtempSync(join(tmpdir(), "pcli-localpkg-"));
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install(pkgDir, {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => ({
+          name: "demo",
+          manifestName: "@local/demo",
+          kind: "api",
+          port: 1951,
+          paths: ["/demo"],
+          health: "/healthz",
+        }),
+        readPackageName: () => "@local/demo",
+      });
+      expect(code).toBe(0);
+      expect(calls[0]).toEqual(["bun", "add", "-g", pkgDir]);
+      const seeded = findService("@local/demo", path);
+      expect(seeded?.name).toBe("@local/demo");
+    } finally {
+      cleanup();
+      rmSync(pkgDir, { recursive: true, force: true });
+    }
+  });
+
+  test("local absolute path that doesn't exist fails fast", async () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const logs: string[] = [];
+      const code = await install("/nonexistent/path/xyz", {
+        runner: async () => 0,
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(1);
+      expect(logs.join("\n")).toMatch(/path does not exist/);
     } finally {
       cleanup();
     }

@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import type { ModuleManifest } from "./module-manifest.ts";
 import type { ServiceEntry } from "./services-manifest.ts";
 
 /**
@@ -74,6 +75,71 @@ export function isCanonicalPort(port: number): boolean {
  */
 export type ServiceKind = "api" | "tool" | "frontend";
 
+/**
+ * Imperative behaviors that don't fit the static `module.json` schema.
+ *
+ * First-party only. Each first-party fallback declares its own extras
+ * alongside its embedded manifest; when the upstream module ships its own
+ * `.parachute/module.json`, the corresponding fallback entry — extras and
+ * manifest both — gets deleted in one PR per module.
+ *
+ * Third-party modules don't get extras: anything they need at install time
+ * has to fit the manifest contract (or live as a runtime concern at
+ * `/.parachute/info`). The boundary is intentional — extras is the seam
+ * for transitional behavior, not a permanent escape hatch.
+ */
+export interface FirstPartyExtras {
+  /** Init command spawned post-install (e.g., `["parachute-vault", "init"]`). */
+  readonly init?: readonly string[];
+  /**
+   * Override startCmd to take the per-install services.json entry. Used by
+   * notes (which needs `--port` + `--mount` derived from the entry); plain
+   * static-argv `manifest.startCmd` covers everything else.
+   */
+  readonly startCmd?: (entry: ServiceEntry) => readonly string[] | undefined;
+  /** Lines printed at the end of `parachute install <svc>`. */
+  readonly postInstallFooter?: () => readonly string[];
+  /**
+   * Does the service gate its endpoints behind auth today? Drives
+   * `effectivePublicExposure`'s default for api/tool services. True for
+   * vault/channel; conservatively false for scribe until its auth-gate ships.
+   */
+  readonly hasAuth?: boolean;
+  /**
+   * Override the canonical reachable URL for `parachute status`. Most
+   * services use `port + paths[0]`; vault appends `/mcp`, scribe is at root.
+   */
+  readonly urlForEntry?: (entry: ServiceEntry) => string | undefined;
+}
+
+/**
+ * Vendored fallback for a first-party module.
+ *
+ * The CLI prefers the installed module's own `.parachute/module.json` when
+ * present and falls back to this embedded manifest otherwise. The plan is
+ * to delete each fallback as its upstream module starts shipping the real
+ * file — see the `// FALLBACK: Delete when ...` markers below for the
+ * specific upstream reference per entry.
+ *
+ * Third-party modules never have a fallback; they ship `module.json` or
+ * the install hard-errors.
+ */
+export interface FirstPartyFallback {
+  /** npm package name for `bun add -g`. */
+  readonly package: string;
+  /** Embedded module.json — used when the install dir has no `.parachute/module.json`. */
+  readonly manifest: ModuleManifest;
+  /** Imperative behaviors not expressible in module.json. Optional. */
+  readonly extras?: FirstPartyExtras;
+}
+
+/**
+ * Façade combining a module's manifest with its install-time extras. All
+ * consumers (install, lifecycle, status, expose) read this — they don't
+ * care whether it came from a vendored fallback or a real
+ * `.parachute/module.json`. Non-readonly nothing — every field is read-only
+ * from the consumer's perspective.
+ */
 export interface ServiceSpec {
   readonly package: string;
   readonly manifestName: string;
@@ -81,55 +147,23 @@ export interface ServiceSpec {
   /**
    * Command to spawn for `parachute start <svc>`. Receives the services.json
    * entry so commands that need per-install data (e.g., the notes static-serve
-   * shim needs the configured port) can pull it from there.
-   *
-   * Returns `undefined` to declare "lifecycle not supported for this service."
-   * That never applies today but leaves a seam for future services that
-   * shouldn't be managed by `parachute start`.
+   * shim needs the configured port) can pull it from there. Returns
+   * `undefined` to declare "lifecycle not supported for this service."
    */
   readonly startCmd?: (entry: ServiceEntry) => readonly string[] | undefined;
   /**
    * Canonical initial services.json entry used when the service hasn't
-   * written its own entry yet. Fires post-install only if `findService`
-   * returns undefined — normal npm installs hit this almost never (the
-   * service's init or first boot writes the authoritative entry first).
-   *
-   * Main use case: `bun link` local-dev installs where the service hasn't
-   * run yet but `parachute expose` / `parachute start` need an entry to
-   * plan against. First service boot overwrites the seed with its own
-   * authoritative version.
+   * written its own. Fires post-install only if `findService` returns
+   * undefined — normal npm installs hit this almost never (the service's
+   * init or first boot writes the authoritative entry first). Main use case:
+   * `bun link` local-dev installs where the service hasn't run yet but
+   * `parachute expose` / `parachute start` need an entry to plan against.
+   * First service boot overwrites the seed with its own authoritative version.
    */
   readonly seedEntry?: () => ServiceEntry;
-  /**
-   * Declares the service's broad shape. Drives exposure defaults: api/tool
-   * services without auth fall back to `publicExposure: "auth-required"`
-   * (treated as loopback at launch); frontends default to "allowed".
-   */
-  readonly kind?: ServiceKind;
-  /**
-   * Does the service gate its endpoints behind auth today? Used together with
-   * `kind` to pick a safe default when the services.json entry omits
-   * `publicExposure`. True for vault/channel (owner-authenticated);
-   * conservatively false for scribe until its auth-gate ships.
-   */
+  readonly kind: ServiceKind;
   readonly hasAuth?: boolean;
-  /**
-   * Canonical reachable URL for the service given its manifest entry. Drives
-   * the URL column in `parachute status` and any other place we need to
-   * render "where do I point a client?". Most services use port + paths[0],
-   * but some need to append a fixed suffix (vault's MCP endpoint lives at
-   * `/vault/<name>/mcp`, not the bare mount path).
-   *
-   * Returns undefined when the entry doesn't carry enough info — callers
-   * should fall back to the bare `http://127.0.0.1:<port>` form.
-   */
   readonly urlForEntry?: (entry: ServiceEntry) => string | undefined;
-  /**
-   * Lines printed at the end of `parachute install <svc>` so the user has a
-   * clear next step. Vault's footer comes from `parachute-vault init` itself
-   * (PR #166) — richer because it can read the freshly-minted API token —
-   * so vault's spec leaves this off.
-   */
   readonly postInstallFooter?: () => readonly string[];
 }
 
@@ -150,45 +184,118 @@ function pathBasedUrl(entry: ServiceEntry): string {
   return `http://127.0.0.1:${entry.port}${path}`;
 }
 
-export const SERVICE_SPECS: Record<string, ServiceSpec> = {
-  vault: {
-    package: "@openparachute/vault",
+/**
+ * Build a services.json seed row from a module manifest. Pure: doesn't
+ * read the filesystem. The `version` is intentionally `0.0.0-linked` to
+ * telegraph "stopgap" — the service's own boot overwrites this entry.
+ */
+export function seedEntryFromManifest(manifest: ModuleManifest): ServiceEntry {
+  const entry: ServiceEntry = {
+    name: manifest.manifestName,
+    port: manifest.port,
+    paths: [...manifest.paths],
+    health: manifest.health,
+    version: SEED_VERSION,
+  };
+  if (manifest.displayName !== undefined) entry.displayName = manifest.displayName;
+  if (manifest.tagline !== undefined) entry.tagline = manifest.tagline;
+  return entry;
+}
+
+/**
+ * Build the runtime ServiceSpec façade from a manifest + optional extras.
+ * Used by both the first-party-fallback path and the
+ * read-installed-`module.json` path so both produce identical specs.
+ */
+export function composeServiceSpec(opts: {
+  packageName: string;
+  manifest: ModuleManifest;
+  extras?: FirstPartyExtras;
+}): ServiceSpec {
+  const { packageName, manifest, extras } = opts;
+  const startCmd = extras?.startCmd ?? (manifest.startCmd ? () => manifest.startCmd : undefined);
+  const spec: ServiceSpec = {
+    package: packageName,
+    manifestName: manifest.manifestName,
+    seedEntry: () => seedEntryFromManifest(manifest),
+    kind: manifest.kind,
+  };
+  if (extras?.init !== undefined) (spec as { init?: readonly string[] }).init = extras.init;
+  if (startCmd !== undefined) {
+    (spec as { startCmd?: (e: ServiceEntry) => readonly string[] | undefined }).startCmd = startCmd;
+  }
+  if (extras?.hasAuth !== undefined) (spec as { hasAuth?: boolean }).hasAuth = extras.hasAuth;
+  if (extras?.urlForEntry !== undefined) {
+    (
+      spec as {
+        urlForEntry?: (e: ServiceEntry) => string | undefined;
+      }
+    ).urlForEntry = extras.urlForEntry;
+  }
+  if (extras?.postInstallFooter !== undefined) {
+    (spec as { postInstallFooter?: () => readonly string[] }).postInstallFooter =
+      extras.postInstallFooter;
+  }
+  return spec;
+}
+
+// ---------------------------------------------------------------------------
+// First-party fallbacks
+//
+// Each entry below is a "delete-when-X-ships" marker — when the upstream
+// module starts publishing its own `.parachute/module.json`, the matching
+// FALLBACK comment names the issue that retires the vendored manifest +
+// extras. One cleanup PR per module; the markers make those PRs a one-grep
+// operation (`rg "FALLBACK: Delete when"`).
+// ---------------------------------------------------------------------------
+
+// FALLBACK: Delete when @openparachute/vault ships .parachute/module.json
+// (parachute-vault repo: file follow-up after parachute-hub#56 lands).
+const VAULT_FALLBACK: FirstPartyFallback = {
+  package: "@openparachute/vault",
+  manifest: {
+    name: "vault",
     manifestName: "parachute-vault",
+    displayName: "Vault",
+    tagline: "Your owner-authenticated MCP knowledge store.",
+    kind: "api",
+    port: 1940,
+    paths: ["/vault/default"],
+    health: "/vault/default/health",
+  },
+  extras: {
     init: ["parachute-vault", "init"],
     startCmd: () => ["parachute-vault", "serve"],
-    kind: "api",
     hasAuth: true,
-    seedEntry: () => ({
-      name: "parachute-vault",
-      port: 1940,
-      paths: ["/vault/default"],
-      health: "/vault/default/health",
-      version: SEED_VERSION,
-    }),
     // Vault's MCP endpoint lives one segment past the mount path. The bare
     // `/vault/<name>` URL is the discovery shape; clients (claude.ai et al.)
     // need `/vault/<name>/mcp` to actually open the stream.
     urlForEntry: (entry) => `${pathBasedUrl(entry)}/mcp`,
   },
-  notes: {
-    // Frontend product name is "Notes". vault's internal `/api/notes` endpoint
+};
+
+// FALLBACK: Delete when @openparachute/notes ships .parachute/module.json
+// (parachute-notes repo: file follow-up after parachute-hub#56 lands).
+const NOTES_FALLBACK: FirstPartyFallback = {
+  package: "@openparachute/notes",
+  manifest: {
+    // Frontend product name is "Notes". Vault's internal `/api/notes` endpoint
     // is unrelated — different concept (vault data primitive vs. PWA brand).
-    package: "@openparachute/notes",
+    name: "notes",
     manifestName: "parachute-notes",
+    displayName: "Notes",
+    tagline: "Notes PWA backed by your vault.",
+    kind: "frontend",
+    port: 1942,
+    paths: ["/notes"],
+    health: "/notes/health",
+  },
+  extras: {
     startCmd: (entry) => {
       const first = entry.paths[0] ?? "/notes";
       const mount = first === "/" ? "" : first.replace(/\/+$/, "");
       return ["bun", NOTES_SERVE_PATH, "--port", String(entry.port), "--mount", mount];
     },
-    kind: "frontend",
-    seedEntry: () => ({
-      name: "parachute-notes",
-      port: 1942,
-      paths: ["/notes"],
-      health: "/notes/health",
-      version: SEED_VERSION,
-    }),
-    urlForEntry: pathBasedUrl,
     postInstallFooter: () => [
       "",
       "Open your Notes UI at http://localhost:1942/notes — paste the vault URL",
@@ -196,22 +303,28 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       "and the API token from your vault install.",
     ],
   },
-  scribe: {
-    package: "@openparachute/scribe",
+};
+
+// FALLBACK: Delete when @openparachute/scribe ships .parachute/module.json
+// (parachute-scribe repo: file follow-up after parachute-hub#56 lands).
+const SCRIBE_FALLBACK: FirstPartyFallback = {
+  package: "@openparachute/scribe",
+  manifest: {
+    name: "scribe",
     manifestName: "parachute-scribe",
-    startCmd: () => ["parachute-scribe", "serve"],
-    // No auth gate today. Scribe's launch PR adds optional SCRIBE_AUTH_TOKEN;
-    // once it lands and scribe writes `publicExposure: "allowed"` when a token
-    // is configured, that explicit declaration overrides this default.
+    displayName: "Scribe",
+    tagline: "Local audio transcription for vault recordings.",
     kind: "api",
+    port: 1943,
+    paths: ["/scribe"],
+    health: "/scribe/health",
+    startCmd: ["parachute-scribe", "serve"],
+  },
+  extras: {
+    // No auth gate today. Scribe's launch PR adds optional SCRIBE_AUTH_TOKEN;
+    // once it lands and scribe writes `publicExposure: "allowed"` when a
+    // token is configured, that explicit declaration overrides this default.
     hasAuth: false,
-    seedEntry: () => ({
-      name: "parachute-scribe",
-      port: 1943,
-      paths: ["/scribe"],
-      health: "/scribe/health",
-      version: SEED_VERSION,
-    }),
     // Scribe's API is at the root, not under `/scribe`. The path prefix only
     // shows up in the health endpoint; clients hit the bare port.
     urlForEntry: (entry) => `http://127.0.0.1:${entry.port}`,
@@ -224,21 +337,40 @@ export const SERVICE_SPECS: Record<string, ServiceSpec> = {
       "whisper, groq, openai.",
     ],
   },
-  channel: {
-    package: "@openparachute/channel",
+};
+
+// FALLBACK: Delete when @openparachute/channel ships .parachute/module.json
+// (parachute-channel repo: file follow-up after parachute-hub#56 lands;
+// channel is exploration tier — may be retired before module.json ships).
+const CHANNEL_FALLBACK: FirstPartyFallback = {
+  package: "@openparachute/channel",
+  manifest: {
+    name: "channel",
     manifestName: "parachute-channel",
-    startCmd: () => ["parachute-channel", "daemon"],
+    displayName: "Channel",
+    tagline: "Notification fan-out across modules.",
     kind: "api",
-    hasAuth: true,
-    seedEntry: () => ({
-      name: "parachute-channel",
-      port: 1941,
-      paths: ["/channel"],
-      health: "/channel/health",
-      version: SEED_VERSION,
-    }),
-    urlForEntry: pathBasedUrl,
+    port: 1941,
+    paths: ["/channel"],
+    health: "/channel/health",
+    startCmd: ["parachute-channel", "daemon"],
   },
+  extras: {
+    hasAuth: true,
+  },
+};
+
+/**
+ * Vendored manifests + extras for first-party modules. Indexed by short name
+ * (the `parachute install <X>` token). Each entry retires when its upstream
+ * module starts shipping `.parachute/module.json` — see the per-entry
+ * `FALLBACK:` markers above.
+ */
+export const FIRST_PARTY_FALLBACKS: Record<string, FirstPartyFallback> = {
+  vault: VAULT_FALLBACK,
+  notes: NOTES_FALLBACK,
+  scribe: SCRIBE_FALLBACK,
+  channel: CHANNEL_FALLBACK,
 };
 
 /**
@@ -254,19 +386,37 @@ export function effectivePublicExposure(
 ): "allowed" | "loopback" | "auth-required" {
   if (entry.publicExposure !== undefined) return entry.publicExposure;
   const short = shortNameForManifest(entry.name);
-  const spec = short !== undefined ? SERVICE_SPECS[short] : undefined;
-  if (spec && (spec.kind === "api" || spec.kind === "tool") && spec.hasAuth === false) {
+  const fb = short !== undefined ? FIRST_PARTY_FALLBACKS[short] : undefined;
+  if (
+    fb &&
+    (fb.manifest.kind === "api" || fb.manifest.kind === "tool") &&
+    fb.extras?.hasAuth === false
+  ) {
     return "auth-required";
   }
   return "allowed";
 }
 
 export function knownServices(): string[] {
-  return Object.keys(SERVICE_SPECS);
+  return Object.keys(FIRST_PARTY_FALLBACKS);
 }
 
-export function getSpec(service: string): ServiceSpec | undefined {
-  return SERVICE_SPECS[service];
+/**
+ * Resolve the runtime spec for a known short name. Returns undefined for
+ * unknown names; third-party modules installed via `module.json` don't get
+ * a runtime spec out of this lookup yet — that's a follow-up. For now,
+ * lifecycle / status / expose treat unknown names as "we have a
+ * services.json row but no spec" (skip lifecycle, fall back to defaults
+ * for URL / exposure), exactly as before.
+ */
+export function getSpec(short: string): ServiceSpec | undefined {
+  const fb = FIRST_PARTY_FALLBACKS[short];
+  if (!fb) return undefined;
+  return composeServiceSpec({
+    packageName: fb.package,
+    manifest: fb.manifest,
+    extras: fb.extras,
+  });
 }
 
 /**
@@ -286,11 +436,11 @@ const LEGACY_MANIFEST_ALIASES: Record<string, string> = {
   "parachute-lens": "notes",
 };
 
-/** Short name (the key into SERVICE_SPECS) for a given manifest name, e.g.
- *  `parachute-vault` → `vault`. Returns undefined for unknown manifests. */
+/** Short name (the key into FIRST_PARTY_FALLBACKS) for a given manifest name,
+ *  e.g. `parachute-vault` → `vault`. Returns undefined for unknown manifests. */
 export function shortNameForManifest(manifestName: string): string | undefined {
-  for (const [short, spec] of Object.entries(SERVICE_SPECS)) {
-    if (spec.manifestName === manifestName) return short;
+  for (const [short, fb] of Object.entries(FIRST_PARTY_FALLBACKS)) {
+    if (fb.manifest.manifestName === manifestName) return short;
   }
   return LEGACY_MANIFEST_ALIASES[manifestName];
 }
