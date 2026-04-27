@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { install } from "../commands/install.ts";
@@ -1267,6 +1267,96 @@ describe("install", () => {
       expect(findService("@local/demo", path)).toBeUndefined();
       // hub#83: lifecycle needs installDir to find module.json + spawn cwd.
       expect(seeded?.installDir).toBe(pkgDir);
+    } finally {
+      cleanup();
+      rmSync(pkgDir, { recursive: true, force: true });
+    }
+  });
+
+  test("local-path re-install skips bun add when symlink already points at it (hub#89)", async () => {
+    // Reproduces the lockfile-pollution loop from hub#89: every
+    // `parachute install /path/to/checkout` shells out `bun add -g
+    // /path/to/checkout`, which appends a duplicate dependency to
+    // ~/.bun/install/global/package.json. After ~5 re-installs bun's
+    // lockfile parser gives up. Fix: if the global symlink already
+    // resolves to this exact path, the install is a no-op for bun-add.
+    const { path, cleanup } = makeTempPath();
+    const pkgDir = mkdtempSync(join(tmpdir(), "pcli-localpkg-"));
+    // macOS tmpdir is symlinked (/var → /private/var); install resolves
+    // both sides via realpath, so the stub must too.
+    const pkgDirReal = realpathSync(pkgDir);
+    try {
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const code = await install(pkgDir, {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        // The symlink at <bun-globals>/node_modules/@local/demo already
+        // points at the same checkout we're installing — second-+ run.
+        linkedPath: (pkg) => (pkg === "@local/demo" ? pkgDirReal : null),
+        portProbe: async () => false,
+        log: (l) => logs.push(l),
+        readManifest: async () => ({
+          name: "demo",
+          manifestName: "@local/demo",
+          kind: "api",
+          port: 1951,
+          paths: ["/demo"],
+          health: "/healthz",
+        }),
+        readPackageName: () => "@local/demo",
+      });
+      expect(code).toBe(0);
+      // No `bun add -g <pkgDir>` invocation — that's the whole point.
+      const bunAddCalls = calls.filter((c) => c[0] === "bun" && c[1] === "add");
+      expect(bunAddCalls).toEqual([]);
+      // Downstream init/seed/installDir wiring still ran.
+      const seeded = findService("demo", path);
+      expect(seeded?.installDir).toBe(pkgDir);
+      // Operator-visible breadcrumb so they understand why `bun add` was skipped.
+      expect(logs.join("\n")).toMatch(/already linked at .* — skipping bun add/);
+    } finally {
+      cleanup();
+      rmSync(pkgDir, { recursive: true, force: true });
+    }
+  });
+
+  test("local-path install still bun-adds when symlink points elsewhere (hub#89)", async () => {
+    // Operator moved their checkout: the global symlink is stale, pointing at
+    // a different abspath. Re-run bun add against the new path so the link
+    // gets refreshed (don't silently keep using the old target).
+    const { path, cleanup } = makeTempPath();
+    const pkgDir = mkdtempSync(join(tmpdir(), "pcli-localpkg-"));
+    try {
+      const calls: string[][] = [];
+      const code = await install(pkgDir, {
+        runner: async (cmd) => {
+          calls.push([...cmd]);
+          return 0;
+        },
+        manifestPath: path,
+        startService: async () => 0,
+        isLinked: () => false,
+        linkedPath: () => "/Users/someone/old/checkout",
+        portProbe: async () => false,
+        log: () => {},
+        readManifest: async () => ({
+          name: "demo",
+          manifestName: "@local/demo",
+          kind: "api",
+          port: 1951,
+          paths: ["/demo"],
+          health: "/healthz",
+        }),
+        readPackageName: () => "@local/demo",
+      });
+      expect(code).toBe(0);
+      expect(calls[0]).toEqual(["bun", "add", "-g", pkgDir]);
     } finally {
       cleanup();
       rmSync(pkgDir, { recursive: true, force: true });
