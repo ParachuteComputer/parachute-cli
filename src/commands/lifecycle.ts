@@ -9,7 +9,6 @@ import { ModuleManifestError } from "../module-manifest.ts";
 import {
   type AliveFn,
   clearPid,
-  defaultAlive,
   ensureLogPath,
   logPath as logPathFor,
   processState,
@@ -53,6 +52,11 @@ export const defaultSpawner: Spawner = {
     const fd = openSync(logFile, "a");
     const spawnOpts: Parameters<typeof Bun.spawn>[1] = {
       stdio: ["ignore", fd, fd],
+      // Spawn in a fresh process group (pid == pgid) so kill(-pid, sig)
+      // reaches every descendant, not just the wrapper. Without this,
+      // wrapped startCmds like `pnpm exec tsx server.ts` leave the tsx
+      // grandchild bound to the port after stop → restart hits EADDRINUSE.
+      detached: true,
     };
     if (opts?.env) spawnOpts.env = { ...process.env, ...opts.env };
     if (opts?.cwd) spawnOpts.cwd = opts.cwd;
@@ -65,8 +69,48 @@ export const defaultSpawner: Spawner = {
 export type KillFn = (pid: number, signal: NodeJS.Signals | number) => void;
 export type SleepFn = (ms: number) => Promise<void>;
 
+/**
+ * Group-aware liveness: returns true if the process group (pgid == pid)
+ * still has any member. Pairs with `defaultSpawner`'s `detached: true` —
+ * the recorded pid is the pgid we created, so the group's existence is
+ * the right "is the service still up?" signal (catches the wrapper-dead-
+ * but-grandchild-listening case that causes EADDRINUSE on restart).
+ *
+ * Falls back to a single-pid check for legacy pidfiles written before
+ * detached-spawn landed: `kill(-pid, 0)` returns ESRCH because no group
+ * with that pgid exists, and we still want to honor the bare-pid alive
+ * signal so a follow-up `stop` runs.
+ */
+export const defaultAlive: AliveFn = (pid) => {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Sends `signal` to the entire process group rooted at `pid`. With
+ * `defaultSpawner` putting the child in its own group, this reaches the
+ * wrapper and any grandchildren in one syscall. ESRCH on the group send
+ * means the pgid is gone (legacy pidfile, or the leader exited and the
+ * group emptied) — fall back to a bare-pid signal so the caller's intent
+ * still lands when there's a positive-pid process to receive it.
+ */
 export const defaultKill: KillFn = (pid, signal) => {
-  process.kill(pid, signal);
+  try {
+    process.kill(-pid, signal);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+    process.kill(pid, signal);
+  }
 };
 
 export const defaultSleep: SleepFn = (ms) => new Promise((r) => setTimeout(r, ms));

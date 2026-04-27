@@ -142,7 +142,10 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
    */
   const rows: StatusRow[] = await Promise.all(
     manifest.services.map(async (entry) => {
-      const short = shortNameForManifest(entry.name);
+      // Third-party rows (with `installDir`) live under `~/.parachute/<entry.name>/`,
+      // matching what `parachute start` uses as the short. First-party rows still
+      // map manifestName → short via the canonical fallback.
+      const short = shortNameForManifest(entry.name) ?? (entry.installDir ? entry.name : undefined);
       const proc = short ? processState(short, configDir, alive) : undefined;
 
       const processLabel =
