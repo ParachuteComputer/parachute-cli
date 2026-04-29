@@ -6,6 +6,7 @@ export function topLevelHelp(): string {
   return `parachute ${pkg.version} — top-level CLI for the Parachute ecosystem
 
 Usage:
+  parachute setup                   interactive walk-through: install services + configure
   parachute install <service>       install and register a service
                                     services: ${services}
   parachute status                  show installed services, process state, health
@@ -77,6 +78,46 @@ Aliases:
   lens → notes                      # accepted for one release cycle after
                                     # the brief Lens rebrand was reverted on
                                     # 2026-04-22; prints a rename notice.
+`;
+}
+
+export function setupHelp(): string {
+  return `parachute setup — interactive walk-through to install + configure services
+
+Usage:
+  parachute setup [--tag <name>] [--no-start]
+
+What it does:
+  1. surveys ~/.parachute/services.json — already-installed services are
+     reported, then skipped from the picker
+  2. shows a numbered multi-select for the remaining first-party services
+     (vault, notes, scribe; channel is exploratory and only offered by name)
+  3. pre-collects all interactive answers up front so the installs can run
+     without further prompting:
+       - vault: vault name (default \`default\`)
+       - scribe: transcription provider + API key for cloud providers
+  4. iterates \`parachute install <svc>\` per pick, threading the collected
+     answers and the shared --tag / --no-start flags
+  5. prints a summary banner with the running URLs (hub, vault, notes, scribe)
+     and a hint for connecting Claude Code
+
+Behavior:
+  - Partial success is preserved: if one install fails, prior successful
+    installs are NOT rolled back. The exit code reflects the last failure.
+  - Non-TTY / piped invocations should use \`parachute install <svc>\` per
+    service instead — \`setup\` assumes a terminal for the prompts.
+  - Selection accepts numbers (\`1,3\`), names (\`vault, notes\`), or \`all\`.
+
+Flags:
+  --tag <name>     npm dist-tag or exact version, applied to every install
+                   in this walk-through (e.g. \`--tag rc\`)
+  --no-start       skip the post-install daemon start for every service.
+                   For CI / scripted bring-up.
+
+Examples:
+  parachute setup                   # interactive walk-through
+  parachute setup --tag rc          # bootstrap to the rc dist-tag
+  parachute setup --no-start        # install without auto-starting (CI)
 `;
 }
 
