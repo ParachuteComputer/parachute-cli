@@ -18,9 +18,10 @@
 
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { approveClient, listClientsByStatus } from "../clients.ts";
+import { approveClient, getClient, listClientsByStatus } from "../clients.ts";
 import { CONFIG_DIR } from "../config.ts";
 import { readExposeState } from "../expose-state.ts";
+import { listGrantsForUser, revokeGrant } from "../grants.ts";
 import { HUB_DEFAULT_PORT, readHubPort } from "../hub-control.ts";
 import { openHubDb } from "../hub-db.ts";
 import { deriveHubOrigin } from "../hub-origin.ts";
@@ -55,6 +56,8 @@ const HUB_LOCAL_SUBCOMMANDS = new Set([
   "rotate-operator",
   "pending-clients",
   "approve-client",
+  "list-grants",
+  "revoke-grant",
 ]);
 
 export function authHelp(): string {
@@ -72,6 +75,11 @@ Usage:
   parachute auth rotate-operator       Mint a fresh ~/.parachute/operator.token
   parachute auth pending-clients       List OAuth clients awaiting approval
   parachute auth approve-client <id>   Approve a pending OAuth client
+  parachute auth list-grants [--username <name>]
+                                       Show OAuth scope grants on record
+  parachute auth revoke-grant <client_id> [--username <name>]
+                                       Forget a granted scope-set so the next
+                                       OAuth flow re-prompts for consent
 
 set-password and list-users are hub-local — they read/write
 ~/.parachute/hub.db. set-password is interactive by default (prompts for
@@ -101,6 +109,14 @@ approval (closes #74). Self-served DCR registrations land as 'pending'
 and cannot OAuth until you run \`parachute auth approve-client <id>\`.
 First-party install flows that present \`Authorization: Bearer
 <operator-token>\` with \`hub:admin\` scope land as 'approved' immediately.
+
+list-grants + revoke-grant manage the OAuth consent skip-list (closes
+#75). When you approve a scope-set on the consent screen, the hub
+records it so re-running the same flow goes straight to the auth-code
+redirect — no second consent prompt for scopes you've already approved.
+revoke-grant deletes the row so the next flow shows consent again.
+Existing access tokens are NOT touched by revoke-grant; use
+\`/oauth/revoke\` (or wait for them to expire) to terminate live sessions.
 `;
 }
 
@@ -426,6 +442,135 @@ function runApproveClient(args: readonly string[], deps: AuthDeps): number {
   }
 }
 
+interface UsernameFlag {
+  username?: string;
+  rest: string[];
+  error?: string;
+}
+
+function extractUsernameFlag(args: readonly string[]): UsernameFlag {
+  let username: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--username") {
+      const v = args[++i];
+      if (!v) return { rest, error: "--username requires a value" };
+      username = v;
+    } else if (a?.startsWith("--username=")) {
+      username = a.slice("--username=".length);
+      if (!username) return { rest, error: "--username requires a value" };
+    } else if (a !== undefined) {
+      rest.push(a);
+    }
+  }
+  return { username, rest };
+}
+
+/**
+ * Resolve the user a grant subcommand operates on. Default is "the only hub
+ * user" (single-user mode); --username is required when multiple users exist.
+ */
+function resolveTargetUser(
+  db: ReturnType<typeof openHubDb>,
+  flagUsername: string | undefined,
+  cmd: string,
+): { id: string; username: string } | { error: string } {
+  if (flagUsername) {
+    const u = getUserByUsername(db, flagUsername);
+    if (!u) return { error: `no hub user named "${flagUsername}"` };
+    return { id: u.id, username: u.username };
+  }
+  const users = listUsers(db);
+  if (users.length === 0)
+    return { error: "no hub users yet — run `parachute auth set-password` first" };
+  if (users.length > 1) {
+    return {
+      error: `multiple hub users exist; pass --username <name> to ${cmd} a specific user's grant`,
+    };
+  }
+  const only = users[0]!;
+  return { id: only.id, username: only.username };
+}
+
+function runListGrants(args: readonly string[], deps: AuthDeps): number {
+  const flag = extractUsernameFlag(args);
+  if (flag.error) {
+    console.error(`parachute auth list-grants: ${flag.error}`);
+    return 1;
+  }
+  if (flag.rest.length > 0) {
+    console.error(`parachute auth list-grants: unexpected argument "${flag.rest[0]}"`);
+    console.error("usage: parachute auth list-grants [--username <name>]");
+    return 1;
+  }
+  const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
+  try {
+    const target = resolveTargetUser(db, flag.username, "list");
+    if ("error" in target) {
+      console.error(`parachute auth list-grants: ${target.error}`);
+      return 1;
+    }
+    const grants = listGrantsForUser(db, target.id);
+    if (grants.length === 0) {
+      console.log(`(no OAuth grants on record for "${target.username}")`);
+      return 0;
+    }
+    console.log(`OAuth grants for "${target.username}":`);
+    console.log(
+      "CLIENT_ID                              NAME                 GRANTED_AT                SCOPES",
+    );
+    for (const g of grants) {
+      const client = getClient(db, g.clientId);
+      const id = g.clientId.padEnd(36).slice(0, 36);
+      const name = (client?.clientName ?? "").padEnd(20).slice(0, 20);
+      const at = g.grantedAt.padEnd(24).slice(0, 24);
+      console.log(`${id}  ${name} ${at}  ${g.scopes.join(" ")}`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function runRevokeGrant(args: readonly string[], deps: AuthDeps): number {
+  const flag = extractUsernameFlag(args);
+  if (flag.error) {
+    console.error(`parachute auth revoke-grant: ${flag.error}`);
+    return 1;
+  }
+  const clientId = flag.rest[0];
+  if (!clientId) {
+    console.error("parachute auth revoke-grant: missing client_id argument");
+    console.error("usage: parachute auth revoke-grant <client_id> [--username <name>]");
+    return 1;
+  }
+  if (flag.rest.length > 1) {
+    console.error(`parachute auth revoke-grant: unexpected argument "${flag.rest[1]}"`);
+    return 1;
+  }
+  const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
+  try {
+    const target = resolveTargetUser(db, flag.username, "revoke");
+    if ("error" in target) {
+      console.error(`parachute auth revoke-grant: ${target.error}`);
+      return 1;
+    }
+    const removed = revokeGrant(db, target.id, clientId);
+    if (!removed) {
+      console.error(`no grant on record for "${target.username}" → "${clientId}"`);
+      return 1;
+    }
+    console.log(`Revoked OAuth grant: "${target.username}" → "${clientId}".`);
+    console.log(
+      "Existing access tokens are unaffected — they expire on their own. The next /oauth/authorize for this client will re-prompt for consent.",
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function runListUsers(deps: AuthDeps): number {
   const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
   try {
@@ -511,6 +656,24 @@ export async function auth(args: readonly string[], deps: AuthDeps | Runner = {}
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`parachute auth approve-client: ${msg}`);
+        return 1;
+      }
+    }
+    if (sub === "list-grants") {
+      try {
+        return runListGrants(args.slice(1), normalized);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`parachute auth list-grants: ${msg}`);
+        return 1;
+      }
+    }
+    if (sub === "revoke-grant") {
+      try {
+        return runRevokeGrant(args.slice(1), normalized);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`parachute auth revoke-grant: ${msg}`);
         return 1;
       }
     }

@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { registerClient } from "../clients.ts";
 import { type AuthDeps, type Runner, auth, authHelp } from "../commands/auth.ts";
+import { findGrant, recordGrant } from "../grants.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { validateAccessToken } from "../jwt-sign.ts";
 import {
@@ -10,7 +12,7 @@ import {
   OPERATOR_TOKEN_SCOPES,
   readOperatorTokenFile,
 } from "../operator-token.ts";
-import { listUsers, verifyPassword } from "../users.ts";
+import { createUser, listUsers, verifyPassword } from "../users.ts";
 
 function makeRunner(result: number | (() => Promise<number>) = 0): {
   runner: Runner;
@@ -615,6 +617,178 @@ describe("parachute auth pending-clients / approve-client", () => {
       expect(ok.stdout).toContain("Approved");
       const after = await captureOutput(() => auth(["pending-clients"], deps));
       expect(after.stdout).toContain("no pending OAuth clients");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
+
+// closes #75 — operator-facing controls for the OAuth consent skip-list.
+describe("parachute auth list-grants / revoke-grant", () => {
+  test("list-grants shows the seeding hint when no users exist", async () => {
+    const tmp = makeTmp();
+    try {
+      const { code, stderr } = await captureOutput(() =>
+        auth(["list-grants"], { dbPath: tmp.dbPath }),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("no hub users yet");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("list-grants shows '(no OAuth grants)' when the user has none", async () => {
+    const tmp = makeTmp();
+    try {
+      const db = openHubDb(tmp.dbPath);
+      try {
+        await createUser(db, "owner", "pw");
+      } finally {
+        db.close();
+      }
+      const { code, stdout } = await captureOutput(() =>
+        auth(["list-grants"], { dbPath: tmp.dbPath }),
+      );
+      expect(code).toBe(0);
+      expect(stdout).toContain("no OAuth grants on record");
+      expect(stdout).toContain("owner");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("list-grants prints rows with client_id + client_name + scopes", async () => {
+    const tmp = makeTmp();
+    try {
+      const db = openHubDb(tmp.dbPath);
+      let userId: string;
+      let clientId: string;
+      try {
+        const user = await createUser(db, "owner", "pw");
+        userId = user.id;
+        const reg = registerClient(db, {
+          redirectUris: ["https://app.example/cb"],
+          clientName: "MyApp",
+        });
+        clientId = reg.client.clientId;
+        recordGrant(db, userId, clientId, ["vault:default:read", "scribe:transcribe"]);
+      } finally {
+        db.close();
+      }
+      const { code, stdout } = await captureOutput(() =>
+        auth(["list-grants"], { dbPath: tmp.dbPath }),
+      );
+      expect(code).toBe(0);
+      expect(stdout).toContain(clientId);
+      expect(stdout).toContain("MyApp");
+      expect(stdout).toContain("vault:default:read");
+      expect(stdout).toContain("scribe:transcribe");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("revoke-grant without args prints usage", async () => {
+    const tmp = makeTmp();
+    try {
+      const { code, stderr } = await captureOutput(() =>
+        auth(["revoke-grant"], { dbPath: tmp.dbPath }),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("missing client_id");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("revoke-grant for an unknown client errors", async () => {
+    const tmp = makeTmp();
+    try {
+      const db = openHubDb(tmp.dbPath);
+      try {
+        await createUser(db, "owner", "pw");
+      } finally {
+        db.close();
+      }
+      const { code, stderr } = await captureOutput(() =>
+        auth(["revoke-grant", "no-such"], { dbPath: tmp.dbPath }),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("no grant on record");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("revoke-grant deletes the row and surfaces a friendly message", async () => {
+    const tmp = makeTmp();
+    try {
+      const db = openHubDb(tmp.dbPath);
+      let userId: string;
+      let clientId: string;
+      try {
+        const user = await createUser(db, "owner", "pw");
+        userId = user.id;
+        const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+        clientId = reg.client.clientId;
+        recordGrant(db, userId, clientId, ["vault:default:read"]);
+        expect(findGrant(db, userId, clientId)).not.toBeNull();
+      } finally {
+        db.close();
+      }
+      const { code, stdout } = await captureOutput(() =>
+        auth(["revoke-grant", clientId], { dbPath: tmp.dbPath }),
+      );
+      expect(code).toBe(0);
+      expect(stdout).toContain("Revoked OAuth grant");
+      expect(stdout).toContain("re-prompt for consent");
+
+      // Row gone.
+      const verifyDb = openHubDb(tmp.dbPath);
+      try {
+        expect(findGrant(verifyDb, userId, clientId)).toBeNull();
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("multi-user mode requires --username on revoke-grant", async () => {
+    const tmp = makeTmp();
+    try {
+      const db = openHubDb(tmp.dbPath);
+      let aliceId: string;
+      let clientId: string;
+      try {
+        const alice = await createUser(db, "alice", "pw");
+        aliceId = alice.id;
+        await createUser(db, "bob", "pw", { allowMulti: true });
+        const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+        clientId = reg.client.clientId;
+        recordGrant(db, aliceId, clientId, ["vault:default:read"]);
+      } finally {
+        db.close();
+      }
+      const ambig = await captureOutput(() =>
+        auth(["revoke-grant", clientId], { dbPath: tmp.dbPath }),
+      );
+      expect(ambig.code).toBe(1);
+      expect(ambig.stderr).toContain("multiple hub users exist");
+
+      const targeted = await captureOutput(() =>
+        auth(["revoke-grant", clientId, "--username", "alice"], { dbPath: tmp.dbPath }),
+      );
+      expect(targeted.code).toBe(0);
+      expect(targeted.stdout).toContain("alice");
+
+      // Bob never had this grant, so revoking his side is a 1.
+      const bobMiss = await captureOutput(() =>
+        auth(["revoke-grant", clientId, "--username", "bob"], { dbPath: tmp.dbPath }),
+      );
+      expect(bobMiss.code).toBe(1);
     } finally {
       tmp.cleanup();
     }
