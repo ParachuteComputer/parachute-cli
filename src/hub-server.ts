@@ -36,6 +36,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { handleCreateVault } from "./admin-vaults.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
 import { pemToJwk } from "./jwks.ts";
 import {
@@ -226,6 +227,16 @@ export function hubFetch(
       }
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
       return handleRegister(getDb(), req, oauthDeps(req));
+    }
+
+    if (pathname === "/vaults") {
+      if (!getDb) {
+        return new Response("hub db not configured", { status: 503 });
+      }
+      return handleCreateVault(req, {
+        db: getDb(),
+        issuer: oauthDeps(req).issuer,
+      });
     }
 
     return new Response("not found", { status: 404 });

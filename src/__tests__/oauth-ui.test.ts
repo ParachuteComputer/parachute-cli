@@ -151,6 +151,48 @@ describe("renderConsent", () => {
     expect(html).not.toContain("<img src=x");
     expect(html).toContain("&lt;img");
   });
+
+  test("renders a vault picker when vaultPicker is set", () => {
+    const html = renderConsent({
+      params: PARAMS,
+      clientId: "c",
+      clientName: "App",
+      scopes: ["vault:read"],
+      vaultPicker: { unnamedVerbs: ["read"], availableVaults: ["work", "personal"] },
+    });
+    expect(html).toContain("Pick a vault");
+    expect(html).toContain('name="vault_pick" value="work"');
+    expect(html).toContain('name="vault_pick" value="personal"');
+    // First option pre-checked so a single-vault host doesn't force a click.
+    expect(html).toMatch(/name="vault_pick" value="work" checked/);
+  });
+
+  test("escapes a hostile vault name in the picker", () => {
+    const html = renderConsent({
+      params: PARAMS,
+      clientId: "c",
+      clientName: "App",
+      scopes: ["vault:read"],
+      vaultPicker: {
+        unnamedVerbs: ["read"],
+        availableVaults: [`evil"><script>alert(1)</script>`],
+      },
+    });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;");
+  });
+
+  test("disables the Approve button when no vaults exist", () => {
+    const html = renderConsent({
+      params: PARAMS,
+      clientId: "c",
+      clientName: "App",
+      scopes: ["vault:read"],
+      vaultPicker: { unnamedVerbs: ["read"], availableVaults: [] },
+    });
+    expect(html).toContain("no vaults exist");
+    expect(html).toContain('value="yes" class="btn btn-primary" disabled');
+  });
 });
 
 describe("renderError", () => {

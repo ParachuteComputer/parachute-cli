@@ -58,9 +58,10 @@ describe("mintOperatorToken", () => {
     }
   });
 
-  test("scopes include hub:admin + vault:admin + scribe:admin + channel:send", () => {
+  test("scopes include hub:admin + parachute:host:admin + vault:admin + scribe:admin + channel:send", () => {
     expect(OPERATOR_TOKEN_SCOPES).toEqual([
       "hub:admin",
+      "parachute:host:admin",
       "vault:admin",
       "scribe:admin",
       "channel:send",

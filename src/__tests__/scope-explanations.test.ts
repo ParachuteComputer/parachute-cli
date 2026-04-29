@@ -17,6 +17,7 @@ describe("SCOPE_EXPLANATIONS", () => {
       "scribe:admin",
       "channel:send",
       "hub:admin",
+      "parachute:host:admin",
     ];
     for (const s of expected) {
       expect(SCOPE_EXPLANATIONS[s]).toBeDefined();
@@ -44,6 +45,7 @@ describe("scopeIsAdmin", () => {
   test("true for admin scopes", () => {
     expect(scopeIsAdmin("vault:admin")).toBe(true);
     expect(scopeIsAdmin("hub:admin")).toBe(true);
+    expect(scopeIsAdmin("parachute:host:admin")).toBe(true);
   });
 
   test("false for non-admin and unknown scopes", () => {
