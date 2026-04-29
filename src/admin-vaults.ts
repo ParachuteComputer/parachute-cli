@@ -12,18 +12,28 @@
  *   Content-Type: application/json
  *   { "name": "<vault-name>" }
  *
- *   201 → { name, url, version }   // vault freshly created
- *   200 → { name, url, version }   // idempotent re-POST: existing vault
+ *   201 → { name, url, version, token?, paths? }
+ *           // vault freshly created. `token` (single-emit `pvt_*`) and
+ *           // filesystem `paths` are present when the create path took the
+ *           // `parachute-vault create --json` branch — that's the only time
+ *           // the just-emitted token is captured. The first-vault-on-host
+ *           // bootstrap (`parachute install vault`) doesn't emit JSON yet,
+ *           // so a fresh-box response carries name/url/version only.
+ *   200 → { name, url, version }
+ *           // idempotent re-POST: existing vault. Never includes `token` —
+ *           // tokens are single-emit at create time, not retrievable later.
  *   400 → { error: "invalid_request", error_description: ... }
  *   401/403 → bearer-auth failure
  *   500 → orchestration failure
  *
  * Orchestration:
  *   - If `parachute-vault` is NOT yet registered in services.json: shell
- *     out to `parachute install vault --vault-name <name>` (covers the
- *     bootstrap case for a fresh host).
+ *     out to `parachute install vault` (covers the bootstrap case for a
+ *     fresh host; runs `parachute-vault init` which creates the default
+ *     vault).
  *   - If `parachute-vault` IS already registered: shell out to
- *     `parachute-vault create <name>` (subsequent vaults).
+ *     `parachute-vault create --json <name>` (subsequent vaults). Stdout
+ *     is parsed for the bootstrap creds (name, token, paths).
  *
  * The CLI is the single source of truth for "how do you create a vault";
  * we don't reimplement DB+yaml+token writes here. Mirrors D1 in the design
@@ -39,11 +49,7 @@ import type { Database } from "bun:sqlite";
 import { type AdminAuthError, adminAuthErrorResponse, requireScope } from "./admin-auth.ts";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
 import { findService, readManifest } from "./services-manifest.ts";
-import {
-  type WellKnownVaultEntry,
-  isVaultEntry,
-  vaultInstanceName,
-} from "./well-known.ts";
+import { type WellKnownVaultEntry, isVaultEntry, vaultInstanceName } from "./well-known.ts";
 
 /** Scope required to call POST /vaults. */
 export const HOST_ADMIN_SCOPE = "parachute:host:admin";
@@ -56,6 +62,24 @@ export interface CreateVaultRequest {
   name: string;
 }
 
+/** Output shape of `parachute-vault create --json` (vault PR #184). */
+export interface VaultCreateJson {
+  name: string;
+  token: string;
+  paths: {
+    vault_dir: string;
+    vault_db: string;
+    vault_config: string;
+  };
+  set_as_default: boolean;
+}
+
+/** Result of a single shell-out: exit code + captured stdout. */
+export interface RunResult {
+  exitCode: number;
+  stdout: string;
+}
+
 export interface CreateVaultDeps {
   db: Database;
   /** Hub origin used to validate JWT `iss` and to build the response `url`. */
@@ -65,9 +89,10 @@ export interface CreateVaultDeps {
   /**
    * Test seam: run the orchestration command. Production spawns the real
    * `parachute install` / `parachute-vault create` binaries; tests stub it
-   * to avoid touching the filesystem outside the temp dir.
+   * to avoid touching the filesystem outside the temp dir. Stdout is
+   * captured so the create branch can parse `parachute-vault create --json`.
    */
-  runCommand?: (cmd: readonly string[]) => Promise<number>;
+  runCommand?: (cmd: readonly string[]) => Promise<RunResult>;
 }
 
 interface ParseResult {
@@ -103,7 +128,7 @@ async function parseBody(req: Request): Promise<ParseResult | ParseError> {
     return {
       ok: false,
       status: 400,
-      message: 'vault name must contain only letters, numbers, hyphens, and underscores',
+      message: "vault name must contain only letters, numbers, hyphens, and underscores",
     };
   }
   if (RESERVED_VAULT_NAMES.has(name)) {
@@ -128,7 +153,7 @@ function findExistingVault(
   manifestPath: string,
   name: string,
 ): { url: string; version: string; path: string } | null {
-  let manifest;
+  let manifest: ReturnType<typeof readManifest>;
   try {
     manifest = readManifest(manifestPath);
   } catch {
@@ -161,40 +186,80 @@ function buildEntry(
   return { name, url, version };
 }
 
-async function defaultRunCommand(cmd: readonly string[]): Promise<number> {
+async function defaultRunCommand(cmd: readonly string[]): Promise<RunResult> {
   const proc = Bun.spawn([...cmd], { stdio: ["ignore", "pipe", "pipe"] });
-  return await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  return { exitCode, stdout };
+}
+
+interface OrchestrateOk {
+  ok: true;
+  /** Present only when create-with-json branch ran and parsed cleanly. */
+  createJson: VaultCreateJson | null;
+}
+interface OrchestrateError {
+  ok: false;
+  status: number;
+  message: string;
 }
 
 /**
  * Run the orchestration step. Picks `parachute install` (bootstrap) vs
- * `parachute-vault create` (subsequent) based on whether vault is already
- * registered in services.json.
+ * `parachute-vault create --json` (subsequent) based on whether vault is
+ * already registered in services.json. The create branch parses stdout for
+ * the just-emitted `pvt_*` token + filesystem paths so the caller can talk
+ * to the new vault — those creds are single-emit.
  */
 async function orchestrate(
   manifestPath: string,
   name: string,
-  runCommand: (cmd: readonly string[]) => Promise<number>,
-): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  runCommand: (cmd: readonly string[]) => Promise<RunResult>,
+): Promise<OrchestrateOk | OrchestrateError> {
   const vaultRegistered = findService("parachute-vault", manifestPath) !== undefined;
   const cmd = vaultRegistered
-    ? ["parachute-vault", "create", name]
-    : ["parachute", "install", "vault", "--vault-name", name];
-  let code: number;
+    ? ["parachute-vault", "create", name, "--json"]
+    : ["parachute", "install", "vault"];
+  let result: RunResult;
   try {
-    code = await runCommand(cmd);
+    result = await runCommand(cmd);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, status: 500, message: `orchestration failed: ${msg}` };
   }
-  if (code !== 0) {
+  if (result.exitCode !== 0) {
     return {
       ok: false,
       status: 500,
-      message: `${cmd[0]} ${cmd[1] ?? ""} exited with code ${code}`,
+      message: `${cmd[0]} ${cmd[1] ?? ""} exited with code ${result.exitCode}`,
     };
   }
-  return { ok: true };
+  if (!vaultRegistered) {
+    return { ok: true, createJson: null };
+  }
+  let createJson: VaultCreateJson;
+  try {
+    createJson = JSON.parse(result.stdout.trim()) as VaultCreateJson;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: 500,
+      message: `parachute-vault create --json returned unparseable stdout: ${msg}`,
+    };
+  }
+  if (
+    typeof createJson.name !== "string" ||
+    typeof createJson.token !== "string" ||
+    !createJson.paths
+  ) {
+    return {
+      ok: false,
+      status: 500,
+      message: "parachute-vault create --json output missing required fields (name/token/paths)",
+    };
+  }
+  return { ok: true, createJson };
 }
 
 export async function handleCreateVault(req: Request, deps: CreateVaultDeps): Promise<Response> {
@@ -222,10 +287,13 @@ export async function handleCreateVault(req: Request, deps: CreateVaultDeps): Pr
   // Skip the CLI shell-out — re-POST is usually a UI retry.
   const existing = findExistingVault(manifestPath, name);
   if (existing) {
-    return new Response(JSON.stringify(buildEntry(name, existing.path, existing.version, deps.issuer)), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify(buildEntry(name, existing.path, existing.version, deps.issuer)),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
   }
 
   const result = await orchestrate(manifestPath, name, runCommand);
@@ -243,7 +311,18 @@ export async function handleCreateVault(req: Request, deps: CreateVaultDeps): Pr
     );
   }
 
-  return new Response(JSON.stringify(buildEntry(name, created.path, created.version, deps.issuer)), {
+  const entry = buildEntry(name, created.path, created.version, deps.issuer);
+  // Token + filesystem paths are single-emit at create time. We surface them
+  // here so the caller can immediately bootstrap a connection to the new
+  // vault. Idempotent re-POSTs intentionally never include them.
+  const body: WellKnownVaultEntry & {
+    token?: string;
+    paths?: VaultCreateJson["paths"];
+  } = result.createJson
+    ? { ...entry, token: result.createJson.token, paths: result.createJson.paths }
+    : entry;
+
+  return new Response(JSON.stringify(body), {
     status: 201,
     headers: { "content-type": "application/json" },
   });

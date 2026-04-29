@@ -2,11 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOST_ADMIN_SCOPE, handleCreateVault } from "../admin-vaults.ts";
+import { HOST_ADMIN_SCOPE, type RunResult, handleCreateVault } from "../admin-vaults.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { signAccessToken } from "../jwt-sign.ts";
 import { upsertService, writeManifest } from "../services-manifest.ts";
 import { rotateSigningKey } from "../signing-keys.ts";
+
+/** Build the JSON shape parachute-vault create --json emits (PR #184). */
+function vaultCreateJson(name: string, token = `pvt_${name}_token`): string {
+  return JSON.stringify({
+    name,
+    token,
+    paths: {
+      vault_dir: `/home/test/.parachute/vault/${name}`,
+      vault_db: `/home/test/.parachute/vault/${name}/vault.db`,
+      vault_config: `/home/test/.parachute/vault/${name}/config.yaml`,
+    },
+    set_as_default: false,
+  });
+}
 
 const ISSUER = "http://127.0.0.1:1939";
 
@@ -53,7 +67,7 @@ interface CallOpts {
   contentType?: string | null;
   manifestPath: string;
   db: ReturnType<typeof openHubDb>;
-  runCommand?: (cmd: readonly string[]) => Promise<number>;
+  runCommand?: (cmd: readonly string[]) => Promise<RunResult>;
 }
 
 async function call(opts: CallOpts): Promise<Response> {
@@ -237,7 +251,7 @@ describe("POST /vaults — orchestration", () => {
           h.manifestPath,
         );
         const calls: Array<readonly string[]> = [];
-        const runCommand = async (cmd: readonly string[]) => {
+        const runCommand = async (cmd: readonly string[]): Promise<RunResult> => {
           calls.push(cmd);
           // Simulate successful CLI by adding the new path to the manifest.
           upsertService(
@@ -250,7 +264,7 @@ describe("POST /vaults — orchestration", () => {
             },
             h.manifestPath,
           );
-          return 0;
+          return { exitCode: 0, stdout: vaultCreateJson("work") };
         };
         const res = await call({
           db,
@@ -263,7 +277,7 @@ describe("POST /vaults — orchestration", () => {
         expect(body.name).toBe("work");
         expect(body.url).toBe(`${ISSUER}/vault/work`);
         expect(body.version).toBe("0.3.5");
-        expect(calls).toEqual([["parachute-vault", "create", "work"]]);
+        expect(calls).toEqual([["parachute-vault", "create", "work", "--json"]]);
       } finally {
         db.close();
       }
@@ -272,28 +286,82 @@ describe("POST /vaults — orchestration", () => {
     }
   });
 
-  test("201 on bootstrap path (vault not yet registered) → calls `parachute install vault --vault-name`", async () => {
+  test("201 on bootstrap path (vault not yet registered) → calls `parachute install vault`", async () => {
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
       try {
         rotateSigningKey(db);
-        // Empty manifest: vault NOT registered yet.
+        // Empty manifest: vault NOT registered yet. The bootstrap path runs
+        // `parachute install vault`, which seeds the default vault. The
+        // `name` requested by the caller is honored on follow-up calls
+        // through the create-with-json branch (above); first-vault-on-host
+        // doesn't currently surface a token (install has no --json yet).
         writeManifest({ services: [] }, h.manifestPath);
         const calls: Array<readonly string[]> = [];
-        const runCommand = async (cmd: readonly string[]) => {
+        const runCommand = async (cmd: readonly string[]): Promise<RunResult> => {
           calls.push(cmd);
           upsertService(
             {
               name: "parachute-vault",
               port: 1940,
-              paths: ["/vault/work"],
+              paths: ["/vault/default"],
               health: "/health",
               version: "0.3.5",
             },
             h.manifestPath,
           );
-          return 0;
+          return { exitCode: 0, stdout: "" };
+        };
+        const res = await call({
+          db,
+          manifestPath: h.manifestPath,
+          body: { name: "default" },
+          runCommand,
+        });
+        expect(res.status).toBe(201);
+        expect(calls).toEqual([["parachute", "install", "vault"]]);
+        // Bootstrap path: response carries name/url/version, no token/paths
+        // (install doesn't emit JSON yet — known gap, follow-up issue).
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.token).toBeUndefined();
+        expect(body.paths).toBeUndefined();
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("201 response includes token + paths from `parachute-vault create --json` stdout", async () => {
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        rotateSigningKey(db);
+        upsertService(
+          {
+            name: "parachute-vault",
+            port: 1940,
+            paths: ["/vault/default"],
+            health: "/health",
+            version: "0.3.5",
+          },
+          h.manifestPath,
+        );
+        const runCommand = async (_cmd: readonly string[]): Promise<RunResult> => {
+          upsertService(
+            {
+              name: "parachute-vault",
+              port: 1940,
+              paths: ["/vault/default", "/vault/work"],
+              health: "/health",
+              version: "0.3.5",
+            },
+            h.manifestPath,
+          );
+          return { exitCode: 0, stdout: vaultCreateJson("work", "pvt_supersecret") };
         };
         const res = await call({
           db,
@@ -302,7 +370,17 @@ describe("POST /vaults — orchestration", () => {
           runCommand,
         });
         expect(res.status).toBe(201);
-        expect(calls).toEqual([["parachute", "install", "vault", "--vault-name", "work"]]);
+        const body = (await res.json()) as {
+          name: string;
+          token?: string;
+          paths?: { vault_dir: string; vault_db: string; vault_config: string };
+        };
+        expect(body.token).toBe("pvt_supersecret");
+        expect(body.paths).toEqual({
+          vault_dir: "/home/test/.parachute/vault/work",
+          vault_db: "/home/test/.parachute/vault/work/vault.db",
+          vault_config: "/home/test/.parachute/vault/work/config.yaml",
+        });
       } finally {
         db.close();
       }
@@ -311,7 +389,42 @@ describe("POST /vaults — orchestration", () => {
     }
   });
 
-  test("200 idempotent re-POST when vault already exists in services.json", async () => {
+  test("500 when `parachute-vault create --json` exits 0 but stdout is unparseable", async () => {
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        rotateSigningKey(db);
+        upsertService(
+          {
+            name: "parachute-vault",
+            port: 1940,
+            paths: ["/vault/default"],
+            health: "/health",
+            version: "0.3.5",
+          },
+          h.manifestPath,
+        );
+        const runCommand = async (): Promise<RunResult> => ({
+          exitCode: 0,
+          stdout: "this-is-not-json",
+        });
+        const res = await call({
+          db,
+          manifestPath: h.manifestPath,
+          body: { name: "work" },
+          runCommand,
+        });
+        expect(res.status).toBe(500);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("200 idempotent re-POST when vault already exists, no token in response", async () => {
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
@@ -328,9 +441,9 @@ describe("POST /vaults — orchestration", () => {
           h.manifestPath,
         );
         let runCalled = false;
-        const runCommand = async () => {
+        const runCommand = async (): Promise<RunResult> => {
           runCalled = true;
-          return 0;
+          return { exitCode: 0, stdout: "" };
         };
         const res = await call({
           db,
@@ -339,9 +452,12 @@ describe("POST /vaults — orchestration", () => {
           runCommand,
         });
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { name: string; url: string };
+        const body = (await res.json()) as Record<string, unknown>;
         expect(body.name).toBe("work");
         expect(body.url).toBe(`${ISSUER}/vault/work`);
+        // Token is single-emit at create time — re-POST never re-emits it.
+        expect(body.token).toBeUndefined();
+        expect(body.paths).toBeUndefined();
         expect(runCalled).toBe(false);
       } finally {
         db.close();
@@ -367,7 +483,7 @@ describe("POST /vaults — orchestration", () => {
           },
           h.manifestPath,
         );
-        const runCommand = async () => 1;
+        const runCommand = async (): Promise<RunResult> => ({ exitCode: 1, stdout: "" });
         const res = await call({
           db,
           manifestPath: h.manifestPath,
@@ -399,7 +515,10 @@ describe("POST /vaults — orchestration", () => {
           },
           h.manifestPath,
         );
-        const runCommand = async () => 0;
+        const runCommand = async (): Promise<RunResult> => ({
+          exitCode: 0,
+          stdout: vaultCreateJson("work"),
+        });
         const res = await call({
           db,
           manifestPath: h.manifestPath,
