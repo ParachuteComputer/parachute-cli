@@ -13,6 +13,7 @@ import { exposePublic, exposeTailnet } from "./commands/expose.ts";
 import { install } from "./commands/install.ts";
 import { logs, restart, start, stop } from "./commands/lifecycle.ts";
 import { migrate } from "./commands/migrate.ts";
+import { setup } from "./commands/setup.ts";
 import { status } from "./commands/status.ts";
 import { dispatchVault } from "./commands/vault.ts";
 import { ExposeStateError } from "./expose-state.ts";
@@ -22,6 +23,7 @@ import {
   logsHelp,
   migrateHelp,
   restartHelp,
+  setupHelp,
   startHelp,
   statusHelp,
   stopHelp,
@@ -191,6 +193,29 @@ async function main(argv: string[]): Promise<number> {
     case "-v":
       console.log(pkg.version);
       return 0;
+
+    case "setup": {
+      if (isHelpFlag(rest[0])) {
+        console.log(setupHelp());
+        return 0;
+      }
+      const tagExtract = extractTag(rest);
+      if (tagExtract.error) {
+        console.error(`parachute setup: ${tagExtract.error}`);
+        return 1;
+      }
+      const noStart = tagExtract.rest.includes("--no-start");
+      const remaining = tagExtract.rest.filter((a) => a !== "--no-start");
+      if (remaining.length > 0) {
+        console.error(`parachute setup: unknown argument "${remaining[0]}"`);
+        console.error("usage: parachute setup [--tag <name>] [--no-start]");
+        return 1;
+      }
+      const setupOpts: Parameters<typeof setup>[0] = {};
+      if (tagExtract.tag) setupOpts.tag = tagExtract.tag;
+      if (noStart) setupOpts.noStart = true;
+      return await setup(setupOpts);
+    }
 
     case "install": {
       if (isHelpFlag(rest[0])) {

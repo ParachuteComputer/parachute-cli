@@ -100,6 +100,12 @@ export interface InstallOpts {
    */
   startService?: (short: string) => Promise<number>;
   /**
+   * `parachute install vault` only: skip the vault-name prompt by forwarding
+   * `--vault-name <name>` to `parachute-vault init`. Used by `parachute setup`
+   * (#45) to pre-collect the answer up front. Ignored for non-vault installs.
+   */
+  vaultName?: string;
+  /**
    * `parachute install scribe` only: pre-pick the transcription provider so
    * the prompt doesn't fire. Validated against scribe's known providers — an
    * unknown name is logged and the config is left at default.
@@ -525,10 +531,16 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   const entryName = target.kind === "first-party" ? spec.manifestName : manifest.name;
 
   if (spec.init) {
-    log(`Running ${spec.init.join(" ")}…`);
-    const initCode = await runner(spec.init);
+    // Forward --vault-name from the InstallOpts when set so `parachute setup`
+    // (and any future programmatic caller) can pre-answer the name prompt.
+    const initCmd =
+      short === "vault" && opts.vaultName
+        ? [...spec.init, "--vault-name", opts.vaultName]
+        : spec.init;
+    log(`Running ${initCmd.join(" ")}…`);
+    const initCode = await runner(initCmd);
     if (initCode !== 0) {
-      log(`${spec.init.join(" ")} exited ${initCode}`);
+      log(`${initCmd.join(" ")} exited ${initCode}`);
       return initCode;
     }
   }
