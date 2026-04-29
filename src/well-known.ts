@@ -31,23 +31,18 @@ export interface WellKnownServicesEntry {
 /**
  * Canonical `/.well-known/parachute.json` shape.
  *
- * Three parts, all additive so old clients keep working:
- *   - `vaults: []` — always an array; vault is the ecosystem's only
- *     multi-tenant service.
+ * Two parts:
+ *   - `vaults: []`, `notes: []`, `claw: []`, … — every kind is a plural
+ *     array, so consumers always read `notes[0]` if they want "the one" and
+ *     the multi-install case is visible at every call site (closes #92).
  *   - `services: []` — flat list the hub page iterates. Scales to N frontends
  *     without the consumer needing to know every shortName.
- *   - Top-level flat keys (`notes`, `scribe`, …) — kept for back-compat with
- *     clients that predate `services[]`.
  */
 export type WellKnownDocument = {
   vaults: WellKnownVaultEntry[];
   services: WellKnownServicesEntry[];
 } & {
-  [shortName: string]:
-    | WellKnownVaultEntry[]
-    | WellKnownServicesEntry[]
-    | WellKnownServiceEntry
-    | undefined;
+  [shortName: string]: WellKnownVaultEntry[] | WellKnownServicesEntry[] | WellKnownServiceEntry[];
 };
 
 export const WELL_KNOWN_DIR = join(CONFIG_DIR, "well-known");
@@ -110,7 +105,10 @@ export function buildWellKnown(opts: BuildWellKnownOpts): WellKnownDocument {
     if (isVaultEntry(s)) {
       doc.vaults.push({ name: vaultInstanceName(s), url, version: s.version });
     } else {
-      doc[shortName(s.name)] = { url, version: s.version };
+      const key = shortName(s.name);
+      const bucket = (doc[key] as WellKnownServiceEntry[] | undefined) ?? [];
+      bucket.push({ url, version: s.version });
+      doc[key] = bucket;
     }
   }
   return doc;

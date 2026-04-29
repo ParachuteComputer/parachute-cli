@@ -92,7 +92,7 @@ describe("vaultInstanceName", () => {
 });
 
 describe("buildWellKnown", () => {
-  test("vaults is always an array, other services are flat entries, services[] includes all", () => {
+  test("every kind is a plural array; services[] includes all (#92)", () => {
     const doc = buildWellKnown({
       services: [vault, notes, scribe],
       canonicalOrigin: "https://parachute.taildf9ce2.ts.net",
@@ -104,18 +104,34 @@ describe("buildWellKnown", () => {
         version: "0.2.4",
       },
     ]);
-    expect(doc.notes).toEqual({
-      url: "https://parachute.taildf9ce2.ts.net/notes",
-      version: "0.0.1",
-    });
-    expect(doc.scribe).toEqual({
-      url: "https://parachute.taildf9ce2.ts.net/scribe",
-      version: "0.1.0",
-    });
+    expect(doc.notes).toEqual([
+      {
+        url: "https://parachute.taildf9ce2.ts.net/notes",
+        version: "0.0.1",
+      },
+    ]);
+    expect(doc.scribe).toEqual([
+      {
+        url: "https://parachute.taildf9ce2.ts.net/scribe",
+        version: "0.1.0",
+      },
+    ]);
     expect(doc.services.map((s) => s.name)).toEqual([
       "parachute-vault",
       "parachute-notes",
       "parachute-scribe",
+    ]);
+  });
+
+  test("multiple installs of the same kind both land in the array (#92)", () => {
+    const work: ServiceEntry = { ...notes, paths: ["/notes-work"], port: 5174 };
+    const doc = buildWellKnown({
+      services: [notes, work],
+      canonicalOrigin: "https://x.example",
+    });
+    expect(doc.notes).toEqual([
+      { url: "https://x.example/notes", version: "0.0.1" },
+      { url: "https://x.example/notes-work", version: "0.0.1" },
     ]);
   });
 
@@ -158,7 +174,7 @@ describe("buildWellKnown", () => {
     });
     expect(doc.vaults).toEqual([]);
     expect(doc.services).toHaveLength(1);
-    expect(doc.notes).toEqual({ url: "https://x.example/notes", version: "0.0.1" });
+    expect(doc.notes).toEqual([{ url: "https://x.example/notes", version: "0.0.1" }]);
   });
 
   test("multiple vault instances all land in the vaults array", () => {
