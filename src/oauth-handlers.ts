@@ -44,6 +44,7 @@ import {
 import { CSRF_FIELD_NAME, ensureCsrfToken, verifyCsrfToken } from "./csrf.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
+  RefreshTokenInsertError,
   findRefreshToken,
   findTokenRowByJti,
   revokeFamily,
@@ -843,7 +844,14 @@ async function handleTokenRefresh(
   // Rotate: revoke the old refresh row, mint a new access + refresh pair
   // bound to the same family so a future replay of *any* descendant can
   // walk the chain.
-  db.prepare("UPDATE tokens SET revoked_at = ? WHERE jti = ?").run(now.toISOString(), row.jti);
+  //
+  // Mint the access token *before* opening the rotation transaction. JWT
+  // signing is async (jose returns a Promise) and bun:sqlite's
+  // `db.transaction()` is sync — running async work inside the closure
+  // would silently break atomicity. Once we have the JWT, the UPDATE
+  // (revoke old) + INSERT (mint new refresh row) commit or roll back as
+  // a unit, so a mid-rotation crash can't dead-old-without-replacement
+  // (#107).
   const audience = inferAudience(row.scopes);
   const access = await signAccessToken(db, {
     sub: row.userId,
@@ -853,14 +861,34 @@ async function handleTokenRefresh(
     issuer: deps.issuer,
     now: deps.now,
   });
-  const refresh = signRefreshToken(db, {
-    jti: access.jti,
-    userId: row.userId,
-    clientId: row.clientId,
-    scopes: row.scopes,
-    familyId: row.familyId,
-    now: deps.now,
-  });
+  let refresh: ReturnType<typeof signRefreshToken>;
+  try {
+    refresh = db.transaction(() => {
+      db.prepare("UPDATE tokens SET revoked_at = ? WHERE jti = ?").run(now.toISOString(), row.jti);
+      return signRefreshToken(db, {
+        jti: access.jti,
+        userId: row.userId,
+        clientId: row.clientId,
+        scopes: row.scopes,
+        familyId: row.familyId,
+        now: deps.now,
+      });
+    })();
+  } catch (err) {
+    // Concurrent rotation: a sibling refresh of the same row already
+    // committed and ours collides on the `tokens.jti` PRIMARY KEY (or any
+    // other INSERT-time DB error). Surface a clean `invalid_grant` 400 —
+    // RFC 6749 §5.2 — instead of letting the SQLite error bubble as a 500
+    // (#108). The transaction is already rolled back at this point, so
+    // the row's revoked_at is unchanged for the losing request.
+    if (err instanceof RefreshTokenInsertError) {
+      return jsonResponse(
+        { error: "invalid_grant", error_description: "refresh_token rotation conflict" },
+        400,
+      );
+    }
+    throw err;
+  }
   const services = buildServicesCatalog(
     (deps.loadServicesManifest ?? readServicesManifest)(),
     deps.issuer,
