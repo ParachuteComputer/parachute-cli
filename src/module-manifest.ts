@@ -38,6 +38,35 @@ export interface ModuleDependency {
   readonly scopes?: readonly string[];
 }
 
+/**
+ * Subset of JSON Schema understood by the hub config portal (#46). Author-
+ * controlled: each module declares the keys an operator can edit and the
+ * type/constraints on each. The portal renders a form from this declaration,
+ * validates+coerces submits against it, and writes the result to
+ * `<configDir>/<name>/config.json`.
+ *
+ * Intentionally narrow at v1 — flat string/number/integer/boolean keys, with
+ * optional `enum` and `default`. Nested objects, arrays, oneOf, allOf, $ref
+ * are deferred until a concrete module asks for them.
+ */
+export type ConfigPropertyType = "string" | "number" | "integer" | "boolean";
+
+export interface ConfigSchemaProperty {
+  readonly type: ConfigPropertyType;
+  /** Operator-facing label rendered next to the input. */
+  readonly description?: string;
+  /** Pre-fill value when no config.json exists yet. */
+  readonly default?: string | number | boolean;
+  /** Restrict to a fixed set; rendered as a `<select>`. Only meaningful for string/number/integer. */
+  readonly enum?: readonly (string | number)[];
+}
+
+export interface ConfigSchema {
+  readonly type: "object";
+  readonly properties: Record<string, ConfigSchemaProperty>;
+  readonly required?: readonly string[];
+}
+
 export interface ModuleManifest {
   /** Stable ecosystem identifier — `[a-z][a-z0-9-]*`, also the services.json key. */
   readonly name: string;
@@ -62,6 +91,14 @@ export interface ModuleManifest {
   readonly scopes?: ModuleScopeBlock;
   /** Auto-wire targets — see service-to-service-auth.md. */
   readonly dependencies?: Record<string, ModuleDependency>;
+  /**
+   * Operator-editable config keys — see hub#46 + this file's `ConfigSchema`.
+   * When present, the hub config portal renders a form for these keys and
+   * writes the submitted values to `<configDir>/<name>/config.json` (JSON-only
+   * at v1 — modules using `.env`/YAML/TOML are deferred). When absent, the
+   * portal skips the module rather than rendering an empty form.
+   */
+  readonly configSchema?: ConfigSchema;
 }
 
 export class ModuleManifestError extends Error {
@@ -122,6 +159,108 @@ function asScopes(v: unknown, where: string): ModuleScopeBlock | undefined {
   const defines = (v as Record<string, unknown>).defines;
   if (defines === undefined) return {};
   return { defines: asStringArray(defines, where, "scopes.defines") };
+}
+
+const CONFIG_PROPERTY_TYPES = new Set<ConfigPropertyType>([
+  "string",
+  "number",
+  "integer",
+  "boolean",
+]);
+
+function asConfigSchemaProperty(v: unknown, where: string, field: string): ConfigSchemaProperty {
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    throw new ModuleManifestError(`${where}: "${field}" must be an object`);
+  }
+  const p = v as Record<string, unknown>;
+  if (typeof p.type !== "string" || !CONFIG_PROPERTY_TYPES.has(p.type as ConfigPropertyType)) {
+    throw new ModuleManifestError(
+      `${where}: "${field}.type" must be one of "string" | "number" | "integer" | "boolean"`,
+    );
+  }
+  const type = p.type as ConfigPropertyType;
+  const out: ConfigSchemaProperty = { type };
+  if (p.description !== undefined) {
+    if (typeof p.description !== "string") {
+      throw new ModuleManifestError(`${where}: "${field}.description" must be a string if present`);
+    }
+    (out as { description?: string }).description = p.description;
+  }
+  if (p.default !== undefined) {
+    const t = typeof p.default;
+    if (t !== "string" && t !== "number" && t !== "boolean") {
+      throw new ModuleManifestError(
+        `${where}: "${field}.default" must be string | number | boolean if present`,
+      );
+    }
+    (out as { default?: string | number | boolean }).default = p.default as
+      | string
+      | number
+      | boolean;
+  }
+  if (p.enum !== undefined) {
+    if (!Array.isArray(p.enum) || p.enum.length === 0) {
+      throw new ModuleManifestError(
+        `${where}: "${field}.enum" must be a non-empty array if present`,
+      );
+    }
+    if (type === "boolean") {
+      throw new ModuleManifestError(`${where}: "${field}.enum" is not meaningful for boolean type`);
+    }
+    for (const v of p.enum) {
+      const t = typeof v;
+      if (type === "string" && t !== "string") {
+        throw new ModuleManifestError(
+          `${where}: "${field}.enum" entries must be strings when type is "string"`,
+        );
+      }
+      if ((type === "number" || type === "integer") && t !== "number") {
+        throw new ModuleManifestError(
+          `${where}: "${field}.enum" entries must be numbers when type is "${type}"`,
+        );
+      }
+      if (type === "integer" && !Number.isInteger(v)) {
+        throw new ModuleManifestError(
+          `${where}: "${field}.enum" entries must be integers when type is "integer"`,
+        );
+      }
+    }
+    (out as { enum?: readonly (string | number)[] }).enum = p.enum as readonly (string | number)[];
+  }
+  return out;
+}
+
+function asConfigSchema(v: unknown, where: string): ConfigSchema | undefined {
+  if (v === undefined) return undefined;
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    throw new ModuleManifestError(`${where}: "configSchema" must be an object if present`);
+  }
+  const s = v as Record<string, unknown>;
+  if (s.type !== "object") {
+    throw new ModuleManifestError(`${where}: "configSchema.type" must be "object"`);
+  }
+  if (!s.properties || typeof s.properties !== "object" || Array.isArray(s.properties)) {
+    throw new ModuleManifestError(`${where}: "configSchema.properties" must be an object`);
+  }
+  const propsRaw = s.properties as Record<string, unknown>;
+  const properties: Record<string, ConfigSchemaProperty> = {};
+  for (const [k, raw] of Object.entries(propsRaw)) {
+    properties[k] = asConfigSchemaProperty(raw, where, `configSchema.properties.${k}`);
+  }
+  let required: readonly string[] | undefined;
+  if (s.required !== undefined) {
+    required = asStringArray(s.required, where, "configSchema.required");
+    for (const r of required) {
+      if (!properties[r]) {
+        throw new ModuleManifestError(
+          `${where}: "configSchema.required" names "${r}" but it is not declared in "properties"`,
+        );
+      }
+    }
+  }
+  const out: ConfigSchema = { type: "object", properties };
+  if (required !== undefined) (out as { required?: readonly string[] }).required = required;
+  return out;
 }
 
 function asDependencies(v: unknown, where: string): Record<string, ModuleDependency> | undefined {
@@ -209,6 +348,7 @@ export function validateModuleManifest(raw: unknown, where: string): ModuleManif
   }
 
   const dependencies = asDependencies(m.dependencies, where);
+  const configSchema = asConfigSchema(m.configSchema, where);
 
   const out: ModuleManifest = { name, manifestName, kind, port, paths, health };
   if (displayName !== undefined) (out as { displayName?: string }).displayName = displayName;
@@ -217,6 +357,9 @@ export function validateModuleManifest(raw: unknown, where: string): ModuleManif
   if (scopes !== undefined) (out as { scopes?: ModuleScopeBlock }).scopes = scopes;
   if (dependencies !== undefined) {
     (out as { dependencies?: Record<string, ModuleDependency> }).dependencies = dependencies;
+  }
+  if (configSchema !== undefined) {
+    (out as { configSchema?: ConfigSchema }).configSchema = configSchema;
   }
   return out;
 }

@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AdminAuthError, adminAuthErrorResponse, extractBearerToken, requireScope } from "../admin-auth.ts";
+import {
+  AdminAuthError,
+  adminAuthErrorResponse,
+  extractBearerToken,
+  requireScope,
+} from "../admin-auth.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { signAccessToken } from "../jwt-sign.ts";
 import { rotateSigningKey } from "../signing-keys.ts";
@@ -102,12 +107,7 @@ describe("requireScope", () => {
         const token = await mintToken(db, ["vault:read"]);
         let caught: AdminAuthError | null = null;
         try {
-          await requireScope(
-            db,
-            reqWithAuth(`Bearer ${token}`),
-            "parachute:host:admin",
-            ISSUER,
-          );
+          await requireScope(db, reqWithAuth(`Bearer ${token}`), "parachute:host:admin", ISSUER);
         } catch (err) {
           caught = err as AdminAuthError;
         }
@@ -132,12 +132,7 @@ describe("requireScope", () => {
         });
         let caught: AdminAuthError | null = null;
         try {
-          await requireScope(
-            db,
-            reqWithAuth(`Bearer ${token}`),
-            "parachute:host:admin",
-            ISSUER,
-          );
+          await requireScope(db, reqWithAuth(`Bearer ${token}`), "parachute:host:admin", ISSUER);
         } catch (err) {
           caught = err as AdminAuthError;
         }

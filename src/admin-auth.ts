@@ -71,7 +71,7 @@ export async function requireScope(
 ): Promise<AdminAuthContext> {
   const token = extractBearerToken(req);
 
-  let validated;
+  let validated: Awaited<ReturnType<typeof validateAccessToken>>;
   try {
     validated = await validateAccessToken(db, token, expectedIssuer);
   } catch (err) {
@@ -84,15 +84,10 @@ export async function requireScope(
 
   const scopeClaim = (validated.payload as { scope?: unknown }).scope;
   const scopes =
-    typeof scopeClaim === "string"
-      ? scopeClaim.split(/\s+/).filter((s) => s.length > 0)
-      : [];
+    typeof scopeClaim === "string" ? scopeClaim.split(/\s+/).filter((s) => s.length > 0) : [];
 
   if (!scopes.includes(requiredScope)) {
-    throw new AdminAuthError(
-      403,
-      `token missing required scope: ${requiredScope}`,
-    );
+    throw new AdminAuthError(403, `token missing required scope: ${requiredScope}`);
   }
 
   const clientIdRaw = (validated.payload as { client_id?: unknown }).client_id;
@@ -110,7 +105,10 @@ export async function requireScope(
 export function adminAuthErrorResponse(err: unknown): Response {
   if (err instanceof AdminAuthError) {
     return new Response(
-      JSON.stringify({ error: err.status === 403 ? "insufficient_scope" : "invalid_token", error_description: err.message }),
+      JSON.stringify({
+        error: err.status === 403 ? "insufficient_scope" : "invalid_token",
+        error_description: err.message,
+      }),
       {
         status: err.status,
         headers: {
