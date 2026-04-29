@@ -74,10 +74,16 @@ export interface VaultCreateJson {
   set_as_default: boolean;
 }
 
-/** Result of a single shell-out: exit code + captured stdout. */
+/** Result of a single shell-out: exit code + captured stdout/stderr. */
 export interface RunResult {
   exitCode: number;
   stdout: string;
+  /**
+   * Captured stderr. Always drained alongside stdout so a long-running
+   * child can't deadlock on a full pipe buffer (#97). Surfaced in error
+   * messages when exitCode != 0 so non-zero failures are diagnosable.
+   */
+  stderr: string;
 }
 
 export interface CreateVaultDeps {
@@ -188,9 +194,15 @@ function buildEntry(
 
 async function defaultRunCommand(cmd: readonly string[]): Promise<RunResult> {
   const proc = Bun.spawn([...cmd], { stdio: ["ignore", "pipe", "pipe"] });
-  const stdout = await new Response(proc.stdout).text();
+  // Drain both pipes in parallel — leaving stderr unread can deadlock long
+  // installs once the OS pipe buffer fills (#97). Captured stderr is folded
+  // into the orchestration error message on non-zero exit.
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
   const exitCode = await proc.exited;
-  return { exitCode, stdout };
+  return { exitCode, stdout, stderr };
 }
 
 interface OrchestrateOk {
@@ -228,10 +240,15 @@ async function orchestrate(
     return { ok: false, status: 500, message: `orchestration failed: ${msg}` };
   }
   if (result.exitCode !== 0) {
+    // Tail stderr (capped) so the error message names the actual failure
+    // mode — "exited 1" alone is useless when the CLI prints why it failed
+    // to stderr.
+    const stderrTail = result.stderr.trim();
+    const tailSuffix = stderrTail ? `: ${stderrTail.slice(-500)}` : "";
     return {
       ok: false,
       status: 500,
-      message: `${cmd[0]} ${cmd[1] ?? ""} exited with code ${result.exitCode}`,
+      message: `${cmd.join(" ")} exited with code ${result.exitCode}${tailSuffix}`,
     };
   }
   if (!vaultRegistered) {
