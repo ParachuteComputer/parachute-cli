@@ -94,6 +94,16 @@ describe("authorizationServerMetadata", () => {
     expect(scopesSupported).toContain("scribe:transcribe");
     expect(scopesSupported).toContain("hub:admin");
   });
+
+  test("does NOT advertise non-requestable operator-only scopes", async () => {
+    // #96: parachute:host:admin is operator-only. RFC 8414 §2 frames
+    // scopes_supported as scopes a client *can* request — advertising what
+    // we always reject would mislead clients.
+    const res = authorizationServerMetadata({ issuer: ISSUER });
+    const body = (await res.json()) as Record<string, unknown>;
+    const scopesSupported = body.scopes_supported as string[];
+    expect(scopesSupported).not.toContain("parachute:host:admin");
+  });
 });
 
 describe("handleAuthorizeGet", () => {
@@ -199,6 +209,37 @@ describe("handleAuthorizeGet", () => {
       );
       const res = handleAuthorizeGet(db, req, { issuer: ISSUER });
       expect(res.status).toBe(400);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rejects parachute:host:admin scope with invalid_scope redirect (#96)", async () => {
+    // Operator-only scopes — third-party apps cannot mint them via the
+    // public flow. Per RFC 6749 §4.1.2.1, scope failures redirect to the
+    // registered redirect_uri with error=invalid_scope, not an HTML error.
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          scope: "vault:read parachute:host:admin",
+          state: "abc",
+        }),
+      );
+      const res = handleAuthorizeGet(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("location") ?? "");
+      expect(loc.origin + loc.pathname).toBe("https://app.example/cb");
+      expect(loc.searchParams.get("error")).toBe("invalid_scope");
+      expect(loc.searchParams.get("error_description")).toContain("parachute:host:admin");
+      expect(loc.searchParams.get("state")).toBe("abc");
     } finally {
       cleanup();
     }
@@ -632,6 +673,44 @@ describe("handleAuthorizePost — consent submit", () => {
       expect(loc.origin + loc.pathname).toBe("https://app.example/cb");
       expect(loc.searchParams.get("code")?.length).toBeGreaterThan(20);
       expect(loc.searchParams.get("state")).toBe("abc123");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rejects parachute:host:admin in form scope (defense-in-depth, #96)", async () => {
+    // GET-time gate already rejects, but a hand-crafted POST could carry
+    // an operator-only scope. Consent submit must independently reject.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const form = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "parachute:host:admin",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        state: "abc",
+      });
+      const req = new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: form,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: buildSessionCookie(session.id, 86400),
+        },
+      });
+      const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("location") ?? "");
+      expect(loc.searchParams.get("error")).toBe("invalid_scope");
+      expect(loc.searchParams.get("error_description")).toContain("parachute:host:admin");
     } finally {
       cleanup();
     }

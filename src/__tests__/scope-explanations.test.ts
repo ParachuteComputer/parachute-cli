@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   FIRST_PARTY_SCOPES,
+  NON_REQUESTABLE_SCOPES,
   SCOPE_EXPLANATIONS,
   explainScope,
+  isRequestableScope,
   scopeIsAdmin,
 } from "../scope-explanations.ts";
 
@@ -52,5 +54,41 @@ describe("scopeIsAdmin", () => {
     expect(scopeIsAdmin("vault:read")).toBe(false);
     expect(scopeIsAdmin("channel:send")).toBe(false);
     expect(scopeIsAdmin("unknown:anything")).toBe(false);
+  });
+});
+
+describe("NON_REQUESTABLE_SCOPES (#96)", () => {
+  test("contains parachute:host:admin", () => {
+    expect(NON_REQUESTABLE_SCOPES.has("parachute:host:admin")).toBe(true);
+  });
+
+  test("does NOT contain hub:admin (intentional asymmetry)", () => {
+    // hub:admin is service management an operator may legitimately delegate
+    // to a tooling app. parachute:host:admin is cross-vault data sovereignty
+    // and stays operator-only-mintable.
+    expect(NON_REQUESTABLE_SCOPES.has("hub:admin")).toBe(false);
+  });
+
+  test("every non-requestable scope is a known first-party scope", () => {
+    for (const s of NON_REQUESTABLE_SCOPES) {
+      expect(FIRST_PARTY_SCOPES).toContain(s);
+    }
+  });
+});
+
+describe("isRequestableScope", () => {
+  test("false for parachute:host:admin", () => {
+    expect(isRequestableScope("parachute:host:admin")).toBe(false);
+  });
+
+  test("true for hub:admin and other first-party scopes", () => {
+    expect(isRequestableScope("hub:admin")).toBe(true);
+    expect(isRequestableScope("vault:read")).toBe(true);
+    expect(isRequestableScope("vault:admin")).toBe(true);
+    expect(isRequestableScope("channel:send")).toBe(true);
+  });
+
+  test("true for unknown scopes (third-party module scopes pass through)", () => {
+    expect(isRequestableScope("notes:something-new")).toBe(true);
   });
 });

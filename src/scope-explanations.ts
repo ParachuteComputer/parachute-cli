@@ -62,7 +62,8 @@ export const SCOPE_EXPLANATIONS: Record<string, ScopeExplanation> = {
     level: "admin",
   },
   "parachute:host:admin": {
-    label: "Provision and manage vaults across this host (create new vaults, configure cross-vault settings).",
+    label:
+      "Provision and manage vaults across this host (create new vaults, configure cross-vault settings).",
     level: "admin",
   },
 };
@@ -73,6 +74,34 @@ export const SCOPE_EXPLANATIONS: Record<string, ScopeExplanation> = {
  * scopes (cli#68) are unioned on top.
  */
 export const FIRST_PARTY_SCOPES = Object.keys(SCOPE_EXPLANATIONS).sort();
+
+/**
+ * Scopes the hub will not mint via the public OAuth flow. Operator-only —
+ * available exclusively through the local operator-token mint path
+ * (`parachute auth rotate-operator`), which doesn't traverse
+ * `/oauth/authorize`. Listed here so the issuer can:
+ *
+ *   1. Reject early at `/oauth/authorize` with RFC 6749 `invalid_scope`
+ *      rather than letting the request walk to the consent screen.
+ *   2. Hide non-requestable scopes from `scopes_supported` in the AS
+ *      metadata — clients shouldn't be advertised what we always reject.
+ *      RFC 8414 §2 says `scopes_supported` is the list a client *can*
+ *      request, so omitting these is the spec-compliant call.
+ *
+ * Why `parachute:host:admin` is on this list and `hub:admin` is not:
+ * `parachute:host:admin` provisions and destroys vaults — cross-vault
+ * data sovereignty that the operator alone owns. `hub:admin` is service
+ * management (signing keys, registered clients, user accounts) which an
+ * operator may legitimately delegate to a tooling app. The asymmetry is
+ * intentional: the blast radius of compromised cross-vault admin doesn't
+ * justify third-party requestability.
+ */
+export const NON_REQUESTABLE_SCOPES: ReadonlySet<string> = new Set(["parachute:host:admin"]);
+
+/** True when the scope can appear in a public `/oauth/authorize` request. */
+export function isRequestableScope(scope: string): boolean {
+  return !NON_REQUESTABLE_SCOPES.has(scope);
+}
 
 export function explainScope(scope: string): ScopeExplanation | null {
   return SCOPE_EXPLANATIONS[scope] ?? null;
