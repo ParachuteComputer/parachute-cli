@@ -2717,3 +2717,355 @@ describe("refresh-token rotation + /oauth/revoke (#73)", () => {
     expect(body.revocation_endpoint).toBe(`${ISSUER}/oauth/revoke`);
   });
 });
+
+// closes #75 — once the user has approved a scope-set for a client, the next
+// /oauth/authorize for the same client and a covered scope-set goes straight
+// to the auth-code redirect. Strict superset (incremental scope) and
+// revoked grants still show consent.
+describe("handleAuthorizeGet — skip consent when scope already granted (#75)", () => {
+  test("first approval records grant; second flow with same scopes skips consent", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        __csrf: TEST_CSRF,
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:default:read scribe:transcribe",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const consentReq = new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: consentForm,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
+        },
+      });
+      const consentRes = await handleAuthorizePost(db, consentReq, { issuer: ISSUER });
+      expect(consentRes.status).toBe(302);
+
+      // Second flow, same scopes — skip consent.
+      const getReq = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          scope: "vault:default:read scribe:transcribe",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          state: "second",
+        }),
+        { headers: { cookie: buildSessionCookie(session.id, 86400) } },
+      );
+      const getRes = handleAuthorizeGet(db, getReq, { issuer: ISSUER });
+      expect(getRes.status).toBe(302);
+      const loc = new URL(getRes.headers.get("location") ?? "");
+      expect(loc.origin + loc.pathname).toBe("https://app.example/cb");
+      expect(loc.searchParams.get("code")?.length).toBeGreaterThan(20);
+      expect(loc.searchParams.get("state")).toBe("second");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("subset of granted scopes also skips consent", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+
+      // Grant [a, b, c].
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        __csrf: TEST_CSRF,
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:default:read vault:default:write scribe:transcribe",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
+          },
+        }),
+        { issuer: ISSUER },
+      );
+
+      // Re-flow with strict subset [a, c] — must skip.
+      const getReq = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          scope: "vault:default:read scribe:transcribe",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+        { headers: { cookie: buildSessionCookie(session.id, 86400) } },
+      );
+      const getRes = handleAuthorizeGet(db, getReq, { issuer: ISSUER });
+      expect(getRes.status).toBe(302);
+      const loc = new URL(getRes.headers.get("location") ?? "");
+      expect(loc.origin + loc.pathname).toBe("https://app.example/cb");
+      expect(loc.searchParams.get("code")?.length).toBeGreaterThan(20);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("strict superset shows consent (incremental scope grant)", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+
+      // Grant [vault:default:read].
+      await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: new URLSearchParams({
+            __action: "consent",
+            __csrf: TEST_CSRF,
+            approve: "yes",
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            response_type: "code",
+            scope: "vault:default:read",
+            code_challenge: challenge,
+            code_challenge_method: "S256",
+          }),
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
+          },
+        }),
+        { issuer: ISSUER },
+      );
+
+      // Re-flow asking for [vault:default:read, scribe:transcribe] — superset
+      // → must render consent (200 HTML), not redirect with code.
+      const getReq = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          scope: "vault:default:read scribe:transcribe",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+        { headers: { cookie: buildSessionCookie(session.id, 86400) } },
+      );
+      const getRes = handleAuthorizeGet(db, getReq, { issuer: ISSUER });
+      expect(getRes.status).toBe(200);
+      expect(getRes.headers.get("content-type")).toContain("text/html");
+      const body = await getRes.text();
+      // Both scopes appear on the consent page so the user knows they're
+      // approving the new addition explicitly.
+      expect(body).toContain("scribe:transcribe");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("revoke-grant brings consent back", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+
+      // Grant + verify skip works.
+      await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: new URLSearchParams({
+            __action: "consent",
+            __csrf: TEST_CSRF,
+            approve: "yes",
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            response_type: "code",
+            scope: "vault:default:read",
+            code_challenge: challenge,
+            code_challenge_method: "S256",
+          }),
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
+          },
+        }),
+        { issuer: ISSUER },
+      );
+
+      // Revoke via the grants module directly (CLI runner is exercised in
+      // auth.test.ts; here we just need the row gone).
+      const { revokeGrant } = await import("../grants.ts");
+      const removed = revokeGrant(db, user.id, reg.client.clientId);
+      expect(removed).toBe(true);
+
+      // Now the same flow should render consent, not redirect.
+      const getReq = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          scope: "vault:default:read",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+        { headers: { cookie: buildSessionCookie(session.id, 86400) } },
+      );
+      const getRes = handleAuthorizeGet(db, getReq, { issuer: ISSUER });
+      expect(getRes.status).toBe(200);
+      expect(getRes.headers.get("content-type")).toContain("text/html");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("unnamed vault scope always renders consent (picker required)", async () => {
+    // Even if we somehow stored a grant matching an unnamed `vault:read`,
+    // the picker is the only way to bind the scope to a specific vault.
+    // The skip-consent path must defer to consent for unnamed vault verbs.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      // Pre-seed a grant with an unnamed scope — defensive, just in case.
+      const { recordGrant } = await import("../grants.ts");
+      recordGrant(db, user.id, reg.client.clientId, ["vault:read"]);
+
+      const getReq = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          scope: "vault:read",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+        { headers: { cookie: buildSessionCookie(session.id, 86400) } },
+      );
+      const getRes = handleAuthorizeGet(db, getReq, {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(getRes.status).toBe(200);
+      expect(getRes.headers.get("content-type")).toContain("text/html");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("re-registered client_id (different uuid) requires fresh consent", async () => {
+    // Re-registration mints a new client_id; the grant row is keyed on
+    // (user, client_id), so the new client has no prior grant. Consent
+    // must show.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const oldReg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+
+      // Grant for the old client.
+      const { recordGrant } = await import("../grants.ts");
+      recordGrant(db, user.id, oldReg.client.clientId, ["vault:default:read"]);
+
+      // Re-register — fresh client_id.
+      const newReg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      expect(newReg.client.clientId).not.toBe(oldReg.client.clientId);
+
+      const getReq = new Request(
+        authorizeUrl({
+          client_id: newReg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          scope: "vault:default:read",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+        { headers: { cookie: buildSessionCookie(session.id, 86400) } },
+      );
+      const getRes = handleAuthorizeGet(db, getReq, { issuer: ISSUER });
+      expect(getRes.status).toBe(200);
+      expect(getRes.headers.get("content-type")).toContain("text/html");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("consent submit unions new scopes into existing grant", async () => {
+    // Direct check on the storage shape: grant [a, b], later approve [a, c],
+    // the row should hold {a, b, c} so a future flow asking [b] still skips.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+
+      const submit = (scope: string) =>
+        handleAuthorizePost(
+          db,
+          new Request(`${ISSUER}/oauth/authorize`, {
+            method: "POST",
+            body: new URLSearchParams({
+              __action: "consent",
+              __csrf: TEST_CSRF,
+              approve: "yes",
+              client_id: reg.client.clientId,
+              redirect_uri: "https://app.example/cb",
+              response_type: "code",
+              scope,
+              code_challenge: challenge,
+              code_challenge_method: "S256",
+            }),
+            headers: {
+              "content-type": "application/x-www-form-urlencoded",
+              cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
+            },
+          }),
+          { issuer: ISSUER },
+        );
+
+      await submit("vault:default:read vault:default:write");
+      await submit("vault:default:read scribe:transcribe");
+
+      const { findGrant } = await import("../grants.ts");
+      const grant = findGrant(db, user.id, reg.client.clientId);
+      expect(grant).not.toBeNull();
+      expect(new Set(grant?.scopes)).toEqual(
+        new Set(["vault:default:read", "vault:default:write", "scribe:transcribe"]),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});

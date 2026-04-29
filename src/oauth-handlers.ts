@@ -42,6 +42,7 @@ import {
   verifyClientSecret,
 } from "./clients.ts";
 import { CSRF_FIELD_NAME, ensureCsrfToken, verifyCsrfToken } from "./csrf.ts";
+import { isCoveredByGrant, recordGrant } from "./grants.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   RefreshTokenInsertError,
@@ -380,6 +381,22 @@ export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps):
   if (!session) {
     return htmlResponse(renderLogin({ params: parsed, csrfToken: csrf.token }), 200, extra);
   }
+
+  // Skip-consent gate (#75). If the user has previously granted every
+  // requested scope to this client, mint the auth code immediately. Two
+  // important constraints:
+  //   - Unnamed vault verbs (`vault:read`) need the picker even if a prior
+  //     grant exists, because the operator's vault choice isn't recorded
+  //     literally — grants store narrowed `vault:<name>:<verb>` scopes, so
+  //     a fresh unnamed request never matches. Force consent to re-pick.
+  //   - The grant covers `requestedScopes` exactly when every requested
+  //     scope appears in the stored set. A strict superset (client wants
+  //     something new) falls through to the consent screen.
+  const hasUnnamedVault = unnamedVaultVerbs(requestedScopes).length > 0;
+  if (!hasUnnamedVault && isCoveredByGrant(db, session.userId, client.clientId, requestedScopes)) {
+    return issueAuthCodeRedirect(db, parsed, requestedScopes, session.userId, deps);
+  }
+
   const manifest = (deps.loadServicesManifest ?? readServicesManifest)();
   const vaultNames = listVaultNames(manifest);
   return htmlResponse(
@@ -387,6 +404,34 @@ export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps):
     200,
     extra,
   );
+}
+
+/**
+ * Mint an auth code and redirect to the client's redirect_uri. Shared by
+ * the consent-submit path (`handleConsentSubmit`) and the skip-consent path
+ * in `handleAuthorizeGet` (#75). Caller is responsible for having already
+ * validated the client + redirect_uri + scopes.
+ */
+function issueAuthCodeRedirect(
+  db: Database,
+  params: AuthorizeFormParams,
+  scopes: string[],
+  userId: string,
+  deps: OAuthDeps,
+): Response {
+  const code = issueAuthCode(db, {
+    clientId: params.clientId,
+    userId,
+    redirectUri: params.redirectUri,
+    scopes,
+    codeChallenge: params.codeChallenge,
+    codeChallengeMethod: params.codeChallengeMethod,
+    now: deps.now,
+  });
+  const u = new URL(params.redirectUri);
+  u.searchParams.set("code", code.code);
+  if (params.state) u.searchParams.set("state", params.state);
+  return redirectResponse(u.toString());
 }
 
 /**
@@ -548,30 +593,13 @@ async function handleConsentSubmit(
     }
     scopes = narrowVaultScopes(scopes, pickedVault);
   }
-  // Record the grant — gives PR (d) a place to skip the consent screen on
-  // re-authorization for already-granted scopes.
-  db.prepare(
-    `INSERT OR REPLACE INTO grants (user_id, client_id, scopes, granted_at)
-     VALUES (?, ?, ?, ?)`,
-  ).run(
-    session.userId,
-    client.clientId,
-    scopes.join(" "),
-    (deps.now?.() ?? new Date()).toISOString(),
-  );
-  const code = issueAuthCode(db, {
-    clientId: client.clientId,
-    userId: session.userId,
-    redirectUri: params.redirectUri,
-    scopes,
-    codeChallenge: params.codeChallenge,
-    codeChallengeMethod: params.codeChallengeMethod,
-    now: deps.now,
-  });
-  const u = new URL(params.redirectUri);
-  u.searchParams.set("code", code.code);
-  if (params.state) u.searchParams.set("state", params.state);
-  return redirectResponse(u.toString());
+  // Record (or extend) the grant so the next /oauth/authorize for this
+  // (user, client) with these scopes — or any subset — can skip the consent
+  // screen (#75). UNION semantics: if the user previously granted [a, b, c]
+  // and now grants [a, d], the row becomes [a, b, c, d]. Subset re-flows
+  // still match.
+  recordGrant(db, session.userId, client.clientId, scopes, deps.now?.() ?? new Date());
+  return issueAuthCodeRedirect(db, params, scopes, session.userId, deps);
 }
 
 function paramsFromForm(form: Awaited<ReturnType<Request["formData"]>>): AuthorizeFormParams {
