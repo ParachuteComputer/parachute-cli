@@ -7,6 +7,7 @@ import { hubDbPath, openHubDb } from "../hub-db.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   REFRESH_TOKEN_TTL_MS,
+  RefreshTokenInsertError,
   findRefreshToken,
   signAccessToken,
   signRefreshToken,
@@ -171,6 +172,35 @@ describe("signRefreshToken", () => {
       cleanup();
     }
   });
+
+  test("throws RefreshTokenInsertError on UNIQUE jti collision (#108)", async () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const u = await createUser(db, "owner", "pw");
+      signRefreshToken(db, {
+        jti: "duplicate-jti",
+        userId: u.id,
+        clientId: "c",
+        scopes: [],
+      });
+      let caught: unknown;
+      try {
+        signRefreshToken(db, {
+          jti: "duplicate-jti",
+          userId: u.id,
+          clientId: "c",
+          scopes: [],
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RefreshTokenInsertError);
+      expect((caught as RefreshTokenInsertError).cause).toBeDefined();
+    } finally {
+      cleanup();
+    }
+  });
+
 });
 
 describe("findRefreshToken", () => {

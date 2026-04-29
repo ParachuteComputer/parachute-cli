@@ -114,25 +114,48 @@ export interface SignedRefreshToken {
   expiresAt: string;
 }
 
+/**
+ * Thrown when the `tokens` row INSERT fails — most plausibly a UNIQUE jti
+ * collision caused by a concurrent rotation racing on the same prior refresh
+ * token. Callers in the OAuth grant path catch this and surface a clean
+ * `invalid_grant` 400 instead of letting the SQLite error bubble as a 500
+ * (#108).
+ */
+export class RefreshTokenInsertError extends Error {
+  override name = "RefreshTokenInsertError";
+  override cause: unknown;
+  constructor(message: string, cause: unknown) {
+    super(message);
+    this.cause = cause;
+  }
+}
+
 export function signRefreshToken(db: Database, opts: SignRefreshTokenOpts): SignedRefreshToken {
   const token = randomBytes(32).toString("base64url");
   const refreshTokenHash = createHash("sha256").update(token).digest("hex");
   const now = opts.now?.() ?? new Date();
   const expiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS).toISOString();
   const familyId = opts.familyId ?? randomUUID();
-  db.prepare(
-    `INSERT INTO tokens (jti, user_id, client_id, scopes, refresh_token_hash, family_id, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    opts.jti,
-    opts.userId,
-    opts.clientId,
-    opts.scopes.join(" "),
-    refreshTokenHash,
-    familyId,
-    expiresAt,
-    now.toISOString(),
-  );
+  try {
+    db.prepare(
+      `INSERT INTO tokens (jti, user_id, client_id, scopes, refresh_token_hash, family_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      opts.jti,
+      opts.userId,
+      opts.clientId,
+      opts.scopes.join(" "),
+      refreshTokenHash,
+      familyId,
+      expiresAt,
+      now.toISOString(),
+    );
+  } catch (err) {
+    throw new RefreshTokenInsertError(
+      `failed to insert refresh token row: ${err instanceof Error ? err.message : String(err)}`,
+      err,
+    );
+  }
   return { token, refreshTokenHash, familyId, expiresAt };
 }
 
