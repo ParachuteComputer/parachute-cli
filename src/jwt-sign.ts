@@ -18,7 +18,7 @@
  * PR just sets up the storage shape. 30-day expiry is the *initial* TTL.
  */
 import type { Database } from "bun:sqlite";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   type JWTPayload,
   SignJWT,
@@ -94,6 +94,13 @@ export interface SignRefreshTokenOpts {
   userId: string;
   clientId: string;
   scopes: string[];
+  /**
+   * Shared identifier across a chain of rotated refresh tokens. Initial
+   * issuance (auth-code grant) omits this — a fresh family is minted.
+   * Rotation (refresh_token grant) passes the prior row's family_id so
+   * replay detection can revoke every descendant in one query (#73).
+   */
+  familyId?: string;
   now?: () => Date;
 }
 
@@ -102,6 +109,8 @@ export interface SignedRefreshToken {
   token: string;
   /** SHA-256 hex digest of `token`, stored in `tokens.refresh_token_hash`. */
   refreshTokenHash: string;
+  /** Family identifier (new UUID for initial issuance, inherited on rotation). */
+  familyId: string;
   expiresAt: string;
 }
 
@@ -110,19 +119,21 @@ export function signRefreshToken(db: Database, opts: SignRefreshTokenOpts): Sign
   const refreshTokenHash = createHash("sha256").update(token).digest("hex");
   const now = opts.now?.() ?? new Date();
   const expiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS).toISOString();
+  const familyId = opts.familyId ?? randomUUID();
   db.prepare(
-    `INSERT INTO tokens (jti, user_id, client_id, scopes, refresh_token_hash, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tokens (jti, user_id, client_id, scopes, refresh_token_hash, family_id, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.jti,
     opts.userId,
     opts.clientId,
     opts.scopes.join(" "),
     refreshTokenHash,
+    familyId,
     expiresAt,
     now.toISOString(),
   );
-  return { token, refreshTokenHash, expiresAt };
+  return { token, refreshTokenHash, familyId, expiresAt };
 }
 
 export interface ValidatedAccessToken {
@@ -157,48 +168,85 @@ export async function validateAccessToken(
     pub,
     expectedIssuer ? { issuer: expectedIssuer } : undefined,
   );
+  // RFC 7009 revocation enforcement (#73). OAuth-issued tokens carry a
+  // tokens row keyed by jti; if that row is marked revoked, the JWT is
+  // dead even though its signature + expiry are still valid. Tokens that
+  // never had a row (operator tokens, ad-hoc internal mints) bypass this
+  // check — they're not part of the OAuth grant lifecycle.
+  if (typeof payload.jti === "string") {
+    const row = findTokenRowByJti(db, payload.jti);
+    if (row?.revokedAt) throw new Error("validateAccessToken: token has been revoked");
+  }
   return { payload, kid };
 }
 
 /**
  * Convenience for the `tokens` row matching a presented refresh token. Hash
- * the plaintext, look up by hash, return the row if it exists and isn't
- * expired/revoked. PR (c) will use this in the refresh-token grant handler.
+ * the plaintext, look up by hash, return the row if it exists. The caller
+ * decides what to do with `revokedAt` — the rotation path treats a revoked
+ * row as theft (RFC 6819 §5.2.2.3).
  */
 export interface RefreshTokenRow {
   jti: string;
   userId: string;
   clientId: string;
   scopes: string[];
+  /** Family identifier — shared across rotated descendants (#73). */
+  familyId: string;
   expiresAt: string;
   revokedAt: string | null;
   createdAt: string;
 }
 
-export function findRefreshToken(db: Database, plaintext: string): RefreshTokenRow | null {
-  const refreshTokenHash = createHash("sha256").update(plaintext).digest("hex");
-  const row = db
-    .query<
-      {
-        jti: string;
-        user_id: string;
-        client_id: string;
-        scopes: string;
-        expires_at: string;
-        revoked_at: string | null;
-        created_at: string;
-      },
-      [string]
-    >("SELECT * FROM tokens WHERE refresh_token_hash = ? LIMIT 1")
-    .get(refreshTokenHash);
-  if (!row) return null;
+interface TokenRowDb {
+  jti: string;
+  user_id: string;
+  client_id: string;
+  scopes: string;
+  family_id: string | null;
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+function rowToRefreshToken(row: TokenRowDb): RefreshTokenRow {
   return {
     jti: row.jti,
     userId: row.user_id,
     clientId: row.client_id,
     scopes: row.scopes.split(" ").filter((s) => s.length > 0),
+    familyId: row.family_id ?? row.jti,
     expiresAt: row.expires_at,
     revokedAt: row.revoked_at,
     createdAt: row.created_at,
   };
+}
+
+export function findRefreshToken(db: Database, plaintext: string): RefreshTokenRow | null {
+  const refreshTokenHash = createHash("sha256").update(plaintext).digest("hex");
+  const row = db
+    .query<TokenRowDb, [string]>("SELECT * FROM tokens WHERE refresh_token_hash = ? LIMIT 1")
+    .get(refreshTokenHash);
+  return row ? rowToRefreshToken(row) : null;
+}
+
+/** Look up a tokens row by jti. Used by the revocation endpoint to find an
+ * access-token row from its JWT jti claim, and by validateAccessToken to
+ * honor revoked_at. */
+export function findTokenRowByJti(db: Database, jti: string): RefreshTokenRow | null {
+  const row = db.query<TokenRowDb, [string]>("SELECT * FROM tokens WHERE jti = ? LIMIT 1").get(jti);
+  return row ? rowToRefreshToken(row) : null;
+}
+
+/**
+ * Revoke every row in a refresh-token family. Called by the refresh handler
+ * when an already-revoked refresh token is presented again — the spec-defined
+ * theft signal (RFC 6819 §5.2.2.3). Idempotent: rows already revoked keep
+ * their existing revoked_at.
+ */
+export function revokeFamily(db: Database, familyId: string, now: Date): number {
+  const res = db
+    .prepare("UPDATE tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL")
+    .run(now.toISOString(), familyId);
+  return Number(res.changes);
 }

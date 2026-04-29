@@ -44,6 +44,7 @@ import {
   handleAuthorizeGet,
   handleAuthorizePost,
   handleRegister,
+  handleRevoke,
   handleToken,
 } from "./oauth-handlers.ts";
 import { getAllPublicKeys } from "./signing-keys.ts";
@@ -227,6 +228,14 @@ export function hubFetch(
       }
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
       return handleRegister(getDb(), req, oauthDeps(req));
+    }
+
+    if (pathname === "/oauth/revoke") {
+      if (!getDb) {
+        return new Response("hub db not configured", { status: 503 });
+      }
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      return handleRevoke(getDb(), req, oauthDeps(req));
     }
 
     if (pathname === "/vaults") {
