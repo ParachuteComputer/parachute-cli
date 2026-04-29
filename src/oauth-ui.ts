@@ -20,6 +20,7 @@
  *     module scopes that the hub doesn't know about) render verbatim.
  *   - **No JavaScript.** Entirely form-based. Submit is the only interaction.
  */
+import { renderCsrfHiddenInput } from "./csrf.ts";
 import { type ScopeExplanation, explainScope } from "./scope-explanations.ts";
 
 /** Brand palette — kept in sync with parachute.computer/style.css. */
@@ -65,6 +66,7 @@ export interface AuthorizeFormParams {
 export interface LoginViewProps {
   params: AuthorizeFormParams;
   errorMessage?: string;
+  csrfToken: string;
 }
 
 export interface ConsentViewProps {
@@ -72,6 +74,7 @@ export interface ConsentViewProps {
   clientName: string;
   clientId: string;
   scopes: string[];
+  csrfToken: string;
   /**
    * Set when the request includes one or more unnamed `vault:<verb>` scopes.
    * The consent screen renders a vault selector; on submit, the picked vault
@@ -95,7 +98,7 @@ export interface ErrorViewProps {
 }
 
 export function renderLogin(props: LoginViewProps): string {
-  const { params, errorMessage } = props;
+  const { params, errorMessage, csrfToken } = props;
   const error = errorMessage ? `<p class="error-banner">${escapeHtml(errorMessage)}</p>` : "";
   const body = `
     <div class="card">
@@ -110,6 +113,7 @@ export function renderLogin(props: LoginViewProps): string {
       ${error}
       <form method="POST" action="/oauth/authorize" class="auth-form">
         <input type="hidden" name="__action" value="login" />
+        ${renderCsrfHiddenInput(csrfToken)}
         ${renderHiddenInputs(params)}
         <label class="field">
           <span class="field-label">Username</span>
@@ -126,7 +130,7 @@ export function renderLogin(props: LoginViewProps): string {
 }
 
 export function renderConsent(props: ConsentViewProps): string {
-  const { params, clientName, clientId, scopes, vaultPicker } = props;
+  const { params, clientName, clientId, scopes, vaultPicker, csrfToken } = props;
   const scopeRows =
     scopes.length === 0
       ? `<li class="scope scope-empty">No scopes requested — the app gets a session token only.</li>`
@@ -156,6 +160,7 @@ export function renderConsent(props: ConsentViewProps): string {
       </section>
       <form method="POST" action="/oauth/authorize" class="auth-form consent-form">
         <input type="hidden" name="__action" value="consent" />
+        ${renderCsrfHiddenInput(csrfToken)}
         ${renderHiddenInputs(params)}
         ${pickerSection}
         <div class="button-row">
@@ -168,9 +173,7 @@ export function renderConsent(props: ConsentViewProps): string {
 }
 
 function renderVaultPicker(picker: VaultPicker): string {
-  const verbList = picker.unnamedVerbs
-    .map((v) => `<code>vault:${escapeHtml(v)}</code>`)
-    .join(", ");
+  const verbList = picker.unnamedVerbs.map((v) => `<code>vault:${escapeHtml(v)}</code>`).join(", ");
   if (picker.availableVaults.length === 0) {
     return `
         <section class="vault-picker vault-picker-empty">

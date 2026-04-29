@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerClient } from "../clients.ts";
+import { CSRF_COOKIE_NAME } from "../csrf.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { validateAccessToken } from "../jwt-sign.ts";
 import {
@@ -20,6 +21,8 @@ import { SESSION_TTL_MS, buildSessionCookie, createSession } from "../sessions.t
 import { createUser } from "../users.ts";
 
 const ISSUER = "https://hub.example";
+const TEST_CSRF = "csrf-test-token";
+const CSRF_COOKIE = `${CSRF_COOKIE_NAME}=${TEST_CSRF}`;
 
 async function makeDb() {
   const configDir = mkdtempSync(join(tmpdir(), "phub-oauth-"));
@@ -192,7 +195,7 @@ describe("handleAuthorizeGet", () => {
         }),
         {
           headers: {
-            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000))}`,
           },
         },
       );
@@ -327,7 +330,7 @@ describe("handleAuthorizeGet — vault picker", () => {
         }),
         {
           headers: {
-            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000))}`,
           },
         },
       );
@@ -364,7 +367,7 @@ describe("handleAuthorizeGet — vault picker", () => {
         }),
         {
           headers: {
-            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000))}`,
           },
         },
       );
@@ -399,7 +402,7 @@ describe("handleAuthorizeGet — vault picker", () => {
         }),
         {
           headers: {
-            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000))}`,
           },
         },
       );
@@ -428,6 +431,7 @@ describe("handleAuthorizePost — vault picker", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -442,7 +446,7 @@ describe("handleAuthorizePost — vault picker", () => {
         body: consentForm,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const consentRes = await handleAuthorizePost(db, consentReq, {
@@ -490,6 +494,7 @@ describe("handleAuthorizePost — vault picker", () => {
       const { challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -505,7 +510,7 @@ describe("handleAuthorizePost — vault picker", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
@@ -527,6 +532,7 @@ describe("handleAuthorizePost — vault picker", () => {
       const { challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -543,7 +549,7 @@ describe("handleAuthorizePost — vault picker", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
@@ -565,6 +571,7 @@ describe("handleAuthorizePost — vault picker", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -581,7 +588,7 @@ describe("handleAuthorizePost — vault picker", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
@@ -620,6 +627,7 @@ describe("handleAuthorizePost — login submit", () => {
       const { challenge } = makePkce();
       const form = new URLSearchParams({
         __action: "login",
+        __csrf: TEST_CSRF,
         username: "owner",
         password: "hunter2",
         client_id: reg.client.clientId,
@@ -632,7 +640,10 @@ describe("handleAuthorizePost — login submit", () => {
       const req = new Request(`${ISSUER}/oauth/authorize`, {
         method: "POST",
         body: form,
-        headers: { "content-type": "application/x-www-form-urlencoded" },
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: CSRF_COOKIE,
+        },
       });
       const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
       expect(res.status).toBe(302);
@@ -653,6 +664,7 @@ describe("handleAuthorizePost — login submit", () => {
       const { challenge } = makePkce();
       const form = new URLSearchParams({
         __action: "login",
+        __csrf: TEST_CSRF,
         username: "owner",
         password: "wrong",
         client_id: reg.client.clientId,
@@ -664,11 +676,164 @@ describe("handleAuthorizePost — login submit", () => {
       const req = new Request(`${ISSUER}/oauth/authorize`, {
         method: "POST",
         body: form,
-        headers: { "content-type": "application/x-www-form-urlencoded" },
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: CSRF_COOKIE,
+        },
       });
       const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
       expect(res.status).toBe(401);
       expect(res.headers.get("set-cookie")).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("handleAuthorizePost — CSRF protection", () => {
+  test("rejects POST when CSRF cookie is absent", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      await createUser(db, "owner", "hunter2");
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const form = new URLSearchParams({
+        __action: "login",
+        __csrf: TEST_CSRF,
+        username: "owner",
+        password: "hunter2",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const req = new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: form,
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("Invalid form submission");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rejects POST when CSRF form field is absent", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      await createUser(db, "owner", "hunter2");
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const form = new URLSearchParams({
+        __action: "login",
+        username: "owner",
+        password: "hunter2",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const req = new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: form,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: CSRF_COOKIE,
+        },
+      });
+      const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(400);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rejects POST when CSRF cookie and form field do not match", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      await createUser(db, "owner", "hunter2");
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const form = new URLSearchParams({
+        __action: "login",
+        __csrf: "different-token",
+        username: "owner",
+        password: "hunter2",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const req = new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: form,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: CSRF_COOKIE,
+        },
+      });
+      const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(400);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("GET /oauth/authorize sets CSRF cookie when none is present", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const url = authorizeUrl({
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const res = handleAuthorizeGet(db, new Request(url), { issuer: ISSUER });
+      expect(res.status).toBe(200);
+      const setCookie = res.headers.get("set-cookie") ?? "";
+      expect(setCookie).toContain(`${CSRF_COOKIE_NAME}=`);
+      expect(setCookie).toContain("HttpOnly");
+      // The rendered form must echo the same token as a hidden input.
+      const html = await res.text();
+      expect(html).toContain('name="__csrf"');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("GET /oauth/authorize reuses an existing CSRF cookie", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const url = authorizeUrl({
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const res = handleAuthorizeGet(db, new Request(url, { headers: { cookie: CSRF_COOKIE } }), {
+        issuer: ISSUER,
+      });
+      expect(res.status).toBe(200);
+      // No new cookie minted when one already exists.
+      expect(res.headers.get("set-cookie")).toBeNull();
+      const html = await res.text();
+      expect(html).toContain(`value="${TEST_CSRF}"`);
     } finally {
       cleanup();
     }
@@ -685,6 +850,7 @@ describe("handleAuthorizePost — consent submit", () => {
       const { challenge } = makePkce();
       const form = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -699,7 +865,7 @@ describe("handleAuthorizePost — consent submit", () => {
         body: form,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
@@ -724,6 +890,7 @@ describe("handleAuthorizePost — consent submit", () => {
       const { challenge } = makePkce();
       const form = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -738,7 +905,7 @@ describe("handleAuthorizePost — consent submit", () => {
         body: form,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
@@ -760,6 +927,7 @@ describe("handleAuthorizePost — consent submit", () => {
       const { challenge } = makePkce();
       const form = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "no",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -774,7 +942,7 @@ describe("handleAuthorizePost — consent submit", () => {
         body: form,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const res = await handleAuthorizePost(db, req, { issuer: ISSUER });
@@ -800,6 +968,7 @@ describe("handleToken — full OAuth dance", () => {
       // Approve consent → auth code lands in redirect_uri.
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -813,7 +982,7 @@ describe("handleToken — full OAuth dance", () => {
         body: consentForm,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const consentRes = await handleAuthorizePost(db, consentReq, { issuer: ISSUER });
@@ -882,6 +1051,7 @@ describe("handleToken — full OAuth dance", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -895,7 +1065,7 @@ describe("handleToken — full OAuth dance", () => {
         body: consentForm,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const consentRes = await handleAuthorizePost(db, consentReq, { issuer: ISSUER });
@@ -937,6 +1107,7 @@ describe("handleToken — full OAuth dance", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -950,7 +1121,7 @@ describe("handleToken — full OAuth dance", () => {
         body: consentForm,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(session.id, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
         },
       });
       const consentRes = await handleAuthorizePost(db, consentReq, { issuer: ISSUER });
@@ -1036,6 +1207,7 @@ describe("handleToken — full OAuth dance", () => {
       const { challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -1051,7 +1223,7 @@ describe("handleToken — full OAuth dance", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER },
@@ -1092,6 +1264,7 @@ describe("handleToken — full OAuth dance", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -1107,7 +1280,7 @@ describe("handleToken — full OAuth dance", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER },
@@ -1148,6 +1321,7 @@ describe("handleToken — full OAuth dance", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -1163,7 +1337,7 @@ describe("handleToken — full OAuth dance", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER },
@@ -1203,6 +1377,7 @@ describe("handleToken — full OAuth dance", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -1218,7 +1393,7 @@ describe("handleToken — full OAuth dance", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER },
@@ -1258,6 +1433,7 @@ describe("handleToken — full OAuth dance", () => {
       const { verifier, challenge } = makePkce();
       const consentForm = new URLSearchParams({
         __action: "consent",
+        __csrf: TEST_CSRF,
         approve: "yes",
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
@@ -1273,7 +1449,7 @@ describe("handleToken — full OAuth dance", () => {
           body: consentForm,
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            cookie: buildSessionCookie(session.id, 86400),
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
           },
         }),
         { issuer: ISSUER },
@@ -1363,6 +1539,7 @@ describe("handleToken — confidential client authentication (#72)", () => {
     const { verifier, challenge } = makePkce();
     const consentForm = new URLSearchParams({
       __action: "consent",
+      __csrf: TEST_CSRF,
       approve: "yes",
       client_id: clientId,
       redirect_uri: "https://app.example/cb",
@@ -1378,7 +1555,7 @@ describe("handleToken — confidential client authentication (#72)", () => {
         body: consentForm,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(sessionId, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(sessionId, 86400)}`,
         },
       }),
       { issuer: ISSUER },
@@ -2079,6 +2256,7 @@ describe("refresh-token rotation + /oauth/revoke (#73)", () => {
     const { verifier, challenge } = makePkce();
     const consentForm = new URLSearchParams({
       __action: "consent",
+      __csrf: TEST_CSRF,
       approve: "yes",
       client_id: clientId,
       redirect_uri: "https://app.example/cb",
@@ -2094,7 +2272,7 @@ describe("refresh-token rotation + /oauth/revoke (#73)", () => {
         body: consentForm,
         headers: {
           "content-type": "application/x-www-form-urlencoded",
-          cookie: buildSessionCookie(sessionId, 86400),
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(sessionId, 86400)}`,
         },
       }),
       { issuer: ISSUER },
