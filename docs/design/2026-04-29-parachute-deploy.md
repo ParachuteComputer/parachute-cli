@@ -23,7 +23,9 @@ This carves the cloud product into two deliberately separate tiers:
 - **Tier 1 (~$7.50/mo, 1 GB Fly machine).** Hub + vault + scribe + notes (and any custom UIs the user installs against that hub). The "personal knowledge layer." 1 GB is adequate for these four modules; multiple vaults are supported on one machine; storage scales by enlarging the Fly volume. **This is what `parachute deploy` v1 ships.**
 - **Tier 2 (later, ~$15–25/mo).** Paraclaw on its own Fly machine, attached to the Tier 1 hub via the OAuth/services catalog. Keeps the Tier 1 box cheap by isolating agent compute from the knowledge layer. **Paraclaw is *not* part of `parachute deploy` v1** — it ships as a follow-up once Tier 1 is in users' hands.
 
-The `--modules` default reflects Tier 1: `vault,scribe,notes`. Hub is implicit on every deployment. Paraclaw is intentionally absent from the v1 module set; passing `--modules paraclaw` should fail with a clear "Tier 2, not yet shipped" message.
+Aaron's quote names hub + vault + scribe; notes is added here because it's a thin frontend PWA whose backend is hub + vault, and its idle RSS sits within the same 1 GB envelope. The four-module Tier 1 set is consistent with the constraint Aaron called.
+
+The `--modules` default reflects Tier 1: `vault,scribe,notes`. Hub is implicit on every deployment. Paraclaw is intentionally absent from the v1 module set; passing `--modules paraclaw` will fail with a clear "Tier 2, not yet shipped" message.
 
 ## 1. Provider comparison: Fly.io vs Render
 
