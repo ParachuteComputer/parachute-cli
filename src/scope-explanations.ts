@@ -61,6 +61,10 @@ export const SCOPE_EXPLANATIONS: Record<string, ScopeExplanation> = {
     label: "Manage hub identity (user accounts, signing keys, registered OAuth clients).",
     level: "admin",
   },
+  "parachute:host:admin": {
+    label: "Provision and manage vaults across this host (create new vaults, configure cross-vault settings).",
+    level: "admin",
+  },
 };
 
 /**
