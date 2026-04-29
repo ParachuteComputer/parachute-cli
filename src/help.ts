@@ -103,7 +103,8 @@ What it does:
 
 Behavior:
   - Partial success is preserved: if one install fails, prior successful
-    installs are NOT rolled back. The exit code reflects the last failure.
+    installs are NOT rolled back. The exit code reflects the FIRST failure
+    (root cause), so subsequent fallout doesn't mask the original problem.
   - Non-TTY / piped invocations should use \`parachute install <svc>\` per
     service instead — \`setup\` assumes a terminal for the prompts.
   - Selection accepts numbers (\`1,3\`), names (\`vault, notes\`), or \`all\`.
