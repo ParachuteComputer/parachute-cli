@@ -264,7 +264,7 @@ describe("POST /vaults — orchestration", () => {
             },
             h.manifestPath,
           );
-          return { exitCode: 0, stdout: vaultCreateJson("work") };
+          return { exitCode: 0, stdout: vaultCreateJson("work"), stderr: "" };
         };
         const res = await call({
           db,
@@ -311,7 +311,7 @@ describe("POST /vaults — orchestration", () => {
             },
             h.manifestPath,
           );
-          return { exitCode: 0, stdout: "" };
+          return { exitCode: 0, stdout: "", stderr: "" };
         };
         const res = await call({
           db,
@@ -361,7 +361,11 @@ describe("POST /vaults — orchestration", () => {
             },
             h.manifestPath,
           );
-          return { exitCode: 0, stdout: vaultCreateJson("work", "pvt_supersecret") };
+          return {
+            exitCode: 0,
+            stdout: vaultCreateJson("work", "pvt_supersecret"),
+            stderr: "",
+          };
         };
         const res = await call({
           db,
@@ -408,6 +412,7 @@ describe("POST /vaults — orchestration", () => {
         const runCommand = async (): Promise<RunResult> => ({
           exitCode: 0,
           stdout: "this-is-not-json",
+          stderr: "",
         });
         const res = await call({
           db,
@@ -443,7 +448,7 @@ describe("POST /vaults — orchestration", () => {
         let runCalled = false;
         const runCommand = async (): Promise<RunResult> => {
           runCalled = true;
-          return { exitCode: 0, stdout: "" };
+          return { exitCode: 0, stdout: "", stderr: "" };
         };
         const res = await call({
           db,
@@ -467,7 +472,7 @@ describe("POST /vaults — orchestration", () => {
     }
   });
 
-  test("500 when CLI exits non-zero", async () => {
+  test("500 when CLI exits non-zero, error message includes full cmd + stderr tail", async () => {
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
@@ -483,7 +488,11 @@ describe("POST /vaults — orchestration", () => {
           },
           h.manifestPath,
         );
-        const runCommand = async (): Promise<RunResult> => ({ exitCode: 1, stdout: "" });
+        const runCommand = async (): Promise<RunResult> => ({
+          exitCode: 1,
+          stdout: "",
+          stderr: "vault create failed: name 'work' already exists\n",
+        });
         const res = await call({
           db,
           manifestPath: h.manifestPath,
@@ -491,6 +500,11 @@ describe("POST /vaults — orchestration", () => {
           runCommand,
         });
         expect(res.status).toBe(500);
+        const body = (await res.json()) as { error_description: string };
+        // #97 NIT: full cmd in the error message (cmd.join), not just argv[0..1].
+        expect(body.error_description).toContain("parachute-vault create work --json");
+        // #97 NIT: stderr tail surfaced so the operator can see why.
+        expect(body.error_description).toContain("name 'work' already exists");
       } finally {
         db.close();
       }
@@ -518,6 +532,7 @@ describe("POST /vaults — orchestration", () => {
         const runCommand = async (): Promise<RunResult> => ({
           exitCode: 0,
           stdout: vaultCreateJson("work"),
+          stderr: "",
         });
         const res = await call({
           db,

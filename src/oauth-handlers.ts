@@ -44,7 +44,11 @@ import {
   signRefreshToken,
 } from "./jwt-sign.ts";
 import { type AuthorizeFormParams, renderConsent, renderError, renderLogin } from "./oauth-ui.ts";
-import { FIRST_PARTY_SCOPES } from "./scope-explanations.ts";
+import {
+  FIRST_PARTY_SCOPES,
+  NON_REQUESTABLE_SCOPES,
+  isRequestableScope,
+} from "./scope-explanations.ts";
 import { findUnknownScopes, loadDeclaredScopes } from "./scope-registry.ts";
 import {
   type ServicesManifest,
@@ -234,8 +238,17 @@ export function authorizationServerMetadata(deps: OAuthDeps): Response {
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-    scopes_supported: FIRST_PARTY_SCOPES,
+    // Operator-only scopes (NON_REQUESTABLE_SCOPES) are intentionally absent
+    // — RFC 8414 §2 frames `scopes_supported` as "the OAuth 2.0 [...] scope
+    // values that this authorization server supports" for clients to request.
+    // Advertising what we always reject would mislead clients.
+    scopes_supported: FIRST_PARTY_SCOPES.filter(isRequestableScope),
   });
+}
+
+/** Find any requested scopes that the public flow refuses to mint. */
+function findNonRequestableScopes(scopes: readonly string[]): string[] {
+  return scopes.filter((s) => NON_REQUESTABLE_SCOPES.has(s));
 }
 
 // --- /oauth/authorize ------------------------------------------------------
@@ -308,6 +321,21 @@ export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps):
       "Redirect mismatch",
       "The redirect_uri does not match any URI registered for this app.",
       400,
+    );
+  }
+
+  // Operator-only scope gate (#96). Reject any request that names a scope
+  // we'll never mint via this flow — `parachute:host:admin` and friends.
+  // Per RFC 6749 §4.1.2.1, errors that aren't redirect-uri-related are
+  // delivered by redirect with `error=invalid_scope`.
+  const requestedScopes = parsed.scope.split(" ").filter((s) => s.length > 0);
+  const blocked = findNonRequestableScopes(requestedScopes);
+  if (blocked.length > 0) {
+    return oauthErrorRedirect(
+      parsed.redirectUri,
+      "invalid_scope",
+      `requested scopes are not available via the public authorization endpoint: ${blocked.join(", ")}`,
+      parsed.state,
     );
   }
 
@@ -415,6 +443,18 @@ async function handleConsentSubmit(
     );
   }
   let scopes = params.scope.split(" ").filter((s) => s.length > 0);
+  // Defense-in-depth (#96). The GET handler already rejects non-requestable
+  // scopes before consent renders, but a hand-crafted POST could carry one
+  // anyway — block it here too.
+  const blockedHere = findNonRequestableScopes(scopes);
+  if (blockedHere.length > 0) {
+    return oauthErrorRedirect(
+      params.redirectUri,
+      "invalid_scope",
+      `requested scopes are not available via the public authorization endpoint: ${blockedHere.join(", ")}`,
+      params.state,
+    );
+  }
   // Vault picker (Q1 of the vault-config-and-scopes design): an unnamed
   // `vault:<verb>` scope is ambiguous about which vault it grants access to.
   // Force the operator to pick before the JWT is minted, then rewrite the
@@ -803,8 +843,6 @@ function consentProps(client: OAuthClient, params: AuthorizeFormParams, vaultNam
     clientName: client.clientName ?? client.clientId,
     scopes,
     vaultPicker:
-      unnamedVerbs.length > 0
-        ? { unnamedVerbs, availableVaults: vaultNames }
-        : undefined,
+      unnamedVerbs.length > 0 ? { unnamedVerbs, availableVaults: vaultNames } : undefined,
   };
 }
