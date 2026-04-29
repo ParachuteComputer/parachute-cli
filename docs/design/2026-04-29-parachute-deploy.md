@@ -12,6 +12,21 @@ Today Parachute is self-hosted: the user installs hub + their chosen spokes on a
 
 This preserves Parachute's open-source promise (your data, your machine, even when "your machine" is rented from Fly) while removing the "I have to set up Linux" gate. The migration story (move data off the VM later) is deliberately out of scope for v1 — we stand up new boxes and iterate from there.
 
+## Tiers
+
+Aaron's call (2026-04-29):
+
+> "1GB is enough RAM for hub + vault + scribe which is really the first offering. Paraclaw is probably a larger offering."
+
+This carves the cloud product into two deliberately separate tiers:
+
+- **Tier 1 (~$7.50/mo, 1 GB Fly machine).** Hub + vault + scribe + notes (and any custom UIs the user installs against that hub). The "personal knowledge layer." 1 GB is adequate for these four modules; multiple vaults are supported on one machine; storage scales by enlarging the Fly volume. **This is what `parachute deploy` v1 ships.**
+- **Tier 2 (later, ~$15–25/mo).** Paraclaw on its own Fly machine, attached to the Tier 1 hub via the OAuth/services catalog. Keeps the Tier 1 box cheap by isolating agent compute from the knowledge layer. **Paraclaw is *not* part of `parachute deploy` v1** — it ships as a follow-up once Tier 1 is in users' hands.
+
+Aaron's quote names hub + vault + scribe; notes is added here because it's a thin frontend PWA whose backend is hub + vault, and its idle RSS sits within the same 1 GB envelope. The four-module Tier 1 set is consistent with the constraint Aaron called.
+
+The `--modules` default reflects Tier 1: `vault,scribe,notes`. Hub is implicit on every deployment. Paraclaw is intentionally absent from the v1 module set; passing `--modules paraclaw` will fail with a clear "Tier 2, not yet shipped" message.
+
 ## 1. Provider comparison: Fly.io vs Render
 
 Both providers were evaluated against the target shape: **one persistent VM, ~1 GB RAM, 1–2 shared vCPU, 10–20 GB persistent disk, always-on, ~$10/mo**. Pricing pulled live from each provider's docs on 2026-04-29.
@@ -89,7 +104,7 @@ Options:
   --region <id>               Provider region code (fly: ord, ams, syd…). Default: nearest by ping or US-East.
   --size <small|medium>       small = 1 GB (Fly default), medium = 2 GB. Default: small.
   --domain <fqdn>             Custom domain. If omitted, use provider's default subdomain.
-  --modules <list>            Comma-separated spokes to install. Default: vault,scribe.
+  --modules <list>            Comma-separated spokes to install. Default: vault,scribe,notes (Tier 1).
   --token <provider-token>    Provider API token. If omitted, prompt interactively.
   --name <slug>               Deployment name. Default: parachute-<random>.
 ```
@@ -158,7 +173,7 @@ Order of work, not the work itself.
 - Encrypted provider-token storage (paste-per-deploy v1).
 - Custom-domain DNS automation (user does their own DNS for v1).
 
-**Sequencing.** PR1 = provider-client interface + FlyClient. PR2 = first-boot script + Parachute deploy image. PR3 = `parachute deploy` command + deployment record. PR4 = sibling subcommands. Each PR is gated on its predecessor; the whole sequence is ~2 weeks of focused work.
+**Sequencing.** PR1 = provider-client interface + FlyClient. PR2 = first-boot script + Parachute deploy image (Tier 1: hub + vault + scribe + notes only). PR3 = `parachute deploy` command + deployment record. PR4 = sibling subcommands. Each PR is gated on its predecessor; the whole sequence is ~2 weeks of focused work. Paraclaw (Tier 2) is excluded from this sequence and ships separately.
 
 ## Open questions
 
