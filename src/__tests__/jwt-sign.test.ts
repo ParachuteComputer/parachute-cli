@@ -7,6 +7,7 @@ import { hubDbPath, openHubDb } from "../hub-db.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   REFRESH_TOKEN_TTL_MS,
+  RefreshTokenInsertError,
   findRefreshToken,
   signAccessToken,
   signRefreshToken,
@@ -167,6 +168,86 @@ describe("signRefreshToken", () => {
         now: () => fixed,
       });
       expect(new Date(expiresAt).getTime() - fixed.getTime()).toBe(REFRESH_TOKEN_TTL_MS);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("throws RefreshTokenInsertError on UNIQUE jti collision (#108)", async () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const u = await createUser(db, "owner", "pw");
+      signRefreshToken(db, {
+        jti: "duplicate-jti",
+        userId: u.id,
+        clientId: "c",
+        scopes: [],
+      });
+      let caught: unknown;
+      try {
+        signRefreshToken(db, {
+          jti: "duplicate-jti",
+          userId: u.id,
+          clientId: "c",
+          scopes: [],
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RefreshTokenInsertError);
+      expect((caught as RefreshTokenInsertError).cause).toBeDefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("when wrapped in db.transaction() the UPDATE rolls back on INSERT failure (#107)", async () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const u = await createUser(db, "owner", "pw");
+      // Seed the row that simulates the pre-rotation refresh token.
+      signRefreshToken(db, {
+        jti: "old-jti",
+        userId: u.id,
+        clientId: "c",
+        scopes: [],
+      });
+      // Pre-insert a row at the new jti so the rotation INSERT will collide.
+      signRefreshToken(db, {
+        jti: "new-jti",
+        userId: u.id,
+        clientId: "c",
+        scopes: [],
+      });
+
+      // Mirror the rotation: revoke old + insert new, atomically.
+      let caught: unknown;
+      try {
+        db.transaction(() => {
+          db.prepare("UPDATE tokens SET revoked_at = ? WHERE jti = ?").run(
+            new Date().toISOString(),
+            "old-jti",
+          );
+          signRefreshToken(db, {
+            jti: "new-jti",
+            userId: u.id,
+            clientId: "c",
+            scopes: [],
+          });
+        })();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RefreshTokenInsertError);
+
+      // The UPDATE on "old-jti" must have been rolled back: the row
+      // is still active, so the legitimate client can retry the refresh.
+      const row = db
+        .query<{ revoked_at: string | null }, [string]>(
+          "SELECT revoked_at FROM tokens WHERE jti = ?",
+        )
+        .get("old-jti");
+      expect(row?.revoked_at).toBeNull();
     } finally {
       cleanup();
     }
