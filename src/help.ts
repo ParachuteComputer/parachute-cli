@@ -13,6 +13,7 @@ Usage:
   parachute start   [service]       start all services (or one) in the background
   parachute stop    [service]       stop all services (or one) — SIGTERM then SIGKILL
   parachute restart [service]       stop + start
+  parachute upgrade [service]       pull / re-install + restart (skips if no changes)
   parachute logs <service> [-f]     print service logs; -f to tail
   parachute expose tailnet [off]    HTTPS across your tailnet (supported)
   parachute expose public  [off]    HTTPS on the public internet (exploratory)
@@ -283,6 +284,39 @@ Usage:
 
 What it does:
   Equivalent to \`parachute stop <svc> && parachute start <svc>\`.
+`;
+}
+
+export function upgradeHelp(): string {
+  return `parachute upgrade — pull / re-install + restart in one step
+
+Usage:
+  parachute upgrade                 upgrade every installed service
+  parachute upgrade <service>       upgrade just that one
+  parachute upgrade [svc] --tag <name>
+                                    npm-installed services only — pin a dist-tag
+                                    (default: latest). Ignored when bun-linked.
+
+What it does:
+  Detects whether the target service is bun-linked from a local checkout
+  (the dev-mode shape) or npm-installed from a published artifact:
+
+    bun-linked  git pull --ff-only in the checkout, bun install if
+                package.json/bun.lock changed, bun run build for frontend
+                modules with a build script, then \`parachute restart\`.
+                Refuses on a dirty working tree — commit or stash first.
+
+    npm         bun add -g <pkg>@<tag>, then \`parachute restart\` if the
+                installed version actually moved.
+
+  Idempotent: if the source didn't change (HEAD unchanged after pull, or
+  package.json version unchanged after bun add -g), the restart is skipped.
+  Re-running on an up-to-date install is a fast no-op.
+
+Examples:
+  parachute upgrade                 sweep every installed service
+  parachute upgrade vault           just vault
+  parachute upgrade vault --tag rc  pin the rc dist-tag (npm path only)
 `;
 }
 
