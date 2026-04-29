@@ -36,6 +36,12 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  handleAdminConfigGet,
+  handleAdminConfigPost,
+  handleAdminLoginGet,
+  handleAdminLoginPost,
+} from "./admin-handlers.ts";
 import { handleCreateVault } from "./admin-vaults.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
 import { pemToJwk } from "./jwks.ts";
@@ -246,6 +252,29 @@ export function hubFetch(
         db: getDb(),
         issuer: oauthDeps(req).issuer,
       });
+    }
+
+    if (pathname === "/admin/login") {
+      if (!getDb) return new Response("hub db not configured", { status: 503 });
+      if (req.method === "GET") return handleAdminLoginGet(getDb(), req);
+      if (req.method === "POST") return handleAdminLoginPost(getDb(), req);
+      return new Response("method not allowed", { status: 405 });
+    }
+
+    if (pathname === "/admin/config") {
+      if (!getDb) return new Response("hub db not configured", { status: 503 });
+      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+      return handleAdminConfigGet(getDb(), req);
+    }
+
+    if (pathname.startsWith("/admin/config/")) {
+      if (!getDb) return new Response("hub db not configured", { status: 503 });
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      const name = decodeURIComponent(pathname.slice("/admin/config/".length));
+      if (!name || name.includes("/")) {
+        return new Response("not found", { status: 404 });
+      }
+      return handleAdminConfigPost(getDb(), req, name);
     }
 
     return new Response("not found", { status: 404 });
