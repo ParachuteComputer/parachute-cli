@@ -1347,6 +1347,399 @@ describe("handleToken — full OAuth dance", () => {
   });
 });
 
+// closes #72 — RFC 6749 §3.2.1 + §2.3.1: confidential clients must
+// authenticate at /oauth/token via Authorization: Basic header (preferred)
+// or form-body client_secret. Public clients (PKCE-only) are unaffected
+// because PKCE replaces the secret for them.
+describe("handleToken — confidential client authentication (#72)", () => {
+  // Helper: drive the consent screen for `clientId` to a fresh auth code.
+  // Returns the code + the verifier so the caller can hit /oauth/token.
+  async function consentAndGetCode(
+    db: Awaited<ReturnType<typeof makeDb>>["db"],
+    clientId: string,
+    sessionId: string,
+  ): Promise<{ code: string; verifier: string }> {
+    const { verifier, challenge } = makePkce();
+    const consentForm = new URLSearchParams({
+      __action: "consent",
+      approve: "yes",
+      client_id: clientId,
+      redirect_uri: "https://app.example/cb",
+      response_type: "code",
+      scope: "vault:default:read",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    const consentRes = await handleAuthorizePost(
+      db,
+      new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: consentForm,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: buildSessionCookie(sessionId, 86400),
+        },
+      }),
+      { issuer: ISSUER },
+    );
+    const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+    return { code: code ?? "", verifier };
+  }
+
+  function tokenRequest(form: URLSearchParams, headers: Record<string, string> = {}): Request {
+    return new Request(`${ISSUER}/oauth/token`, {
+      method: "POST",
+      body: form,
+      headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    });
+  }
+
+  test("authorization_code: confidential client + correct secret in form body → 200", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      expect(reg.clientSecret).not.toBeNull();
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+        client_secret: reg.clientSecret ?? "",
+      });
+      const res = await handleToken(db, tokenRequest(tokenForm), {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorization_code: confidential client + correct secret in Authorization: Basic header → 200", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+        // No client_secret in the body — the header carries it.
+      });
+      // RFC 6749 §2.3.1 requires form-encoding the credentials before base64.
+      const basic = btoa(
+        `${encodeURIComponent(reg.client.clientId)}:${encodeURIComponent(reg.clientSecret ?? "")}`,
+      );
+      const res = await handleToken(
+        db,
+        tokenRequest(tokenForm, { authorization: `Basic ${basic}` }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(res.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorization_code: confidential client + wrong secret → 401 + WWW-Authenticate Basic", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+        client_secret: "definitely-not-the-real-secret",
+      });
+      const res = await handleToken(db, tokenRequest(tokenForm), { issuer: ISSUER });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toMatch(/^Basic\b/i);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_client");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorization_code: confidential client + missing secret → 401 + WWW-Authenticate Basic", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      // No client_secret in form, no Authorization header.
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const res = await handleToken(db, tokenRequest(tokenForm), { issuer: ISSUER });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toMatch(/^Basic\b/i);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_client");
+      expect(err.error_description).toMatch(/required/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorization_code: Basic header client_id mismatch with body → 401", async () => {
+    // Defensive: a header authenticating as one client while the body claims
+    // another is a confused or hostile request — refuse rather than guess.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const basic = btoa(
+        `${encodeURIComponent("some-other-client")}:${encodeURIComponent(reg.clientSecret ?? "")}`,
+      );
+      const res = await handleToken(
+        db,
+        tokenRequest(tokenForm, { authorization: `Basic ${basic}` }),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(401);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_client");
+      expect(err.error_description).toMatch(/header client_id/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorization_code: public client unaffected (no secret required) → 200", async () => {
+    // Regression: PKCE-only clients must keep working with no client_secret.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      expect(reg.clientSecret).toBeNull();
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const res = await handleToken(db, tokenRequest(tokenForm), {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refresh_token: confidential client + correct secret rotates the pair", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      // Mint an initial refresh token (one full dance with the secret).
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const initialTokenRes = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            code_verifier: verifier,
+            client_secret: reg.clientSecret ?? "",
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const initial = (await initialTokenRes.json()) as { refresh_token: string };
+
+      // Refresh with secret → 200.
+      const refreshForm = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: initial.refresh_token,
+        client_id: reg.client.clientId,
+        client_secret: reg.clientSecret ?? "",
+      });
+      const refreshRes = await handleToken(db, tokenRequest(refreshForm), {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(refreshRes.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refresh_token: confidential client + missing secret → 401", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const initialTokenRes = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            code_verifier: verifier,
+            client_secret: reg.clientSecret ?? "",
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const initial = (await initialTokenRes.json()) as { refresh_token: string };
+
+      const refreshForm = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: initial.refresh_token,
+        client_id: reg.client.clientId,
+        // No client_secret.
+      });
+      const res = await handleToken(db, tokenRequest(refreshForm), { issuer: ISSUER });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toMatch(/^Basic\b/i);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_client");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refresh_token: confidential client + wrong secret → 401", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const initialTokenRes = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            code_verifier: verifier,
+            client_secret: reg.clientSecret ?? "",
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const initial = (await initialTokenRes.json()) as { refresh_token: string };
+
+      const refreshForm = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: initial.refresh_token,
+        client_id: reg.client.clientId,
+        client_secret: "wrong-secret",
+      });
+      const res = await handleToken(db, tokenRequest(refreshForm), { issuer: ISSUER });
+      expect(res.status).toBe(401);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_client");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refresh_token: public client unaffected (no secret required) → 200", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { code, verifier } = await consentAndGetCode(db, reg.client.clientId, session.id);
+      const initialTokenRes = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            code_verifier: verifier,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const initial = (await initialTokenRes.json()) as { refresh_token: string };
+
+      const refreshForm = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: initial.refresh_token,
+        client_id: reg.client.clientId,
+      });
+      const res = await handleToken(db, tokenRequest(refreshForm), {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 describe("handleRegister — RFC 7591 DCR", () => {
   test("registers a public client and returns 201 with client_id (no secret)", async () => {
     const { db, cleanup } = await makeDb();

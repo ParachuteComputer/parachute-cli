@@ -36,6 +36,7 @@ import {
   isValidRedirectUri,
   registerClient,
   requireRegisteredRedirectUri,
+  verifyClientSecret,
 } from "./clients.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
@@ -539,16 +540,107 @@ function authorizeParamsToQuery(p: AuthorizeFormParams): Record<string, string> 
 // --- /oauth/token ----------------------------------------------------------
 
 /**
+ * Extract a presented client_secret from either the `Authorization: Basic`
+ * header (RFC 6749 §2.3.1 preferred) or the form-body `client_secret`. If
+ * both are present, the header wins — the spec says clients SHOULD use one
+ * mechanism per request; when they don't, picking deterministically (header
+ * = the more-secure form, harder to log accidentally than a body field)
+ * keeps the auth gate predictable.
+ *
+ * Returns `{ clientId, clientSecret }` so callers can cross-check the body's
+ * `client_id` against the header's. RFC §2.3.1 doesn't explicitly require
+ * matching, but a mismatch is a client bug we shouldn't paper over.
+ *
+ * Returns null secret when no credential was presented at all.
+ */
+function extractClientCredentials(
+  req: Request,
+  form: Awaited<ReturnType<Request["formData"]>>,
+): { headerClientId: string | null; clientSecret: string | null } {
+  const auth = req.headers.get("authorization");
+  // RFC 7235 §2.1 — auth-scheme is case-insensitive ("Basic" / "basic" / "BASIC").
+  if (auth && /^basic\s+/i.test(auth)) {
+    try {
+      const decoded = atob(auth.replace(/^basic\s+/i, "").trim());
+      const colon = decoded.indexOf(":");
+      if (colon >= 0) {
+        // RFC 6749 §2.3.1 mandates form-encoding the basic-auth values
+        // (because client_id may legitimately contain `:`). Decode them
+        // back so a client that registered the spec-correct way works.
+        const headerClientId = decodeURIComponent(decoded.slice(0, colon));
+        const clientSecret = decodeURIComponent(decoded.slice(colon + 1));
+        return { headerClientId, clientSecret };
+      }
+    } catch {
+      // Malformed base64 → treat as no header credential, fall through to
+      // form body. The auth gate will reject if the client is confidential
+      // and didn't also send a body secret.
+    }
+  }
+  const bodySecret = form.get("client_secret");
+  return {
+    headerClientId: null,
+    clientSecret: typeof bodySecret === "string" && bodySecret.length > 0 ? bodySecret : null,
+  };
+}
+
+/**
+ * 401 response shape for token-endpoint client-auth failures. WWW-Authenticate
+ * declares Basic per RFC 6749 §5.2 + RFC 7235 — it tells a compliant client
+ * "this endpoint accepts Basic auth" so it can retry with credentials.
+ */
+function clientAuthFailure(description: string): Response {
+  return jsonResponse({ error: "invalid_client", error_description: description }, 401, {
+    "www-authenticate": 'Basic realm="hub"',
+  });
+}
+
+/**
+ * Gate the per-grant handlers behind RFC 6749 §3.2.1 client authentication.
+ * Public clients (clientSecretHash == null) pass through unchanged — PKCE
+ * already binds their auth-code redemption. Confidential clients must
+ * present a matching client_secret via Basic header or form body.
+ *
+ * Returns null on success; a 401 Response on failure for the caller to
+ * return directly.
+ */
+function authenticateClient(
+  client: OAuthClient,
+  req: Request,
+  form: Awaited<ReturnType<Request["formData"]>>,
+  bodyClientId: string,
+): Response | null {
+  if (!client.clientSecretHash) return null; // public client: no secret required
+  const { headerClientId, clientSecret } = extractClientCredentials(req, form);
+  if (!clientSecret) {
+    return clientAuthFailure("client_secret required for confidential client");
+  }
+  // If the Basic header was used, its client_id must match the body's —
+  // RFC 6749 §3.2.1 says the auth identifies the client; a body claiming
+  // a different client_id is a bug or an attempt to confuse the gate.
+  if (headerClientId !== null && headerClientId !== bodyClientId) {
+    return clientAuthFailure("authorization header client_id does not match request body");
+  }
+  if (!verifyClientSecret(client, clientSecret)) {
+    return clientAuthFailure("client_secret mismatch");
+  }
+  return null;
+}
+
+/**
  * POST /oauth/token — supports `authorization_code` + `refresh_token`.
- * Confidential clients may pass `client_secret` in the body; for public
- * clients the binding is PKCE alone. Errors return the RFC 6749 §5.2
- * shape: 400 + `{error, error_description}`.
+ * Confidential clients (registered with a client_secret) must authenticate
+ * via the Authorization: Basic header or a form-body `client_secret` per
+ * RFC 6749 §2.3.1; public clients (PKCE-only) need no client_secret because
+ * PKCE already binds the redemption. Errors return the RFC 6749 §5.2 shape:
+ * 400/401 + `{error, error_description}`.
  */
 export async function handleToken(db: Database, req: Request, deps: OAuthDeps): Promise<Response> {
   const form = await req.formData();
   const grantType = String(form.get("grant_type") ?? "");
-  if (grantType === "authorization_code") return await handleTokenAuthorizationCode(db, form, deps);
-  if (grantType === "refresh_token") return await handleTokenRefresh(db, form, deps);
+  if (grantType === "authorization_code")
+    return await handleTokenAuthorizationCode(db, req, form, deps);
+  if (grantType === "refresh_token") return await handleTokenRefresh(db, req, form, deps);
   return jsonResponse(
     {
       error: "unsupported_grant_type",
@@ -560,6 +652,7 @@ export async function handleToken(db: Database, req: Request, deps: OAuthDeps): 
 
 async function handleTokenAuthorizationCode(
   db: Database,
+  req: Request,
   form: Awaited<ReturnType<Request["formData"]>>,
   deps: OAuthDeps,
 ): Promise<Response> {
@@ -577,6 +670,8 @@ async function handleTokenAuthorizationCode(
   if (!client) {
     return jsonResponse({ error: "invalid_client", error_description: "unknown client_id" }, 401);
   }
+  const authFailure = authenticateClient(client, req, form, clientId);
+  if (authFailure) return authFailure;
   let redeemed: ReturnType<typeof redeemAuthCode>;
   try {
     redeemed = redeemAuthCode(db, { code, clientId, redirectUri, codeVerifier, now: deps.now });
@@ -633,6 +728,7 @@ async function handleTokenAuthorizationCode(
 
 async function handleTokenRefresh(
   db: Database,
+  req: Request,
   form: Awaited<ReturnType<Request["formData"]>>,
   deps: OAuthDeps,
 ): Promise<Response> {
@@ -648,6 +744,8 @@ async function handleTokenRefresh(
   if (!client) {
     return jsonResponse({ error: "invalid_client", error_description: "unknown client_id" }, 401);
   }
+  const authFailure = authenticateClient(client, req, form, clientId);
+  if (authFailure) return authFailure;
   const row = findRefreshToken(db, refreshToken);
   if (!row) {
     return jsonResponse(
