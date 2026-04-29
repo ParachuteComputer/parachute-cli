@@ -41,6 +41,7 @@ import {
   requireRegisteredRedirectUri,
   verifyClientSecret,
 } from "./clients.ts";
+import { CSRF_FIELD_NAME, ensureCsrfToken, verifyCsrfToken } from "./csrf.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   findRefreshToken,
@@ -373,12 +374,18 @@ export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps):
 
   const sessionId = parseSessionCookie(req.headers.get("cookie"));
   const session = sessionId ? findSession(db, sessionId) : null;
+  const csrf = ensureCsrfToken(req);
+  const extra: Record<string, string> = csrf.setCookie ? { "set-cookie": csrf.setCookie } : {};
   if (!session) {
-    return htmlResponse(renderLogin({ params: parsed }));
+    return htmlResponse(renderLogin({ params: parsed, csrfToken: csrf.token }), 200, extra);
   }
   const manifest = (deps.loadServicesManifest ?? readServicesManifest)();
   const vaultNames = listVaultNames(manifest);
-  return htmlResponse(renderConsent(consentProps(client, parsed, vaultNames)));
+  return htmlResponse(
+    renderConsent(consentProps(client, parsed, vaultNames, csrf.token)),
+    200,
+    extra,
+  );
 }
 
 /**
@@ -396,9 +403,23 @@ export async function handleAuthorizePost(
   deps: OAuthDeps,
 ): Promise<Response> {
   const form = await req.formData();
+  const formCsrf = form.get(CSRF_FIELD_NAME);
+  if (!verifyCsrfToken(req, typeof formCsrf === "string" ? formCsrf : null)) {
+    // Same response shape for missing-cookie, missing-form-field, and mismatch
+    // — we don't want to leak which side failed. The browser can recover by
+    // GETting /oauth/authorize again, which mints a fresh cookie + token.
+    return htmlError(
+      "Invalid form submission",
+      "The form's CSRF token did not match. Reload the page and try again.",
+      400,
+    );
+  }
+  // Token is already verified above; reuse the form value for re-rendering
+  // any error views so the next submit keeps the same cookie/form pairing.
+  const csrfToken = typeof formCsrf === "string" ? formCsrf : "";
   const action = String(form.get("__action") ?? "");
-  if (action === "login") return await handleLoginSubmit(db, req, form, deps);
-  if (action === "consent") return await handleConsentSubmit(db, req, form, deps);
+  if (action === "login") return await handleLoginSubmit(db, req, form, deps, csrfToken);
+  if (action === "consent") return await handleConsentSubmit(db, req, form, deps, csrfToken);
   return htmlError("Invalid form submission", "Unknown form action.", 400);
 }
 
@@ -407,23 +428,30 @@ async function handleLoginSubmit(
   _req: Request,
   form: Awaited<ReturnType<Request["formData"]>>,
   _deps: OAuthDeps,
+  csrfToken: string,
 ): Promise<Response> {
   const username = String(form.get("username") ?? "");
   const password = String(form.get("password") ?? "");
   const params = paramsFromForm(form);
   if (!username || !password) {
     return htmlResponse(
-      renderLogin({ params, errorMessage: "Username and password are required." }),
+      renderLogin({ params, csrfToken, errorMessage: "Username and password are required." }),
       400,
     );
   }
   const user = getUserByUsername(db, username);
   if (!user) {
-    return htmlResponse(renderLogin({ params, errorMessage: "Invalid credentials." }), 401);
+    return htmlResponse(
+      renderLogin({ params, csrfToken, errorMessage: "Invalid credentials." }),
+      401,
+    );
   }
   const ok = await verifyPassword(user, password);
   if (!ok) {
-    return htmlResponse(renderLogin({ params, errorMessage: "Invalid credentials." }), 401);
+    return htmlResponse(
+      renderLogin({ params, csrfToken, errorMessage: "Invalid credentials." }),
+      401,
+    );
   }
   const session = createSession(db, { userId: user.id });
   const cookie = buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000));
@@ -441,6 +469,7 @@ async function handleConsentSubmit(
   req: Request,
   form: Awaited<ReturnType<Request["formData"]>>,
   deps: OAuthDeps,
+  csrfToken: string,
 ): Promise<Response> {
   const params = paramsFromForm(form);
   const approve = String(form.get("approve") ?? "") === "yes";
@@ -449,7 +478,11 @@ async function handleConsentSubmit(
   if (!session) {
     // Session expired between login and consent submit. Send back to login.
     return htmlResponse(
-      renderLogin({ params, errorMessage: "Your session expired — please sign in again." }),
+      renderLogin({
+        params,
+        csrfToken,
+        errorMessage: "Your session expired — please sign in again.",
+      }),
       401,
     );
   }
@@ -1096,7 +1129,12 @@ export async function handleRegister(
   return jsonResponse(respBody, 201);
 }
 
-function consentProps(client: OAuthClient, params: AuthorizeFormParams, vaultNames: string[]) {
+function consentProps(
+  client: OAuthClient,
+  params: AuthorizeFormParams,
+  vaultNames: string[],
+  csrfToken: string,
+) {
   const scopes = params.scope.split(" ").filter((s) => s.length > 0);
   const unnamedVerbs = unnamedVaultVerbs(scopes);
   return {
@@ -1104,6 +1142,7 @@ function consentProps(client: OAuthClient, params: AuthorizeFormParams, vaultNam
     clientId: client.clientId,
     clientName: client.clientName ?? client.clientId,
     scopes,
+    csrfToken,
     vaultPicker:
       unnamedVerbs.length > 0 ? { unnamedVerbs, availableVaults: vaultNames } : undefined,
   };

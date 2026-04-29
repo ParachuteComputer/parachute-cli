@@ -18,6 +18,8 @@ const PARAMS: AuthorizeFormParams = {
   state: "xyz",
 };
 
+const CSRF = "csrf-token-fixture";
+
 describe("escapeHtml", () => {
   test("escapes the five HTML metacharacters", () => {
     expect(escapeHtml(`<script>alert("x&y'z")</script>`)).toBe(
@@ -52,7 +54,7 @@ describe("renderHiddenInputs", () => {
 
 describe("renderLogin", () => {
   test("contains form, hidden inputs, and a Sign in submit", () => {
-    const html = renderLogin({ params: PARAMS });
+    const html = renderLogin({ params: PARAMS, csrfToken: CSRF });
     expect(html).toContain('action="/oauth/authorize"');
     expect(html).toContain('name="__action" value="login"');
     expect(html).toContain('name="username"');
@@ -65,13 +67,17 @@ describe("renderLogin", () => {
   });
 
   test("renders an error banner when errorMessage is set", () => {
-    const html = renderLogin({ params: PARAMS, errorMessage: "bad pw" });
+    const html = renderLogin({ params: PARAMS, csrfToken: CSRF, errorMessage: "bad pw" });
     expect(html).toContain("error-banner");
     expect(html).toContain("bad pw");
   });
 
   test("escapes the error message", () => {
-    const html = renderLogin({ params: PARAMS, errorMessage: "<script>x</script>" });
+    const html = renderLogin({
+      params: PARAMS,
+      csrfToken: CSRF,
+      errorMessage: "<script>x</script>",
+    });
     expect(html).not.toContain("<script>x</script>");
     expect(html).toContain("&lt;script&gt;");
   });
@@ -81,6 +87,7 @@ describe("renderConsent", () => {
   test("shows client name, client_id, and a row per scope", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "client-abc",
       clientName: "MyApp",
       scopes: ["vault:read", "vault:admin"],
@@ -98,6 +105,7 @@ describe("renderConsent", () => {
   test("highlights admin scopes with a danger color and badge", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: ["vault:admin"],
@@ -109,6 +117,7 @@ describe("renderConsent", () => {
   test("renders unknown scopes verbatim with a muted explanation", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: ["mystery.module:do-thing"],
@@ -121,6 +130,7 @@ describe("renderConsent", () => {
   test("renders a placeholder when no scopes are requested", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: [],
@@ -132,6 +142,7 @@ describe("renderConsent", () => {
   test("includes Approve and Deny buttons posting __action=consent", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: [],
@@ -144,6 +155,7 @@ describe("renderConsent", () => {
   test("escapes a hostile client name", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "<img src=x onerror=alert(1)>",
       scopes: [],
@@ -155,6 +167,7 @@ describe("renderConsent", () => {
   test("renders a vault picker when vaultPicker is set", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: ["vault:read"],
@@ -170,6 +183,7 @@ describe("renderConsent", () => {
   test("escapes a hostile vault name in the picker", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: ["vault:read"],
@@ -185,6 +199,7 @@ describe("renderConsent", () => {
   test("disables the Approve button when no vaults exist", () => {
     const html = renderConsent({
       params: PARAMS,
+      csrfToken: CSRF,
       clientId: "c",
       clientName: "App",
       scopes: ["vault:read"],
@@ -219,17 +234,19 @@ describe("renderError", () => {
 
 describe("CSS / styling guarantees", () => {
   test("does not load fonts from a third-party CDN (privacy)", () => {
-    const html = renderLogin({ params: PARAMS });
+    const html = renderLogin({ params: PARAMS, csrfToken: CSRF });
     expect(html).not.toContain("fonts.googleapis.com");
     expect(html).not.toContain("fonts.gstatic.com");
   });
 
   test("sets referrer policy to no-referrer", () => {
-    expect(renderLogin({ params: PARAMS })).toContain('name="referrer" content="no-referrer"');
+    expect(renderLogin({ params: PARAMS, csrfToken: CSRF })).toContain(
+      'name="referrer" content="no-referrer"',
+    );
   });
 
   test("declares mobile-friendly viewport", () => {
-    expect(renderLogin({ params: PARAMS })).toContain(
+    expect(renderLogin({ params: PARAMS, csrfToken: CSRF })).toContain(
       'name="viewport" content="width=device-width, initial-scale=1"',
     );
   });

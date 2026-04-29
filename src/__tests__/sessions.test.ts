@@ -87,7 +87,8 @@ describe("buildSessionCookie", () => {
     expect(v).toContain("HttpOnly");
     expect(v).toContain("Secure");
     expect(v).toContain("SameSite=Lax");
-    expect(v).toContain("Path=/oauth/");
+    expect(v).toContain("Path=/");
+    expect(v).not.toContain("Path=/oauth");
     expect(v).toContain("Max-Age=86400");
   });
 });
@@ -97,7 +98,8 @@ describe("buildSessionClearCookie", () => {
     const v = buildSessionClearCookie();
     expect(v).toContain(`${SESSION_COOKIE_NAME}=`);
     expect(v).toContain("Max-Age=0");
-    expect(v).toContain("Path=/oauth/");
+    expect(v).toContain("Path=/");
+    expect(v).not.toContain("Path=/oauth");
   });
 });
 
