@@ -227,6 +227,314 @@ describe("handleAuthorizeGet", () => {
   });
 });
 
+// Q1 of 2026-04-28-vault-config-and-scopes.md: an unnamed `vault:<verb>` is
+// ambiguous, so the consent screen forces the operator to pick a vault before
+// the JWT is minted. Picked vault rewrites the scope to `vault:<picked>:<verb>`
+// and stamps `aud=vault.<picked>` so vault's strict per-resource enforcement
+// (Phase 1) can match the audience against the URL-derived vault name.
+describe("handleAuthorizeGet — vault picker", () => {
+  test("renders the picker when scope is unnamed vault:<verb>", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          scope: "vault:read",
+        }),
+        {
+          headers: {
+            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+          },
+        },
+      );
+      const res = handleAuthorizeGet(db, req, {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Pick a vault");
+      // The fixture manifest's `parachute-vault` has paths `["/vault/default"]`
+      // — that's the one available vault in the picker.
+      expect(html).toContain('name="vault_pick" value="default"');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("picker is omitted when scope is already named vault:<name>:<verb>", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          scope: "vault:work:read",
+        }),
+        {
+          headers: {
+            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+          },
+        },
+      );
+      const res = handleAuthorizeGet(db, req, {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).not.toContain("Pick a vault");
+      expect(html).not.toContain('name="vault_pick"');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("picker shows a help message and disables Approve when no vaults exist", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: reg.client.clientId,
+          redirect_uri: "https://app.example/cb",
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          scope: "vault:read",
+        }),
+        {
+          headers: {
+            cookie: buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000)),
+          },
+        },
+      );
+      const res = handleAuthorizeGet(db, req, {
+        issuer: ISSUER,
+        loadServicesManifest: () => ({ services: [] }),
+      });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Pick a vault");
+      expect(html).toContain("no vaults exist");
+      expect(html).toContain('name="approve" value="yes" class="btn btn-primary" disabled');
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("handleAuthorizePost — vault picker", () => {
+  test("approve with vault_pick narrows vault:read → vault:<picked>:read in the issued JWT", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        vault_pick: "default",
+      });
+      const consentReq = new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: consentForm,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: buildSessionCookie(session.id, 86400),
+        },
+      });
+      const consentRes = await handleAuthorizePost(db, consentReq, {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(consentRes.status).toBe(302);
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      expect(code).toBeTruthy();
+
+      const tokenForm = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code ?? "",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: verifier,
+      });
+      const tokenRes = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: tokenForm,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(tokenRes.status).toBe(200);
+      const body = (await tokenRes.json()) as { access_token: string; scope: string };
+      expect(body.scope).toBe("vault:default:read");
+
+      const { payload } = await validateAccessToken(db, body.access_token, ISSUER);
+      expect(payload.aud).toBe("vault.default");
+      expect(payload.scope).toBe("vault:default:read");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("approve without vault_pick on unnamed vault scope fails 400", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      const res = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(res.status).toBe(400);
+      const html = await res.text();
+      expect(html).toContain("Pick a vault");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("approve with vault_pick that names an unknown vault fails 400", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        vault_pick: "evil-vault",
+      });
+      const res = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(res.status).toBe(400);
+      const html = await res.text();
+      expect(html).toContain("Unknown vault");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("multiple unnamed verbs are all narrowed to the picked vault", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read vault:write",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        vault_pick: "default",
+      });
+      const consentRes = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: buildSessionCookie(session.id, 86400),
+          },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      const tokenRes = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: code ?? "",
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            code_verifier: verifier,
+          }),
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(tokenRes.status).toBe(200);
+      const body = (await tokenRes.json()) as { scope: string };
+      expect(body.scope).toBe("vault:default:read vault:default:write");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 describe("handleAuthorizePost — login submit", () => {
   test("sets session cookie and redirects to GET on valid credentials", async () => {
     const { db, cleanup } = await makeDb();
@@ -305,7 +613,7 @@ describe("handleAuthorizePost — consent submit", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault:read",
+        scope: "vault:default:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
         state: "abc123",
@@ -382,7 +690,7 @@ describe("handleToken — full OAuth dance", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault:read",
+        scope: "vault:default:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
       });
@@ -425,17 +733,19 @@ describe("handleToken — full OAuth dance", () => {
         services: Record<string, { url: string; version: string }>;
       };
       expect(tokenBody.token_type).toBe("Bearer");
-      expect(tokenBody.scope).toBe("vault:read");
+      expect(tokenBody.scope).toBe("vault:default:read");
       expect(tokenBody.refresh_token.length).toBeGreaterThan(20);
 
       // JWT must verify against the hub's signing keys, with the right sub +
-      // aud (vault:read → "vault") and iss matching the configured issuer
-      // (closes #77 — vault rejects tokens with a missing or mismatched iss).
+      // aud (named `vault:default:read` → "vault.default" — RFC 8707-style
+      // resource binding from the vault-config-and-scopes Phase 1+2 design)
+      // and iss matching the configured issuer (closes #77 — vault rejects
+      // tokens with a missing or mismatched iss).
       const { payload } = await validateAccessToken(db, tokenBody.access_token, ISSUER);
       expect(payload.sub).toBe(user.id);
-      expect(payload.aud).toBe("vault");
+      expect(payload.aud).toBe("vault.default");
       expect(payload.iss).toBe(ISSUER);
-      expect(payload.scope).toBe("vault:read");
+      expect(payload.scope).toBe("vault:default:read");
       expect(payload.client_id).toBe(reg.client.clientId);
 
       // closes #81 — services catalog tells the client where vault lives so
@@ -517,7 +827,7 @@ describe("handleToken — full OAuth dance", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault:read",
+        scope: "vault:default:read",
         code_challenge: challenge,
         code_challenge_method: "S256",
       });
@@ -672,7 +982,7 @@ describe("handleToken — full OAuth dance", () => {
         client_id: reg.client.clientId,
         redirect_uri: "https://app.example/cb",
         response_type: "code",
-        scope: "vault:read frobnicate:everything",
+        scope: "vault:default:read frobnicate:everything",
         code_challenge: challenge,
         code_challenge_method: "S256",
       });

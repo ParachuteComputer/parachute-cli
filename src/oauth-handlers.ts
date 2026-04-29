@@ -58,7 +58,56 @@ import {
   parseSessionCookie,
 } from "./sessions.ts";
 import { getUserByUsername, verifyPassword } from "./users.ts";
-import { isVaultEntry, shortName } from "./well-known.ts";
+import { isVaultEntry, shortName, vaultInstanceName } from "./well-known.ts";
+
+const VAULT_VERBS = new Set(["read", "write", "admin"]);
+
+/** Verbs whose unnamed `vault:<verb>` form needs picker disambiguation. */
+function unnamedVaultVerbs(scopes: string[]): string[] {
+  const verbs: string[] = [];
+  for (const s of scopes) {
+    const parts = s.split(":");
+    const verb = parts[1];
+    if (parts.length === 2 && parts[0] === "vault" && verb && VAULT_VERBS.has(verb)) {
+      verbs.push(verb);
+    }
+  }
+  return verbs;
+}
+
+/**
+ * Vault instance names registered on this host, derived from services.json.
+ * Walks both manifest shapes: single-entry-multi-path (`paths: ["/vault/work",
+ * "/vault/personal"]`) and per-vault entries (`parachute-vault-work`).
+ */
+function listVaultNames(manifest: ServicesManifest): string[] {
+  const names = new Set<string>();
+  for (const svc of manifest.services) {
+    if (!isVaultEntry(svc)) continue;
+    let foundFromPaths = false;
+    for (const path of svc.paths) {
+      const m = path.match(/^\/vault\/([^/]+)/);
+      if (m?.[1]) {
+        names.add(m[1]);
+        foundFromPaths = true;
+      }
+    }
+    if (!foundFromPaths) names.add(vaultInstanceName(svc));
+  }
+  return Array.from(names).sort();
+}
+
+/** Rewrite each unnamed `vault:<verb>` to `vault:<picked>:<verb>`. */
+function narrowVaultScopes(scopes: string[], pickedVault: string): string[] {
+  return scopes.map((s) => {
+    const parts = s.split(":");
+    const verb = parts[1];
+    if (parts.length === 2 && parts[0] === "vault" && verb && VAULT_VERBS.has(verb)) {
+      return `vault:${pickedVault}:${verb}`;
+    }
+    return s;
+  });
+}
 
 export interface OAuthDeps {
   /** Hub origin used for `iss`, `authorization_endpoint`, etc. */
@@ -224,7 +273,7 @@ function parseAuthorizeFormParams(url: URL): AuthorizeFormParams | { error: stri
  * present). All authorize-time params are echoed back via hidden inputs so
  * the form POST keeps the binding intact.
  */
-export function handleAuthorizeGet(db: Database, req: Request, _deps: OAuthDeps): Response {
+export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps): Response {
   const url = new URL(req.url);
   const parsed = parseAuthorizeFormParams(url);
   if ("error" in parsed) {
@@ -267,7 +316,9 @@ export function handleAuthorizeGet(db: Database, req: Request, _deps: OAuthDeps)
   if (!session) {
     return htmlResponse(renderLogin({ params: parsed }));
   }
-  return htmlResponse(renderConsent(consentProps(client, parsed)));
+  const manifest = (deps.loadServicesManifest ?? readServicesManifest)();
+  const vaultNames = listVaultNames(manifest);
+  return htmlResponse(renderConsent(consentProps(client, parsed, vaultNames)));
 }
 
 /**
@@ -363,7 +414,33 @@ async function handleConsentSubmit(
       params.state,
     );
   }
-  const scopes = params.scope.split(" ").filter((s) => s.length > 0);
+  let scopes = params.scope.split(" ").filter((s) => s.length > 0);
+  // Vault picker (Q1 of the vault-config-and-scopes design): an unnamed
+  // `vault:<verb>` scope is ambiguous about which vault it grants access to.
+  // Force the operator to pick before the JWT is minted, then rewrite the
+  // unnamed scope to `vault:<picked>:<verb>` so vault's strict per-resource
+  // enforcement (Phase 1) sees a name it can match against the URL.
+  const unnamedVerbs = unnamedVaultVerbs(scopes);
+  if (unnamedVerbs.length > 0) {
+    const pickedVault = String(form.get("vault_pick") ?? "").trim();
+    if (!pickedVault) {
+      return htmlError(
+        "Pick a vault",
+        "This app requested vault access without naming a vault. Pick which vault to grant access to and try again.",
+        400,
+      );
+    }
+    const manifest = (deps.loadServicesManifest ?? readServicesManifest)();
+    const validNames = listVaultNames(manifest);
+    if (!validNames.includes(pickedVault)) {
+      return htmlError(
+        "Unknown vault",
+        `vault "${pickedVault}" is not registered on this host.`,
+        400,
+      );
+    }
+    scopes = narrowVaultScopes(scopes, pickedVault);
+  }
   // Record the grant — gives PR (d) a place to skip the consent screen on
   // re-authorization for already-granted scopes.
   db.prepare(
@@ -613,13 +690,28 @@ function mapAuthCodeError(err: unknown): Response {
 }
 
 /**
- * Picks the JWT `aud` claim based on the requested scopes. `vault:*` →
- * "vault", `scribe:*` → "scribe", etc. Falls back to "hub" for hub-only
- * scopes or empty scopes. The split character is `:` per
- * `parachute-patterns/patterns/oauth-scopes.md`; the previous `.` form was
- * never canonical (cli#71 caught it during the scope-validation cutover).
+ * Picks the JWT `aud` claim based on the requested scopes. Per the
+ * vault-config-and-scopes design (Phase 1+2):
+ *   - A named `vault:<name>:<verb>` → `vault.<name>` (RFC 8707-style resource
+ *     binding; vault enforces this strict-equality against the URL-derived
+ *     vault name).
+ *   - An unnamed `<service>:<verb>` → `<service>` (legacy shape; vault's
+ *     strict-check rejects unnamed `vault:*` audiences, so the consent
+ *     picker rewrites those before this is reached).
+ *
+ * Named vault scopes win over unnamed ones — an OAuth flow that mixes
+ * `vault:work:read` + `scribe:transcribe` audiences is grounded on the vault
+ * (the more sensitive resource), and tokens are issued per-flow anyway.
  */
 function inferAudience(scopes: string[]): string {
+  for (const s of scopes) {
+    const parts = s.split(":");
+    const name = parts[1];
+    const verb = parts[2];
+    if (parts.length === 3 && parts[0] === "vault" && name && verb && VAULT_VERBS.has(verb)) {
+      return `vault.${name}`;
+    }
+  }
   for (const s of scopes) {
     const colon = s.indexOf(":");
     if (colon > 0) return s.slice(0, colon);
@@ -702,11 +794,17 @@ export async function handleRegister(
   return jsonResponse(respBody, 201);
 }
 
-function consentProps(client: OAuthClient, params: AuthorizeFormParams) {
+function consentProps(client: OAuthClient, params: AuthorizeFormParams, vaultNames: string[]) {
+  const scopes = params.scope.split(" ").filter((s) => s.length > 0);
+  const unnamedVerbs = unnamedVaultVerbs(scopes);
   return {
     params,
     clientId: client.clientId,
     clientName: client.clientName ?? client.clientId,
-    scopes: params.scope.split(" ").filter((s) => s.length > 0),
+    scopes,
+    vaultPicker:
+      unnamedVerbs.length > 0
+        ? { unnamedVerbs, availableVaults: vaultNames }
+        : undefined,
   };
 }

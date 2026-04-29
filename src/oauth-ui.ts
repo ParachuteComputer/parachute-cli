@@ -72,6 +72,20 @@ export interface ConsentViewProps {
   clientName: string;
   clientId: string;
   scopes: string[];
+  /**
+   * Set when the request includes one or more unnamed `vault:<verb>` scopes.
+   * The consent screen renders a vault selector; on submit, the picked vault
+   * narrows every unnamed scope to `vault:<picked>:<verb>` (Q1 of the
+   * vault-config-and-scopes design — force the picker, don't default).
+   */
+  vaultPicker?: VaultPicker;
+}
+
+export interface VaultPicker {
+  /** Verbs (`read`, `write`, `admin`) requested in unnamed shape. */
+  unnamedVerbs: string[];
+  /** Vault names registered on this host. Empty → caller can't approve. */
+  availableVaults: string[];
 }
 
 export interface ErrorViewProps {
@@ -112,11 +126,14 @@ export function renderLogin(props: LoginViewProps): string {
 }
 
 export function renderConsent(props: ConsentViewProps): string {
-  const { params, clientName, clientId, scopes } = props;
+  const { params, clientName, clientId, scopes, vaultPicker } = props;
   const scopeRows =
     scopes.length === 0
       ? `<li class="scope scope-empty">No scopes requested — the app gets a session token only.</li>`
       : scopes.map(renderScopeRow).join("\n");
+  const pickerSection = vaultPicker ? renderVaultPicker(vaultPicker) : "";
+  const approveDisabled =
+    vaultPicker && vaultPicker.availableVaults.length === 0 ? " disabled" : "";
   const body = `
     <div class="card">
       <div class="card-header">
@@ -140,13 +157,48 @@ export function renderConsent(props: ConsentViewProps): string {
       <form method="POST" action="/oauth/authorize" class="auth-form consent-form">
         <input type="hidden" name="__action" value="consent" />
         ${renderHiddenInputs(params)}
+        ${pickerSection}
         <div class="button-row">
-          <button type="submit" name="approve" value="yes" class="btn btn-primary">Approve</button>
+          <button type="submit" name="approve" value="yes" class="btn btn-primary"${approveDisabled}>Approve</button>
           <button type="submit" name="approve" value="no" class="btn btn-secondary">Deny</button>
         </div>
       </form>
     </div>`;
   return baseDocument(`Authorize ${clientName}`, body);
+}
+
+function renderVaultPicker(picker: VaultPicker): string {
+  const verbList = picker.unnamedVerbs
+    .map((v) => `<code>vault:${escapeHtml(v)}</code>`)
+    .join(", ");
+  if (picker.availableVaults.length === 0) {
+    return `
+        <section class="vault-picker vault-picker-empty">
+          <h2 class="scopes-title">Pick a vault</h2>
+          <p class="picker-help">
+            ${verbList} need to be bound to a specific vault, but no vaults exist on this host yet.
+            Create one with <code>parachute-vault create &lt;name&gt;</code> and try again.
+          </p>
+        </section>`;
+  }
+  const options = picker.availableVaults
+    .map(
+      (name, i) => `
+            <label class="vault-option">
+              <input type="radio" name="vault_pick" value="${escapeHtml(name)}"${i === 0 ? " checked" : ""} required />
+              <span class="vault-option-name"><code>${escapeHtml(name)}</code></span>
+            </label>`,
+    )
+    .join("");
+  return `
+        <section class="vault-picker">
+          <h2 class="scopes-title">Pick a vault</h2>
+          <p class="picker-help">
+            ${verbList} apply to the vault you select below.
+          </p>
+          <div class="vault-options">${options}
+          </div>
+        </section>`;
 }
 
 export function renderError(props: ErrorViewProps): string {
@@ -439,6 +491,53 @@ const STYLES = `
     background: ${PALETTE.dangerSoft};
   }
   .scope-admin .scope-name { color: ${PALETTE.danger}; }
+
+  .vault-picker {
+    margin: 0 0 1.25rem;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid ${PALETTE.borderLight};
+    border-radius: 6px;
+    background: ${PALETTE.bgSoft};
+  }
+  .vault-picker .scopes-title { margin-bottom: 0.4rem; }
+  .picker-help {
+    margin: 0 0 0.6rem;
+    font-size: 0.88rem;
+    color: ${PALETTE.fgMuted};
+  }
+  .picker-help code {
+    font-family: ${FONT_MONO};
+    font-size: 0.82rem;
+    background: ${PALETTE.cardBg};
+    padding: 0.05rem 0.35rem;
+    border-radius: 4px;
+    color: ${PALETTE.fg};
+  }
+  .vault-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .vault-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid ${PALETTE.border};
+    border-radius: 6px;
+    background: ${PALETTE.cardBg};
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .vault-option:hover { border-color: ${PALETTE.accent}; }
+  .vault-option input[type=radio]:focus { outline: 2px solid ${PALETTE.accent}; outline-offset: 2px; }
+  .vault-option-name code {
+    font-family: ${FONT_MONO};
+    font-size: 0.88rem;
+    color: ${PALETTE.fg};
+  }
+  .vault-picker-empty .picker-help { color: ${PALETTE.danger}; }
+  .vault-picker-empty .picker-help code { color: ${PALETTE.fg}; }
 
   .badge {
     display: inline-block;
