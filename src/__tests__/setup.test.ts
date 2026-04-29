@@ -284,6 +284,45 @@ describe("setup", () => {
     }
   });
 
+  test("retries pick prompt on invalid token then accepts a valid one (#111)", async () => {
+    const h = makeHarness();
+    try {
+      const availability = scriptedAvailability([
+        "9", // out-of-range index — loop re-prompts
+        "nope", // unknown name — loop re-prompts again
+        "notes", // single pick, no follow-up prompts
+      ]);
+      const code = await setup({
+        manifestPath: h.manifestPath,
+        configDir: h.configDir,
+        log: (l) => h.logs.push(l),
+        availability,
+        installFn: async (short, opts) => {
+          h.calls.push({ short, opts });
+          upsertService(
+            {
+              name: "parachute-notes",
+              version: "0.1.0",
+              port: 1942,
+              paths: ["/notes"],
+              health: "/health",
+            },
+            opts.manifestPath ?? h.manifestPath,
+          );
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(h.calls.map((c) => c.short)).toEqual(["notes"]);
+      expect(availability.remaining()).toBe(0);
+      const joined = h.logs.join("\n");
+      expect(joined).toMatch(/out-of-range/);
+      expect(joined).toMatch(/unknown service/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test("retries on invalid vault name then accepts a valid one", async () => {
     const h = makeHarness();
     try {

@@ -6,7 +6,12 @@
  * a `parachute_hub_csrf` cookie exists (lazily generated, then reused for the
  * cookie's lifetime) and embed the same value as a hidden `__csrf` input in
  * the form. On POST, we compare the form-submitted token to the cookie value
- * via constant-time compare; mismatch = 400.
+ * via constant-time compare; mismatch = 400 Bad Request. We pick 400 over 403
+ * because the failure mode is a malformed/stale form (the operator's tab sat
+ * past cookie expiry, two tabs raced, or the form was hand-rolled), not an
+ * authorization failure — they're already authenticated; the *form* is what
+ * the server can't accept. All callers (admin login, admin config, OAuth
+ * authorize) agree on 400.
  *
  * Why this and not session-bound tokens? Login forms are submitted *before*
  * a session exists, so a session-bound CSRF would need a separate "pre-login"

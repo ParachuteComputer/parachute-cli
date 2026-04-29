@@ -41,6 +41,7 @@ import {
   handleAdminConfigPost,
   handleAdminLoginGet,
   handleAdminLoginPost,
+  handleAdminLogoutPost,
 } from "./admin-handlers.ts";
 import { handleCreateVault } from "./admin-vaults.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
@@ -259,6 +260,12 @@ export function hubFetch(
       if (req.method === "GET") return handleAdminLoginGet(getDb(), req);
       if (req.method === "POST") return handleAdminLoginPost(getDb(), req);
       return new Response("method not allowed", { status: 405 });
+    }
+
+    if (pathname === "/admin/logout") {
+      if (!getDb) return new Response("hub db not configured", { status: 503 });
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      return handleAdminLogoutPost(getDb(), req);
     }
 
     if (pathname === "/admin/config") {

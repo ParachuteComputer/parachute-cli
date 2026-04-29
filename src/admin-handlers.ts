@@ -37,8 +37,10 @@ import {
 } from "./services-manifest.ts";
 import {
   SESSION_TTL_MS,
+  buildSessionClearCookie,
   buildSessionCookie,
   createSession,
+  deleteSession,
   findSession,
   parseSessionCookie,
 } from "./sessions.ts";
@@ -143,6 +145,35 @@ export async function handleAdminLoginPost(db: Database, req: Request): Promise<
   const session = createSession(db, { userId: user.id });
   const cookie = buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000));
   return redirect(next, { "set-cookie": cookie });
+}
+
+// --- /admin/logout ---------------------------------------------------------
+
+/**
+ * POST-only — logout is state-changing, so it rides the same double-submit
+ * CSRF discipline as login + config posts. Without CSRF, a malicious
+ * cross-origin form could log the operator out (annoyance, not catastrophe,
+ * but the safety belt is already on the bus).
+ *
+ * Always idempotent: clearing the cookie succeeds even if there's no
+ * matching session row. Returns 302 → /admin/login so the operator lands
+ * back on the form ready to re-authenticate.
+ */
+export async function handleAdminLogoutPost(db: Database, req: Request): Promise<Response> {
+  const form = await req.formData();
+  const formCsrf = form.get(CSRF_FIELD_NAME);
+  if (!verifyCsrfToken(req, typeof formCsrf === "string" ? formCsrf : null)) {
+    return htmlResponse(
+      renderAdminError({
+        title: "Invalid form submission",
+        message: "The form's CSRF token did not match. Reload the page and try again.",
+      }),
+      400,
+    );
+  }
+  const sid = parseSessionCookie(req.headers.get("cookie"));
+  if (sid) deleteSession(db, sid);
+  return redirect("/admin/login", { "set-cookie": buildSessionClearCookie() });
 }
 
 // --- /admin/config ---------------------------------------------------------

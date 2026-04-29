@@ -75,7 +75,10 @@ interface ScribeAnswer {
   apiKey: string | undefined;
 }
 
-const VAULT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+// Reject leading and trailing hyphens. The previous form `[a-z0-9][a-z0-9-]*`
+// permitted `my-vault-` which round-trips poorly through path segments and
+// some shells. Single-char names (`a`, `7`) stay legal.
+const VAULT_NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 function defaultAvailability(): InteractiveAvailability {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return { kind: "not-tty" };
