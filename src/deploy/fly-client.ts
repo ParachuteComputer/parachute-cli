@@ -26,9 +26,15 @@ import {
 const DEFAULT_API_ORIGIN = "https://api.machines.dev";
 
 /**
+ * Machines API version. Hoisted so a future v2 grep / migration is mechanical.
+ */
+const API_VERSION = "v1";
+
+/**
  * Apps not prefixed with this string aren't surfaced by `listMachines`; users
  * typically have non-Parachute apps in the same Fly org and we don't want to
- * imply ownership over them.
+ * imply ownership over them. `provisionMachine` enforces the prefix on input
+ * so the listMachines filter never misses a real Parachute deployment.
  */
 export const PARACHUTE_APP_PREFIX = "parachute-";
 
@@ -81,12 +87,14 @@ export class FlyClient implements ProviderClient {
   }
 
   async validateToken(): Promise<TokenValidation> {
-    const res = await this.request(`/v1/apps?org_slug=${encodeURIComponent(this.orgSlug)}`);
+    const res = await this.request(
+      `/${API_VERSION}/apps?org_slug=${encodeURIComponent(this.orgSlug)}`,
+    );
     if (res.status === 401 || res.status === 403) {
       return { valid: false, reason: `Token rejected by Fly (${res.status})` };
     }
     if (res.status === 404) {
-      return { valid: true, reason: `Org "${this.orgSlug}" not found for this token` };
+      return { valid: false, reason: `Org "${this.orgSlug}" not found for this token` };
     }
     if (!res.ok) {
       return { valid: false, reason: `Fly returned ${res.status}` };
@@ -95,7 +103,14 @@ export class FlyClient implements ProviderClient {
   }
 
   async provisionMachine(opts: ProvisionOpts): Promise<DeploymentRecord> {
-    const appRes = await this.request("/v1/apps", {
+    if (!opts.name.startsWith(PARACHUTE_APP_PREFIX)) {
+      throw new ProviderError(
+        `Deployment name "${opts.name}" must start with "${PARACHUTE_APP_PREFIX}" — listMachines depends on this prefix to identify Parachute deployments.`,
+        "fly",
+      );
+    }
+
+    const appRes = await this.request(`/${API_VERSION}/apps`, {
       method: "POST",
       body: JSON.stringify({
         app_name: opts.name,
@@ -104,102 +119,123 @@ export class FlyClient implements ProviderClient {
     });
     if (!appRes.ok) {
       throw new ProviderError(
-        `Fly app creation failed (${appRes.status}): ${await safeText(appRes)}`,
+        `Fly app creation failed (${appRes.status}): ${await this.safeText(appRes)}`,
         "fly",
         appRes.status,
       );
     }
 
-    const volRes = await this.request(`/v1/apps/${encodeURIComponent(opts.name)}/volumes`, {
-      method: "POST",
-      body: JSON.stringify({
-        name: PARACHUTE_VOLUME_NAME,
-        region: opts.region,
-        size_gb: opts.volumeSizeGb,
-      }),
-    });
-    if (!volRes.ok) {
-      throw new ProviderError(
-        `Fly volume creation failed (${volRes.status}): ${await safeText(volRes)}`,
-        "fly",
-        volRes.status,
-      );
-    }
-    const volume = (await volRes.json()) as FlyVolume;
-
-    const machineRes = await this.request(`/v1/apps/${encodeURIComponent(opts.name)}/machines`, {
-      method: "POST",
-      body: JSON.stringify({
-        region: opts.region,
-        config: {
-          image: opts.image,
-          env: opts.env,
-          guest: sizeToFlyGuest(opts.size),
-          mounts: [{ volume: volume.id, path: "/data" }],
-          services: [
-            {
-              ports: [
-                { port: 80, handlers: ["http"] },
-                { port: 443, handlers: ["http", "tls"] },
-              ],
-              protocol: "tcp",
-              internal_port: HUB_INTERNAL_PORT,
-            },
-          ],
-          checks: {
-            health: {
-              type: "http",
-              port: HUB_INTERNAL_PORT,
-              path: "/health",
-              interval: "15s",
-              timeout: "10s",
-            },
-          },
-          auto_destroy: false,
+    // From here on, the app exists in the user's Fly org. Any failure must
+    // tear it down before throwing, otherwise we leave a ghost app billing
+    // and cluttering the user's dashboard.
+    let appCreated = true;
+    try {
+      const volRes = await this.request(
+        `/${API_VERSION}/apps/${encodeURIComponent(opts.name)}/volumes`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: PARACHUTE_VOLUME_NAME,
+            region: opts.region,
+            size_gb: opts.volumeSizeGb,
+          }),
         },
-      }),
-    });
-    if (!machineRes.ok) {
-      throw new ProviderError(
-        `Fly machine creation failed (${machineRes.status}): ${await safeText(machineRes)}`,
-        "fly",
-        machineRes.status,
       );
-    }
-    const machine = (await machineRes.json()) as FlyMachine;
+      if (!volRes.ok) {
+        throw new ProviderError(
+          `Fly volume creation failed (${volRes.status}): ${await this.safeText(volRes)}`,
+          "fly",
+          volRes.status,
+        );
+      }
+      const volume = (await volRes.json()) as FlyVolume;
 
-    return {
-      name: opts.name,
-      provider: "fly",
-      region: machine.region || opts.region,
-      url: `https://${opts.name}.fly.dev`,
-      status: mapFlyStatus(machine.state),
-      createdAt: machine.created_at || new Date().toISOString(),
-    };
+      const machineRes = await this.request(
+        `/${API_VERSION}/apps/${encodeURIComponent(opts.name)}/machines`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            region: opts.region,
+            config: {
+              image: opts.image,
+              env: opts.env,
+              guest: sizeToFlyGuest(opts.size),
+              mounts: [{ volume: volume.id, path: "/data" }],
+              services: [
+                {
+                  ports: [
+                    { port: 80, handlers: ["http"] },
+                    { port: 443, handlers: ["http", "tls"] },
+                  ],
+                  protocol: "tcp",
+                  internal_port: HUB_INTERNAL_PORT,
+                },
+              ],
+              checks: {
+                health: {
+                  type: "http",
+                  port: HUB_INTERNAL_PORT,
+                  path: "/health",
+                  interval: "15s",
+                  timeout: "10s",
+                },
+              },
+              auto_destroy: false,
+            },
+          }),
+        },
+      );
+      if (!machineRes.ok) {
+        throw new ProviderError(
+          `Fly machine creation failed (${machineRes.status}): ${await this.safeText(machineRes)}`,
+          "fly",
+          machineRes.status,
+        );
+      }
+      const machine = (await machineRes.json()) as FlyMachine;
+      appCreated = false;
+      return {
+        name: opts.name,
+        provider: "fly",
+        region: machine.region || opts.region,
+        url: `https://${opts.name}.fly.dev`,
+        status: mapFlyStatus(machine.state),
+        createdAt: machine.created_at || new Date().toISOString(),
+      };
+    } catch (err) {
+      if (appCreated) {
+        await this.destroyMachine(opts.name).catch(() => {
+          // Cleanup is best-effort. Surface the original failure, not the
+          // cleanup failure — the user already knows provisioning broke.
+        });
+      }
+      throw err;
+    }
   }
 
   async destroyMachine(name: string): Promise<void> {
-    const res = await this.request(`/v1/apps/${encodeURIComponent(name)}?force=true`, {
+    const res = await this.request(`/${API_VERSION}/apps/${encodeURIComponent(name)}?force=true`, {
       method: "DELETE",
     });
     if (res.ok || res.status === 404 || res.status === 410) return;
     throw new ProviderError(
-      `Fly app destroy failed (${res.status}): ${await safeText(res)}`,
+      `Fly app destroy failed (${res.status}): ${await this.safeText(res)}`,
       "fly",
       res.status,
     );
   }
 
   async listMachines(): Promise<DeploymentRecord[]> {
-    const res = await this.request(`/v1/apps?org_slug=${encodeURIComponent(this.orgSlug)}`);
+    const res = await this.request(
+      `/${API_VERSION}/apps?org_slug=${encodeURIComponent(this.orgSlug)}`,
+    );
     if (!res.ok) {
       throw new ProviderError(`Fly app list failed (${res.status})`, "fly", res.status);
     }
     const body = (await res.json()) as FlyAppListResponse;
     const apps = (body.apps ?? []).filter((a) => a.name.startsWith(PARACHUTE_APP_PREFIX));
 
-    const records = await Promise.all(apps.map((app) => this.toDeploymentRecord(app)));
-    return records.filter((r): r is DeploymentRecord => r !== null);
+    return Promise.all(apps.map((app) => this.toDeploymentRecord(app)));
   }
 
   tailLogs(_name: string, _opts?: { follow?: boolean }): AsyncIterable<LogLine> {
@@ -238,12 +274,25 @@ export class FlyClient implements ProviderClient {
   }
 
   /**
+   * Read up to 500 chars of a response body for inclusion in error messages,
+   * redacting the bearer token in case the upstream echoes request headers.
+   */
+  private async safeText(res: Response): Promise<string> {
+    try {
+      const body = (await res.text()).slice(0, 500);
+      return body.split(this.token).join("[redacted]");
+    } catch {
+      return "<no body>";
+    }
+  }
+
+  /**
    * Best-effort lookup of a Parachute app's first machine. If the app has no
    * machines (orphan / mid-destroy), returns a record with status "unknown"
    * and empty region rather than throwing — the caller wants a list, not a fault.
    */
-  private async toDeploymentRecord(app: FlyApp): Promise<DeploymentRecord | null> {
-    const res = await this.request(`/v1/apps/${encodeURIComponent(app.name)}/machines`);
+  private async toDeploymentRecord(app: FlyApp): Promise<DeploymentRecord> {
+    const res = await this.request(`/${API_VERSION}/apps/${encodeURIComponent(app.name)}/machines`);
     if (!res.ok) {
       return {
         name: app.name,
@@ -311,13 +360,5 @@ function mapFlyStatus(state: string | undefined): DeploymentStatus {
       return "destroyed";
     default:
       return "unknown";
-  }
-}
-
-async function safeText(res: Response): Promise<string> {
-  try {
-    return (await res.text()).slice(0, 500);
-  } catch {
-    return "<no body>";
   }
 }

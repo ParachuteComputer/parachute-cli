@@ -96,10 +96,10 @@ describe("FlyClient.validateToken", () => {
     expect(v.reason).toContain("403");
   });
 
-  test("404 (org not found) → valid=true with explanatory reason", async () => {
+  test("404 (org not found) → valid=false with explanatory reason", async () => {
     fake.handler = () => new Response("no such org", { status: 404 });
     const v = await client.validateToken();
-    expect(v.valid).toBe(true);
+    expect(v.valid).toBe(false);
     expect(v.reason).toContain("not found");
   });
 
@@ -250,9 +250,10 @@ describe("FlyClient.provisionMachine — failure paths", () => {
     expect(fake.requests).toHaveLength(1);
   });
 
-  test("volume-create 5xx (placement failure) → ProviderError, no machine call", async () => {
+  test("volume-create 5xx (placement failure) → ProviderError, then cleanup DELETE", async () => {
     let n = 0;
-    fake.handler = () => {
+    fake.handler = (req) => {
+      if (req.method === "DELETE") return new Response("", { status: 200 });
       n++;
       if (n === 1) return new Response("{}", { status: 201 });
       return new Response("placement failed", { status: 503 });
@@ -267,12 +268,17 @@ describe("FlyClient.provisionMachine — failure paths", () => {
         env: {},
       }),
     ).rejects.toMatchObject({ statusCode: 503 });
-    expect(fake.requests).toHaveLength(2);
+    expect(fake.requests).toHaveLength(3);
+    expect(fake.requests[2]).toMatchObject({
+      method: "DELETE",
+      path: "/v1/apps/parachute-x?force=true",
+    });
   });
 
-  test("machine-create 4xx → ProviderError surfaces status", async () => {
+  test("machine-create 4xx → ProviderError surfaces status, then cleanup DELETE", async () => {
     let n = 0;
-    fake.handler = () => {
+    fake.handler = (req) => {
+      if (req.method === "DELETE") return new Response("", { status: 200 });
       n++;
       if (n === 1) return new Response("{}", { status: 201 });
       if (n === 2) return new Response(JSON.stringify({ id: "vol_z", name: "x" }), { status: 200 });
@@ -288,7 +294,91 @@ describe("FlyClient.provisionMachine — failure paths", () => {
         env: {},
       }),
     ).rejects.toMatchObject({ statusCode: 400 });
-    expect(fake.requests).toHaveLength(3);
+    expect(fake.requests).toHaveLength(4);
+    expect(fake.requests[3]).toMatchObject({
+      method: "DELETE",
+      path: "/v1/apps/parachute-bad?force=true",
+    });
+  });
+
+  test("name without parachute- prefix → ProviderError, no API calls", async () => {
+    await expect(
+      client.provisionMachine({
+        name: "my-app",
+        region: "ord",
+        size: "small",
+        volumeSizeGb: 10,
+        image: "x",
+        env: {},
+      }),
+    ).rejects.toMatchObject({ name: "ProviderError", provider: "fly" });
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  test("app-create 409 (conflict — already exists in another org) → ProviderError with status", async () => {
+    fake.handler = () => new Response("name not available", { status: 409 });
+    await expect(
+      client.provisionMachine({
+        name: "parachute-taken",
+        region: "ord",
+        size: "small",
+        volumeSizeGb: 10,
+        image: "x",
+        env: {},
+      }),
+    ).rejects.toMatchObject({
+      name: "ProviderError",
+      provider: "fly",
+      statusCode: 409,
+    });
+    expect(fake.requests).toHaveLength(1);
+  });
+});
+
+describe("FlyClient — token does not leak into error messages", () => {
+  const token = "fly_test_token_xyz";
+
+  test("provisionMachine app-failure error message has no token", async () => {
+    fake.handler = () => new Response(`internal: bearer ${token} echoed back`, { status: 500 });
+    let err: unknown;
+    try {
+      await client.provisionMachine({
+        name: "parachute-leak",
+        region: "ord",
+        size: "small",
+        volumeSizeGb: 10,
+        image: "x",
+        env: {},
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as Error).message).not.toContain(token);
+  });
+
+  test("destroyMachine 500 error message has no token", async () => {
+    fake.handler = () => new Response(`echoed: ${token}`, { status: 500 });
+    let err: unknown;
+    try {
+      await client.destroyMachine("parachute-leak");
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as Error).message).not.toContain(token);
+  });
+
+  test("listMachines 500 error message has no token", async () => {
+    fake.handler = () => new Response(`echoed: ${token}`, { status: 500 });
+    let err: unknown;
+    try {
+      await client.listMachines();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as Error).message).not.toContain(token);
   });
 });
 
