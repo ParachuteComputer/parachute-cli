@@ -14,12 +14,7 @@ import { CSRF_COOKIE_NAME, CSRF_FIELD_NAME } from "../csrf.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import type { ConfigSchema, ModuleManifest } from "../module-manifest.ts";
 import type { ServicesManifest } from "../services-manifest.ts";
-import {
-  SESSION_TTL_MS,
-  buildSessionCookie,
-  createSession,
-  findSession,
-} from "../sessions.ts";
+import { SESSION_TTL_MS, buildSessionCookie, createSession, findSession } from "../sessions.ts";
 import { createUser } from "../users.ts";
 
 const TEST_CSRF = "csrf-handlers-test-token";
@@ -143,16 +138,12 @@ describe("handleAdminLoginGet", () => {
     const req = new Request("http://hub.test/admin/login");
     const res = handleAdminLoginGet(harness.db, req);
     const setCookie = res.headers.get("set-cookie") ?? "";
-    const cookieMatch = setCookie.match(
-      new RegExp(`${CSRF_COOKIE_NAME}=([A-Za-z0-9_-]+)`),
-    );
+    const cookieMatch = setCookie.match(new RegExp(`${CSRF_COOKIE_NAME}=([A-Za-z0-9_-]+)`));
     expect(cookieMatch).not.toBeNull();
     const cookieToken = cookieMatch?.[1] ?? "";
     expect(cookieToken.length).toBeGreaterThan(0);
     const html = await res.text();
-    const formMatch = html.match(
-      new RegExp(`name="${CSRF_FIELD_NAME}" value="([^"]+)"`),
-    );
+    const formMatch = html.match(new RegExp(`name="${CSRF_FIELD_NAME}" value="([^"]+)"`));
     expect(formMatch).not.toBeNull();
     expect(formMatch?.[1]).toBe(cookieToken);
   });
