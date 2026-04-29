@@ -85,8 +85,10 @@ export function deleteSession(db: Database, id: string): void {
  * Build a `Set-Cookie` header value for the given session id. HttpOnly +
  * SameSite=Lax + Secure (we always assume a TLS terminator; localhost dev
  * still sets Secure because Tailscale serves with HTTPS even on the tailnet
- * mount). Path=/oauth/ scopes the cookie to the OAuth endpoints — it never
- * leaks to other parts of the hub.
+ * mount). Path=/ covers the whole hub origin: the operator's session is "logged
+ * into this hub", and admin pages outside /oauth/ (config portal, etc.) ride
+ * the same session. State-changing admin POSTs require a CSRF token (see
+ * src/csrf.ts) since SameSite=Lax alone doesn't prevent same-site CSRF.
  */
 export function buildSessionCookie(sessionId: string, maxAgeSeconds: number): string {
   return [
@@ -94,13 +96,13 @@ export function buildSessionCookie(sessionId: string, maxAgeSeconds: number): st
     "HttpOnly",
     "Secure",
     "SameSite=Lax",
-    "Path=/oauth/",
+    "Path=/",
     `Max-Age=${maxAgeSeconds}`,
   ].join("; ");
 }
 
 export function buildSessionClearCookie(): string {
-  return `${SESSION_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Lax; Path=/oauth/; Max-Age=0`;
+  return `${SESSION_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
 }
 
 export function parseSessionCookie(cookieHeader: string | null): string | null {
