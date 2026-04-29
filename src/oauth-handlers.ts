@@ -44,11 +44,7 @@ import {
   signRefreshToken,
 } from "./jwt-sign.ts";
 import { type AuthorizeFormParams, renderConsent, renderError, renderLogin } from "./oauth-ui.ts";
-import {
-  FIRST_PARTY_SCOPES,
-  NON_REQUESTABLE_SCOPES,
-  isRequestableScope,
-} from "./scope-explanations.ts";
+import { NON_REQUESTABLE_SCOPES, isRequestableScope } from "./scope-explanations.ts";
 import { findUnknownScopes, loadDeclaredScopes } from "./scope-registry.ts";
 import {
   type ServicesManifest,
@@ -228,6 +224,14 @@ function oauthErrorRedirect(
 
 export function authorizationServerMetadata(deps: OAuthDeps): Response {
   const iss = deps.issuer;
+  // Advertise the full declared-scope set — FIRST_PARTY ∪ each registered
+  // module's `scopes.defines` — so standards-following clients discover
+  // third-party scopes (e.g. paraclaw's `claw:*`) the same way they discover
+  // first-party ones. The token-issuance path already consults
+  // `loadDeclaredScopes` (see #90); metadata had to follow or the issuer's
+  // public advertisement would be a strict subset of what it'll actually
+  // sign. Closes #91.
+  const declared = (deps.loadDeclaredScopes ?? loadDeclaredScopes)();
   return jsonResponse({
     issuer: iss,
     authorization_endpoint: `${iss}/oauth/authorize`,
@@ -242,7 +246,7 @@ export function authorizationServerMetadata(deps: OAuthDeps): Response {
     // — RFC 8414 §2 frames `scopes_supported` as "the OAuth 2.0 [...] scope
     // values that this authorization server supports" for clients to request.
     // Advertising what we always reject would mislead clients.
-    scopes_supported: FIRST_PARTY_SCOPES.filter(isRequestableScope),
+    scopes_supported: Array.from(declared).filter(isRequestableScope),
   });
 }
 

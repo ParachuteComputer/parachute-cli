@@ -104,6 +104,40 @@ describe("authorizationServerMetadata", () => {
     const scopesSupported = body.scopes_supported as string[];
     expect(scopesSupported).not.toContain("parachute:host:admin");
   });
+
+  test("advertises third-party module scopes from loadDeclaredScopes", async () => {
+    // #91: scopes_supported pulls from `loadDeclaredScopes()` (FIRST_PARTY ∪
+    // each registered module's `scopes.defines`) so standards-following
+    // clients discover third-party scopes the same way they discover
+    // first-party ones. The token-issuance path already uses
+    // loadDeclaredScopes (#90); the AS metadata had to follow or its public
+    // advertisement would be a strict subset of what it'll actually sign.
+    const declared = new Set<string>([
+      "vault:read",
+      "vault:admin",
+      "hub:admin",
+      "parachute:host:admin", // declared but operator-only — must still be filtered
+      "claw:read",
+      "claw:write",
+      "mymodule:do-thing",
+    ]);
+    const res = authorizationServerMetadata({
+      issuer: ISSUER,
+      loadDeclaredScopes: () => declared,
+    });
+    const body = (await res.json()) as Record<string, unknown>;
+    const scopesSupported = body.scopes_supported as string[];
+    // Third-party scopes show up
+    expect(scopesSupported).toContain("claw:read");
+    expect(scopesSupported).toContain("claw:write");
+    expect(scopesSupported).toContain("mymodule:do-thing");
+    // First-party still advertised — no regression
+    expect(scopesSupported).toContain("vault:read");
+    expect(scopesSupported).toContain("vault:admin");
+    expect(scopesSupported).toContain("hub:admin");
+    // NON_REQUESTABLE filter still applies even when the scope is declared
+    expect(scopesSupported).not.toContain("parachute:host:admin");
+  });
 });
 
 describe("handleAuthorizeGet", () => {
