@@ -15,6 +15,7 @@ import { logs, restart, start, stop } from "./commands/lifecycle.ts";
 import { migrate } from "./commands/migrate.ts";
 import { setup } from "./commands/setup.ts";
 import { status } from "./commands/status.ts";
+import { upgrade } from "./commands/upgrade.ts";
 import { dispatchVault } from "./commands/vault.ts";
 import { ExposeStateError } from "./expose-state.ts";
 import {
@@ -28,6 +29,7 @@ import {
   statusHelp,
   stopHelp,
   topLevelHelp,
+  upgradeHelp,
 } from "./help.ts";
 import { knownServices } from "./service-spec.ts";
 import { ServicesManifestError } from "./services-manifest.ts";
@@ -404,6 +406,27 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       return await restart(rest[0]);
+    }
+
+    case "upgrade": {
+      if (isHelpFlag(rest[0])) {
+        console.log(upgradeHelp());
+        return 0;
+      }
+      const tagExtract = extractTag(rest);
+      if (tagExtract.error) {
+        console.error(`parachute upgrade: ${tagExtract.error}`);
+        return 1;
+      }
+      const remaining = tagExtract.rest;
+      if (remaining.length > 1) {
+        console.error(`parachute upgrade: unexpected argument "${remaining[1]}"`);
+        console.error("usage: parachute upgrade [<service>] [--tag <name>]");
+        return 1;
+      }
+      const upgradeOpts: Parameters<typeof upgrade>[1] = {};
+      if (tagExtract.tag) upgradeOpts.tag = tagExtract.tag;
+      return await upgrade(remaining[0], upgradeOpts);
     }
 
     case "logs": {
