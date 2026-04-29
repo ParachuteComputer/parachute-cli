@@ -116,6 +116,20 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX clients_status ON clients (status);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      -- Refresh-token rotation + replay detection (closes #73). Each chain
+      -- of rotated refresh tokens shares a family_id; replaying a revoked
+      -- refresh token in a family signals theft and revokes every row in
+      -- that family (RFC 6819 §5.2.2.3). Pre-existing rows are backfilled
+      -- with their own jti as the family — grandfathered as singletons so
+      -- in-flight tokens keep working without spurious family revocation.
+      ALTER TABLE tokens ADD COLUMN family_id TEXT;
+      UPDATE tokens SET family_id = jti WHERE family_id IS NULL;
+      CREATE INDEX tokens_family ON tokens (family_id) WHERE family_id IS NOT NULL;
+    `,
+  },
 ];
 
 export function openHubDb(path: string = hubDbPath()): Database {

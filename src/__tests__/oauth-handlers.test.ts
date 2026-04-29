@@ -12,6 +12,7 @@ import {
   handleAuthorizeGet,
   handleAuthorizePost,
   handleRegister,
+  handleRevoke,
   handleToken,
 } from "../oauth-handlers.ts";
 import type { ServicesManifest } from "../services-manifest.ts";
@@ -2063,5 +2064,478 @@ describe("DCR approval gate (#74)", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// closes #73 — RFC 6749 §6 refresh-token rotation, RFC 6819 §5.2.2.3 replay
+// detection (family-wide revocation), RFC 7009 token revocation.
+describe("refresh-token rotation + /oauth/revoke (#73)", () => {
+  async function consentAndGetCode(
+    db: Awaited<ReturnType<typeof makeDb>>["db"],
+    clientId: string,
+    sessionId: string,
+    scope = "vault:default:read",
+  ): Promise<{ code: string; verifier: string }> {
+    const { verifier, challenge } = makePkce();
+    const consentForm = new URLSearchParams({
+      __action: "consent",
+      approve: "yes",
+      client_id: clientId,
+      redirect_uri: "https://app.example/cb",
+      response_type: "code",
+      scope,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    const consentRes = await handleAuthorizePost(
+      db,
+      new Request(`${ISSUER}/oauth/authorize`, {
+        method: "POST",
+        body: consentForm,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: buildSessionCookie(sessionId, 86400),
+        },
+      }),
+      { issuer: ISSUER },
+    );
+    const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+    return { code: code ?? "", verifier };
+  }
+
+  function tokenRequest(form: URLSearchParams): Request {
+    return new Request(`${ISSUER}/oauth/token`, {
+      method: "POST",
+      body: form,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+  }
+
+  function revokeRequest(form: URLSearchParams): Request {
+    return new Request(`${ISSUER}/oauth/revoke`, {
+      method: "POST",
+      body: form,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+  }
+
+  async function mintInitialPair(
+    db: Awaited<ReturnType<typeof makeDb>>["db"],
+    clientId: string,
+    userId: string,
+    sessionId: string,
+    extra: Record<string, string> = {},
+  ): Promise<{ access_token: string; refresh_token: string }> {
+    const { code, verifier } = await consentAndGetCode(db, clientId, sessionId);
+    const form = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: clientId,
+      redirect_uri: "https://app.example/cb",
+      code_verifier: verifier,
+      ...extra,
+    });
+    const res = await handleToken(db, tokenRequest(form), {
+      issuer: ISSUER,
+      loadServicesManifest: fixtureLoadServicesManifest,
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()) as { access_token: string; refresh_token: string };
+  }
+
+  function familyIdFor(
+    db: Awaited<ReturnType<typeof makeDb>>["db"],
+    refreshTokenPlaintext: string,
+  ): string {
+    const hash = createHash("sha256").update(refreshTokenPlaintext).digest("hex");
+    const row = db
+      .query<{ family_id: string }, [string]>(
+        "SELECT family_id FROM tokens WHERE refresh_token_hash = ?",
+      )
+      .get(hash);
+    if (!row) throw new Error("no row for refresh token");
+    return row.family_id;
+  }
+
+  test("initial auth-code issuance assigns a fresh family_id", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id);
+      const family = familyIdFor(db, initial.refresh_token);
+      // Fresh UUID, not jti — backfill case is for legacy rows only.
+      expect(family).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rotation preserves family_id across the chain", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id);
+      const family = familyIdFor(db, initial.refresh_token);
+
+      const refreshForm = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: initial.refresh_token,
+        client_id: reg.client.clientId,
+      });
+      const refreshRes = await handleToken(db, tokenRequest(refreshForm), {
+        issuer: ISSUER,
+        loadServicesManifest: fixtureLoadServicesManifest,
+      });
+      expect(refreshRes.status).toBe(200);
+      const rotated = (await refreshRes.json()) as { refresh_token: string };
+      expect(rotated.refresh_token).not.toBe(initial.refresh_token);
+
+      const rotatedFamily = familyIdFor(db, rotated.refresh_token);
+      expect(rotatedFamily).toBe(family);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("replay of revoked refresh token revokes the entire family", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id);
+      const family = familyIdFor(db, initial.refresh_token);
+
+      // First rotation (legitimate client).
+      const r1 = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: initial.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const rotated1 = (await r1.json()) as { refresh_token: string };
+
+      // Second rotation off the rotated token (still legitimate).
+      const r2 = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: rotated1.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      const rotated2 = (await r2.json()) as { refresh_token: string };
+
+      // Replay the ORIGINAL (already revoked at step 1). Should walk the
+      // family and revoke every descendant — including rotated2, which was
+      // still valid up to this point.
+      const replay = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: initial.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(replay.status).toBe(400);
+
+      // Every row in the family is revoked.
+      const live = db
+        .query<{ n: number }, [string]>(
+          "SELECT COUNT(*) AS n FROM tokens WHERE family_id = ? AND revoked_at IS NULL",
+        )
+        .get(family);
+      expect(live?.n).toBe(0);
+
+      // The currently-live rotated2 token can no longer mint a new pair —
+      // its row is now revoked, so the next refresh attempt is a replay too.
+      const afterReplay = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: rotated2.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(afterReplay.status).toBe(400);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke refresh_token: revokes the row, second use rejected", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id);
+
+      const revRes = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: initial.refresh_token,
+            token_type_hint: "refresh_token",
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      expect(revRes.status).toBe(200);
+
+      // Idempotent — second revoke also 200.
+      const revRes2 = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: initial.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      expect(revRes2.status).toBe(200);
+
+      // The revoked refresh token cannot mint a new access token.
+      const refreshAttempt = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: initial.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(refreshAttempt.status).toBe(400);
+      const err = (await refreshAttempt.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_grant");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke access_token: validateAccessToken rejects after revoke", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id);
+
+      // Pre-revoke: token validates.
+      const preCheck = await validateAccessToken(db, initial.access_token, ISSUER);
+      expect(preCheck.payload.sub).toBe(user.id);
+
+      const revRes = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: initial.access_token,
+            token_type_hint: "access_token",
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      expect(revRes.status).toBe(200);
+
+      // Post-revoke: token is rejected — signature still verifies, but the
+      // jti's tokens row is marked revoked.
+      await expect(validateAccessToken(db, initial.access_token, ISSUER)).rejects.toThrow(
+        /revoked/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke unknown token returns 200 (no existence disclosure)", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const res = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: "totally-not-a-real-token",
+            client_id: reg.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke missing token returns 400", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const res = await handleRevoke(
+        db,
+        revokeRequest(new URLSearchParams({ client_id: reg.client.clientId })),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_request");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke missing client_id returns 400", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const res = await handleRevoke(
+        db,
+        revokeRequest(new URLSearchParams({ token: "anything" })),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_request");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke confidential client without secret → 401", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id, {
+        client_secret: reg.clientSecret ?? "",
+      });
+
+      const res = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: initial.refresh_token,
+            client_id: reg.client.clientId,
+            // no client_secret
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(401);
+      const err = (await res.json()) as Record<string, unknown>;
+      expect(err.error).toBe("invalid_client");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke confidential client with correct secret → 200", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        confidential: true,
+      });
+      const initial = await mintInitialPair(db, reg.client.clientId, user.id, session.id, {
+        client_secret: reg.clientSecret ?? "",
+      });
+
+      const res = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: initial.refresh_token,
+            client_id: reg.client.clientId,
+            client_secret: reg.clientSecret ?? "",
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      expect(res.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/oauth/revoke from a different client: 200 but row stays live", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const issuingClient = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const otherClient = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const initial = await mintInitialPair(db, issuingClient.client.clientId, user.id, session.id);
+
+      const res = await handleRevoke(
+        db,
+        revokeRequest(
+          new URLSearchParams({
+            token: initial.refresh_token,
+            client_id: otherClient.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER },
+      );
+      // Spec-compliant 200, but the row should still be unrevoked.
+      expect(res.status).toBe(200);
+
+      const hash = createHash("sha256").update(initial.refresh_token).digest("hex");
+      const row = db
+        .query<{ revoked_at: string | null }, [string]>(
+          "SELECT revoked_at FROM tokens WHERE refresh_token_hash = ?",
+        )
+        .get(hash);
+      expect(row?.revoked_at).toBeNull();
+
+      // The original client can still rotate it.
+      const refreshRes = await handleToken(
+        db,
+        tokenRequest(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: initial.refresh_token,
+            client_id: issuingClient.client.clientId,
+          }),
+        ),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(refreshRes.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorizationServerMetadata advertises revocation_endpoint", async () => {
+    const res = authorizationServerMetadata({ issuer: ISSUER });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.revocation_endpoint).toBe(`${ISSUER}/oauth/revoke`);
   });
 });

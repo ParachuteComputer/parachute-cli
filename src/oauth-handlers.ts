@@ -10,6 +10,7 @@
  *   - POST /oauth/authorize                          (form posts: login + consent)
  *   - POST /oauth/token                              (grant_type=authorization_code | refresh_token)
  *   - POST /oauth/register                           (RFC 7591 DCR)
+ *   - POST /oauth/revoke                             (RFC 7009 token revocation)
  *
  * `client_credentials` is intentionally unimplemented — it's not in the
  * launch surface (no machine-to-machine clients yet); the token endpoint
@@ -43,6 +44,8 @@ import {
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   findRefreshToken,
+  findTokenRowByJti,
+  revokeFamily,
   signAccessToken,
   signRefreshToken,
 } from "./jwt-sign.ts";
@@ -240,6 +243,7 @@ export function authorizationServerMetadata(deps: OAuthDeps): Response {
     authorization_endpoint: `${iss}/oauth/authorize`,
     token_endpoint: `${iss}/oauth/token`,
     registration_endpoint: `${iss}/oauth/register`,
+    revocation_endpoint: `${iss}/oauth/revoke`,
     jwks_uri: `${iss}/.well-known/jwks.json`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
@@ -782,20 +786,30 @@ async function handleTokenRefresh(
   if (row.clientId !== clientId) {
     return jsonResponse({ error: "invalid_grant", error_description: "client_id mismatch" }, 400);
   }
+  const now = deps.now?.() ?? new Date();
   if (row.revokedAt) {
+    // Replay of an already-rotated refresh token. Per RFC 6819 §5.2.2.3 the
+    // working assumption is theft — the legitimate client received a new
+    // refresh token at the prior rotation, so anyone presenting the old one
+    // either lost a race (rare) or stole it (the case we must defend
+    // against). Either way: revoke every descendant in the family so the
+    // attacker can't keep refreshing, and force the legitimate client to
+    // re-authorize. Cheaper than tracking which call was first.
+    revokeFamily(db, row.familyId, now);
     return jsonResponse(
       { error: "invalid_grant", error_description: "refresh_token revoked" },
       400,
     );
   }
-  const now = deps.now?.() ?? new Date();
   if (now.getTime() > new Date(row.expiresAt).getTime()) {
     return jsonResponse(
       { error: "invalid_grant", error_description: "refresh_token expired" },
       400,
     );
   }
-  // Rotate: revoke the old refresh row, mint a new access + refresh pair.
+  // Rotate: revoke the old refresh row, mint a new access + refresh pair
+  // bound to the same family so a future replay of *any* descendant can
+  // walk the chain.
   db.prepare("UPDATE tokens SET revoked_at = ? WHERE jti = ?").run(now.toISOString(), row.jti);
   const audience = inferAudience(row.scopes);
   const access = await signAccessToken(db, {
@@ -811,6 +825,7 @@ async function handleTokenRefresh(
     userId: row.userId,
     clientId: row.clientId,
     scopes: row.scopes,
+    familyId: row.familyId,
     now: deps.now,
   });
   const services = buildServicesCatalog(
@@ -826,6 +841,100 @@ async function handleTokenRefresh(
     scope: row.scopes.join(" "),
     services,
   });
+}
+
+// --- /oauth/revoke ---------------------------------------------------------
+
+/**
+ * POST /oauth/revoke — RFC 7009 token revocation.
+ *
+ * Accepts `token` + optional `token_type_hint` (`refresh_token` or
+ * `access_token`) form-encoded. Authenticates the client (confidential
+ * clients via `client_secret`; public clients pass through with PKCE-style
+ * client_id-only auth, same gate as the token endpoint).
+ *
+ * Lookup strategy: try the refresh-token-hash first when the hint is
+ * `refresh_token` or absent (the common case — clients usually revoke
+ * refresh tokens), then fall back to JWT decode + jti lookup for access
+ * tokens. JWT decode here is unverified-decode of the payload only; we
+ * just need the jti to find the row. A signature check would be
+ * ceremonial — if the row exists we own it; if it doesn't, we return 200
+ * anyway per spec.
+ *
+ * Response: 200 with empty body on success OR when the token is unknown
+ * (RFC 7009 §2.2 — "the authorization server responds with HTTP status
+ * code 200 [...] or if the client submitted an invalid token"). We
+ * intentionally don't surface "found vs not-found" so a caller probing
+ * with random strings can't enumerate live tokens.
+ *
+ * Closes #73.
+ */
+export async function handleRevoke(
+  db: Database,
+  req: Request,
+  _deps: OAuthDeps,
+): Promise<Response> {
+  const form = await req.formData();
+  const token = String(form.get("token") ?? "");
+  const hint = String(form.get("token_type_hint") ?? "");
+  const bodyClientId = String(form.get("client_id") ?? "");
+  if (!token || !bodyClientId) {
+    return jsonResponse(
+      { error: "invalid_request", error_description: "missing required parameter" },
+      400,
+    );
+  }
+  const client = getClient(db, bodyClientId);
+  if (!client) {
+    return jsonResponse({ error: "invalid_client", error_description: "unknown client_id" }, 401);
+  }
+  const authFailure = authenticateClient(client, req, form, bodyClientId);
+  if (authFailure) return authFailure;
+
+  // Lookup. Hint is advisory per RFC 7009 §2.1 — clients that get it wrong
+  // still expect revocation to succeed, so we always try both shapes.
+  const now = new Date();
+  let row = hint === "access_token" ? null : findRefreshToken(db, token);
+  if (!row) {
+    const jti = unverifiedJtiOf(token);
+    if (jti) row = findTokenRowByJti(db, jti);
+    if (!row && hint === "access_token" && !row) {
+      // hint said access_token but the JWT didn't decode; check
+      // refresh-token shape as a last resort.
+      row = findRefreshToken(db, token);
+    }
+  }
+  if (row && row.clientId !== client.clientId) {
+    // RFC 7009 §2.1: revocation must be authenticated to the same client
+    // the token was issued to. A different client presenting a valid
+    // token is invalid_grant; we collapse it to 200 to avoid existence
+    // disclosure to unrelated clients.
+    return new Response(null, { status: 200 });
+  }
+  if (row && !row.revokedAt) {
+    db.prepare("UPDATE tokens SET revoked_at = ? WHERE jti = ?").run(now.toISOString(), row.jti);
+  }
+  return new Response(null, { status: 200 });
+}
+
+/**
+ * Best-effort jti extraction for revocation lookup. Not signature-checked —
+ * we only need the claim to find a row. If the row doesn't exist or the
+ * client doesn't own it, the caller bails out anyway.
+ */
+function unverifiedJtiOf(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const payload = parts[1];
+  if (!payload) return null;
+  try {
+    const json = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      jti?: unknown;
+    };
+    return typeof json.jti === "string" ? json.jti : null;
+  } catch {
+    return null;
+  }
 }
 
 function mapAuthCodeError(err: unknown): Response {
