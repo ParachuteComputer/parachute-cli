@@ -553,3 +553,70 @@ describe("parachute auth rotate-operator", () => {
     }
   });
 });
+
+// closes #74 — the operator's surface for the DCR approval gate. The CLI
+// is the only approval path at launch (no admin UI yet); these tests pin
+// the round-trip so an operator can promote a pending registration.
+describe("parachute auth pending-clients / approve-client", () => {
+  test("pending-clients on an empty db says '(no pending OAuth clients)'", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = { dbPath: tmp.dbPath };
+      const { code, stdout } = await captureOutput(() => auth(["pending-clients"], deps));
+      expect(code).toBe(0);
+      expect(stdout).toContain("no pending OAuth clients");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("pending-clients lists pending rows; approve-client promotes them", async () => {
+    const tmp = makeTmp();
+    try {
+      const { registerClient } = await import("../clients.ts");
+      const db = openHubDb(tmp.dbPath);
+      let pendingId: string;
+      try {
+        pendingId = registerClient(db, {
+          redirectUris: ["https://app.example/cb"],
+          status: "pending",
+          clientName: "MyApp",
+        }).client.clientId;
+        registerClient(db, {
+          redirectUris: ["https://approved.example/cb"],
+          status: "approved",
+          clientName: "Already",
+        });
+      } finally {
+        db.close();
+      }
+      const deps: AuthDeps = { dbPath: tmp.dbPath };
+
+      // pending-clients shows only the pending row.
+      const list = await captureOutput(() => auth(["pending-clients"], deps));
+      expect(list.code).toBe(0);
+      expect(list.stdout).toContain(pendingId);
+      expect(list.stdout).toContain("MyApp");
+      expect(list.stdout).not.toContain("approved.example");
+
+      // approve-client without an arg is a usage error.
+      const noArg = await captureOutput(() => auth(["approve-client"], deps));
+      expect(noArg.code).toBe(1);
+      expect(noArg.stderr).toContain("missing client_id");
+
+      // approve-client <unknown> is a 1.
+      const unknown = await captureOutput(() => auth(["approve-client", "no-such"], deps));
+      expect(unknown.code).toBe(1);
+      expect(unknown.stderr).toContain("no OAuth client");
+
+      // approve-client <pending> succeeds and the row drops off pending-clients.
+      const ok = await captureOutput(() => auth(["approve-client", pendingId], deps));
+      expect(ok.code).toBe(0);
+      expect(ok.stdout).toContain("Approved");
+      const after = await captureOutput(() => auth(["pending-clients"], deps));
+      expect(after.stdout).toContain("no pending OAuth clients");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});

@@ -9,16 +9,20 @@
  *     for the auth-code exchange. `client_secret_hash` is NULL for these.
  *   - **Confidential clients**: server-side apps. We mint a random
  *     `client_secret` on registration, store its sha256 hash, return the
- *     plaintext exactly once. PR (c) doesn't yet enforce client_secret on
- *     the token endpoint — that's a follow-up; for now confidential clients
- *     work the same as public ones plus an opaque secret they can present.
+ *     plaintext exactly once. The token endpoint enforces client_secret per
+ *     RFC 6749 §3.2.1 (closes #72).
  *
- * Self-registration is open. The brief defers consent gating (admin-approve
- * for new clients) to a later PR; today, any client_id seen for the first
- * time gets a row.
+ * Approval gate (closes #74): every row carries a `status` of `pending` or
+ * `approved`. New self-registrations default to `pending`; only registrations
+ * that authenticate with an operator token bearing `hub:admin` (the install-
+ * time path for first-party modules) land as `approved`. The OAuth flow
+ * rejects `pending` clients at `/oauth/authorize` and `/oauth/token`. An
+ * operator promotes a pending client via `parachute auth approve-client`.
  */
 import type { Database } from "bun:sqlite";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+
+export type ClientStatus = "pending" | "approved";
 
 export interface OAuthClient {
   clientId: string;
@@ -28,6 +32,8 @@ export interface OAuthClient {
   scopes: string[];
   clientName: string | null;
   registeredAt: string;
+  /** Whether the client may participate in OAuth flows. See file header. */
+  status: ClientStatus;
 }
 
 export class ClientNotFoundError extends Error {
@@ -51,6 +57,7 @@ interface Row {
   scopes: string;
   client_name: string | null;
   registered_at: string;
+  status: string;
 }
 
 function rowToClient(r: Row): OAuthClient {
@@ -61,6 +68,7 @@ function rowToClient(r: Row): OAuthClient {
     scopes: r.scopes.split(" ").filter((s) => s.length > 0),
     clientName: r.client_name,
     registeredAt: r.registered_at,
+    status: r.status === "approved" ? "approved" : "pending",
   };
 }
 
@@ -72,6 +80,14 @@ export interface RegisterClientOpts {
   confidential?: boolean;
   /** Override the generated client_id. Mostly for tests + first-party seeds. */
   clientId?: string;
+  /**
+   * Approval status to write. Defaults to `approved` — direct callers
+   * (tests, install-time first-party seeds) want a row that can OAuth.
+   * The public DCR endpoint (`POST /oauth/register`) passes `pending`
+   * explicitly so self-served registrations require operator approval
+   * before they can run an OAuth flow (closes #74).
+   */
+  status?: ClientStatus;
   now?: () => Date;
 }
 
@@ -97,10 +113,11 @@ export function registerClient(db: Database, opts: RegisterClientOpts): Register
     : null;
   const registeredAt = (opts.now?.() ?? new Date()).toISOString();
   const scopes = (opts.scopes ?? []).join(" ");
+  const status: ClientStatus = opts.status ?? "approved";
   db.prepare(
     `INSERT INTO clients
-     (client_id, client_secret_hash, redirect_uris, scopes, client_name, registered_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+     (client_id, client_secret_hash, redirect_uris, scopes, client_name, registered_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     clientId,
     clientSecretHash,
@@ -108,6 +125,7 @@ export function registerClient(db: Database, opts: RegisterClientOpts): Register
     scopes,
     opts.clientName ?? null,
     registeredAt,
+    status,
   );
   return {
     client: {
@@ -117,9 +135,32 @@ export function registerClient(db: Database, opts: RegisterClientOpts): Register
       scopes: opts.scopes ?? [],
       clientName: opts.clientName ?? null,
       registeredAt,
+      status,
     },
     clientSecret,
   };
+}
+
+/**
+ * Promote a `pending` client to `approved`. Idempotent — calling on an
+ * already-approved row is a no-op. Returns true when the row was found and
+ * is now approved (whether by this call or already), false when no such
+ * client exists. Used by `parachute auth approve-client`.
+ */
+export function approveClient(db: Database, clientId: string): boolean {
+  const existing = getClient(db, clientId);
+  if (!existing) return false;
+  if (existing.status === "approved") return true;
+  db.prepare("UPDATE clients SET status = 'approved' WHERE client_id = ?").run(clientId);
+  return true;
+}
+
+/** List clients filtered by status. Used by `parachute auth pending-clients`. */
+export function listClientsByStatus(db: Database, status: ClientStatus): OAuthClient[] {
+  const rows = db
+    .query<Row, [string]>("SELECT * FROM clients WHERE status = ? ORDER BY registered_at")
+    .all(status);
+  return rows.map(rowToClient);
 }
 
 export function getClient(db: Database, clientId: string): OAuthClient | null {

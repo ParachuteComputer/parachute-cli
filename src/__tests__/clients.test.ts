@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   InvalidRedirectUriError,
+  approveClient,
   getClient,
   isValidRedirectUri,
+  listClientsByStatus,
   registerClient,
   requireRegisteredRedirectUri,
   verifyClientSecret,
@@ -163,6 +165,85 @@ describe("verifyClientSecret", () => {
     try {
       const r = registerClient(db, { redirectUris: ["https://example.com/cb"] });
       expect(verifyClientSecret(r.client, "anything")).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("approval gate (#74)", () => {
+  test("registerClient defaults status to approved (direct callers)", () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const r = registerClient(db, { redirectUris: ["https://example.com/cb"] });
+      expect(r.client.status).toBe("approved");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("registerClient honors explicit status: pending (DCR path)", () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const r = registerClient(db, {
+        redirectUris: ["https://example.com/cb"],
+        status: "pending",
+      });
+      expect(r.client.status).toBe("pending");
+      expect(getClient(db, r.client.clientId)?.status).toBe("pending");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("approveClient promotes pending → approved and is idempotent", () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const r = registerClient(db, {
+        redirectUris: ["https://example.com/cb"],
+        status: "pending",
+      });
+      expect(approveClient(db, r.client.clientId)).toBe(true);
+      expect(getClient(db, r.client.clientId)?.status).toBe("approved");
+      // Second call is a no-op but still returns true.
+      expect(approveClient(db, r.client.clientId)).toBe(true);
+      expect(getClient(db, r.client.clientId)?.status).toBe("approved");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("approveClient returns false for unknown client", () => {
+    const { db, cleanup } = makeDb();
+    try {
+      expect(approveClient(db, "no-such-client")).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("listClientsByStatus filters and orders by registered_at", () => {
+    const { db, cleanup } = makeDb();
+    try {
+      const a = registerClient(db, {
+        redirectUris: ["https://a.example/cb"],
+        status: "pending",
+        now: () => new Date("2026-01-01T00:00:00Z"),
+      });
+      const b = registerClient(db, {
+        redirectUris: ["https://b.example/cb"],
+        status: "approved",
+        now: () => new Date("2026-01-02T00:00:00Z"),
+      });
+      const c = registerClient(db, {
+        redirectUris: ["https://c.example/cb"],
+        status: "pending",
+        now: () => new Date("2026-01-03T00:00:00Z"),
+      });
+      const pending = listClientsByStatus(db, "pending").map((r) => r.clientId);
+      expect(pending).toEqual([a.client.clientId, c.client.clientId]);
+      const approved = listClientsByStatus(db, "approved").map((r) => r.clientId);
+      expect(approved).toEqual([b.client.clientId]);
     } finally {
       cleanup();
     }

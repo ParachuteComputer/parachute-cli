@@ -1761,6 +1761,8 @@ describe("handleRegister — RFC 7591 DCR", () => {
       expect(body.token_endpoint_auth_method).toBe("none");
       expect(body.redirect_uris).toEqual(["https://app.example/cb"]);
       expect(body.client_name).toBe("MyApp");
+      // #74 — unauthenticated DCR lands as pending until an operator approves.
+      expect(body.status).toBe("pending");
     } finally {
       cleanup();
     }
@@ -1831,6 +1833,233 @@ describe("handleRegister — RFC 7591 DCR", () => {
       });
       const res = await handleRegister(db, req, { issuer: ISSUER });
       expect(res.status).toBe(400);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// closes #74 — DCR is now operator-gated. Self-served registrations land as
+// pending and cannot OAuth; operator-bearer (hub:admin) registrations land
+// as approved and can OAuth immediately. This block covers all four exposed
+// gates plus the bearer paths in /oauth/register.
+describe("DCR approval gate (#74)", () => {
+  async function buildAuthorizeRequest(
+    db: Awaited<ReturnType<typeof makeDb>>["db"],
+    clientId: string,
+  ) {
+    const { challenge } = makePkce();
+    return new Request(
+      authorizeUrl({
+        client_id: clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        scope: "vault:read",
+      }),
+    );
+  }
+
+  test("authorize: pending client → 403 HTML 'App not yet approved'", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        status: "pending",
+      });
+      const res = handleAuthorizeGet(db, await buildAuthorizeRequest(db, reg.client.clientId), {
+        issuer: ISSUER,
+      });
+      expect(res.status).toBe(403);
+      const html = await res.text();
+      expect(html).toContain("App not yet approved");
+      expect(html).toContain("approve-client");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("authorize: approved client passes the gate (renders login)", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        status: "approved",
+      });
+      const res = handleAuthorizeGet(db, await buildAuthorizeRequest(db, reg.client.clientId), {
+        issuer: ISSUER,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Sign in");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("token: pending client → 401 invalid_client", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        status: "pending",
+      });
+      const form = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: "any",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        code_verifier: "any",
+      });
+      const res = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: form,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_client");
+      expect(body.error_description).toContain("not been approved");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("token (refresh): pending client → 401 invalid_client", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        status: "pending",
+      });
+      const form = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: "any",
+        client_id: reg.client.clientId,
+      });
+      const res = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: form,
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: fixtureLoadServicesManifest },
+      );
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_client");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("register: no Authorization header → status pending (public DCR path)", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const req = new Request(`${ISSUER}/oauth/register`, {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://app.example/cb"] }),
+        headers: { "content-type": "application/json" },
+      });
+      const res = await handleRegister(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.status).toBe("pending");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("register: operator-bearer with hub:admin → status approved", async () => {
+    // First-party install path. Modules running `parachute install <name>`
+    // present the hub's operator.token; the bearer carries hub:admin so the
+    // self-registration lands as approved without a human follow-up.
+    const { db, cleanup } = await makeDb();
+    try {
+      const { rotateSigningKey } = await import("../signing-keys.ts");
+      const { mintOperatorToken } = await import("../operator-token.ts");
+      rotateSigningKey(db);
+      const user = await createUser(db, "owner", "pw");
+      const operator = await mintOperatorToken(db, user.id, { issuer: ISSUER });
+
+      const req = new Request(`${ISSUER}/oauth/register`, {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://app.example/cb"] }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${operator.token}`,
+        },
+      });
+      const res = await handleRegister(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.status).toBe("approved");
+      // Sanity: the freshly-approved client passes the authorize gate.
+      const aRes = handleAuthorizeGet(
+        db,
+        await buildAuthorizeRequest(db, body.client_id as string),
+        { issuer: ISSUER },
+      );
+      expect(aRes.status).toBe(200);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("register: bearer without hub:admin → 403 insufficient_scope", async () => {
+    // A consumer access token (vault:read) is not an operator credential.
+    // The endpoint must reject rather than silently downgrading to pending.
+    const { db, cleanup } = await makeDb();
+    try {
+      const { rotateSigningKey } = await import("../signing-keys.ts");
+      const { signAccessToken } = await import("../jwt-sign.ts");
+      rotateSigningKey(db);
+      const user = await createUser(db, "owner", "pw");
+      const consumer = await signAccessToken(db, {
+        sub: user.id,
+        scopes: ["vault:read"],
+        audience: "vault",
+        clientId: "some-client",
+        issuer: ISSUER,
+      });
+
+      const req = new Request(`${ISSUER}/oauth/register`, {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://app.example/cb"] }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${consumer.token}`,
+        },
+      });
+      const res = await handleRegister(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("insufficient_scope");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("register: malformed bearer → 401 invalid_token", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const req = new Request(`${ISSUER}/oauth/register`, {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://app.example/cb"] }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer not-a-jwt",
+        },
+      });
+      const res = await handleRegister(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_token");
     } finally {
       cleanup();
     }
