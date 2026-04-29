@@ -28,6 +28,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { type InstallOpts, install } from "../commands/install.ts";
 import { configDir as defaultConfigDir } from "../config.ts";
@@ -105,6 +106,23 @@ export async function bootstrap(opts: BootstrapOpts = {}): Promise<BootstrapResu
     log("  The `parachute deploy` command threads it from the user's paste-at-deploy step;");
     log("  missing it means the machine was started outside that flow.");
     return { exitCode: 1 };
+  }
+
+  // Container-bootstrap ephemeral-layer guard: PARACHUTE_HOME must point at
+  // the persistent volume mount (e.g. /data on a Fly machine). When it isn't
+  // set, configDir() falls back to ~/.parachute under the running user's
+  // homedir, which on a Fly machine is a writable layer of the *image* —
+  // looks fine until the next deploy/restart wipes it. Warn loudly so a
+  // misconfigured machine config gets caught before the user notices their
+  // vault evaporated.
+  if ((env.PARACHUTE_HOME ?? "").length === 0 && dir.startsWith(homedir())) {
+    log(
+      `bootstrap: ⚠ PARACHUTE_HOME is not set — config dir resolved to ${dir} (under homedir).`,
+    );
+    log(
+      "  On a containerized deploy this is the ephemeral image layer; data will NOT survive restart.",
+    );
+    log("  Set PARACHUTE_HOME to your volume mount path (e.g. /data) in the machine env.");
   }
 
   const vaultName = pickVaultName(env);

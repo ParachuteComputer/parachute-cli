@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type BootstrapMarker,
@@ -143,6 +143,61 @@ describe("bootstrap — fresh-boot path", () => {
         now: FROZEN_NOW,
       });
       expect(seen.scribe).toEqual({ provider: "deepgram", key: "dg_secret_99" });
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe("bootstrap — ephemeral-layer guard (#131)", () => {
+  test("warns when PARACHUTE_HOME is unset and configDir resolves under homedir", async () => {
+    const dir = mkdtempSync(join(homedir(), ".test-pcli-bootstrap-eph-"));
+    try {
+      const logs: string[] = [];
+      await bootstrap({
+        env: { CLAUDE_API_TOKEN: "sk-test" },
+        configDir: dir,
+        log: (l) => logs.push(l),
+        installFn: async () => 0,
+        now: FROZEN_NOW,
+      });
+      const warnLine = logs.find((l) => l.includes("PARACHUTE_HOME is not set"));
+      expect(warnLine).toBeDefined();
+      expect(logs.join("\n")).toContain("ephemeral image layer");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not warn when PARACHUTE_HOME is set", async () => {
+    const dir = mkdtempSync(join(homedir(), ".test-pcli-bootstrap-eph-"));
+    try {
+      const logs: string[] = [];
+      await bootstrap({
+        env: { CLAUDE_API_TOKEN: "sk-test", PARACHUTE_HOME: dir },
+        configDir: dir,
+        log: (l) => logs.push(l),
+        installFn: async () => 0,
+        now: FROZEN_NOW,
+      });
+      expect(logs.find((l) => l.includes("PARACHUTE_HOME is not set"))).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not warn when configDir lives outside homedir (typical test path)", async () => {
+    const h = harness();
+    try {
+      const logs: string[] = [];
+      await bootstrap({
+        env: { CLAUDE_API_TOKEN: "sk-test" },
+        configDir: h.dir,
+        log: (l) => logs.push(l),
+        installFn: async () => 0,
+        now: FROZEN_NOW,
+      });
+      expect(logs.find((l) => l.includes("PARACHUTE_HOME is not set"))).toBeUndefined();
     } finally {
       h.cleanup();
     }
