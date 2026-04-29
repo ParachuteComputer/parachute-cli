@@ -8,12 +8,18 @@ import {
   handleAdminConfigPost,
   handleAdminLoginGet,
   handleAdminLoginPost,
+  handleAdminLogoutPost,
 } from "../admin-handlers.ts";
 import { CSRF_COOKIE_NAME, CSRF_FIELD_NAME } from "../csrf.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import type { ConfigSchema, ModuleManifest } from "../module-manifest.ts";
 import type { ServicesManifest } from "../services-manifest.ts";
-import { SESSION_TTL_MS, buildSessionCookie, createSession } from "../sessions.ts";
+import {
+  SESSION_TTL_MS,
+  buildSessionCookie,
+  createSession,
+  findSession,
+} from "../sessions.ts";
 import { createUser } from "../users.ts";
 
 const TEST_CSRF = "csrf-handlers-test-token";
@@ -132,6 +138,24 @@ describe("handleAdminLoginGet", () => {
     expect(html).toContain('value="/admin/config"');
     expect(html).not.toContain("evil.example");
   });
+
+  test("hidden __csrf input value matches the freshly-minted cookie value (#113)", async () => {
+    const req = new Request("http://hub.test/admin/login");
+    const res = handleAdminLoginGet(harness.db, req);
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    const cookieMatch = setCookie.match(
+      new RegExp(`${CSRF_COOKIE_NAME}=([A-Za-z0-9_-]+)`),
+    );
+    expect(cookieMatch).not.toBeNull();
+    const cookieToken = cookieMatch?.[1] ?? "";
+    expect(cookieToken.length).toBeGreaterThan(0);
+    const html = await res.text();
+    const formMatch = html.match(
+      new RegExp(`name="${CSRF_FIELD_NAME}" value="([^"]+)"`),
+    );
+    expect(formMatch).not.toBeNull();
+    expect(formMatch?.[1]).toBe(cookieToken);
+  });
 });
 
 describe("handleAdminLoginPost", () => {
@@ -206,6 +230,56 @@ describe("handleAdminLoginPost", () => {
     const res = await handleAdminLoginPost(harness.db, req);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/admin/config");
+  });
+});
+
+describe("handleAdminLogoutPost (#113)", () => {
+  test("rejects when CSRF token doesn't match the cookie", async () => {
+    const cookie = await cookieForUser(harness.db, "admin", "pw");
+    const { body, headers } = formBody({ [CSRF_FIELD_NAME]: "wrong" });
+    const req = new Request("http://hub.test/admin/logout", {
+      method: "POST",
+      headers: { ...headers, cookie },
+      body,
+    });
+    const res = await handleAdminLogoutPost(harness.db, req);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  test("clears session cookie, deletes session row, and redirects to /admin/login", async () => {
+    const user = await createUser(harness.db, "admin", "pw");
+    const session = createSession(harness.db, { userId: user.id });
+    const cookie = `${CSRF_COOKIE}; ${buildSessionCookie(
+      session.id,
+      Math.floor(SESSION_TTL_MS / 1000),
+    )}`;
+    const { body, headers } = formBody({ [CSRF_FIELD_NAME]: TEST_CSRF });
+    const req = new Request("http://hub.test/admin/logout", {
+      method: "POST",
+      headers: { ...headers, cookie },
+      body,
+    });
+    const res = await handleAdminLogoutPost(harness.db, req);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin/login");
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("parachute_hub_session=;");
+    expect(setCookie).toContain("Max-Age=0");
+    expect(findSession(harness.db, session.id)).toBeNull();
+  });
+
+  test("idempotent — clears cookie even with no active session", async () => {
+    const { body, headers } = formBody({ [CSRF_FIELD_NAME]: TEST_CSRF });
+    const req = new Request("http://hub.test/admin/logout", {
+      method: "POST",
+      headers: { ...headers, cookie: CSRF_COOKIE },
+      body,
+    });
+    const res = await handleAdminLogoutPost(harness.db, req);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin/login");
+    expect(res.headers.get("set-cookie") ?? "").toContain("parachute_hub_session=;");
   });
 });
 
