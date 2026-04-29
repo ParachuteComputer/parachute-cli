@@ -103,6 +103,19 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX sessions_user ON sessions (user_id);
     `,
   },
+  {
+    version: 4,
+    sql: `
+      -- DCR approval gate (closes #74). Public DCR was unauthenticated before
+      -- this migration; pre-existing rows are grandfathered as 'approved' so
+      -- already-trusted clients keep working. New rows default to 'pending'
+      -- unless the registrant authenticates with an operator token carrying
+      -- hub:admin scope.
+      ALTER TABLE clients ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
+      UPDATE clients SET status = 'approved';
+      CREATE INDEX clients_status ON clients (status);
+    `,
+  },
 ];
 
 export function openHubDb(path: string = hubDbPath()): Database {

@@ -20,6 +20,7 @@
  * on presentation.
  */
 import type { Database } from "bun:sqlite";
+import { AdminAuthError, adminAuthErrorResponse, requireScope } from "./admin-auth.ts";
 import {
   AuthCodeExpiredError,
   AuthCodeNotFoundError,
@@ -30,6 +31,7 @@ import {
   redeemAuthCode,
 } from "./auth-codes.ts";
 import {
+  type ClientStatus,
   type OAuthClient,
   type RegisteredClient,
   getClient,
@@ -285,6 +287,26 @@ function parseAuthorizeFormParams(url: URL): AuthorizeFormParams | { error: stri
   };
 }
 
+/** HTML response for pending clients hitting /oauth/authorize. */
+function pendingClientHtml(): Response {
+  return htmlError(
+    "App not yet approved",
+    "This client_id is registered but has not been approved by the hub operator. Ask the operator to run `parachute auth approve-client` for this app, then try again.",
+    403,
+  );
+}
+
+/** JSON response for pending clients hitting /oauth/token. */
+function pendingClientJson(): Response {
+  return jsonResponse(
+    {
+      error: "invalid_client",
+      error_description: "client is registered but has not been approved by the hub operator (#74)",
+    },
+    401,
+  );
+}
+
 /**
  * GET /oauth/authorize — entrypoint. Validates client + redirect_uri, then
  * either renders the login form (no session) or the consent screen (session
@@ -319,6 +341,7 @@ export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps):
     // matched it against a registered client. Render an HTML error.
     return htmlError("Unknown application", "This client_id is not registered with this hub.", 400);
   }
+  if (client.status !== "approved") return pendingClientHtml();
   try {
     requireRegisteredRedirectUri(client, parsed.redirectUri);
   } catch {
@@ -430,6 +453,7 @@ async function handleConsentSubmit(
   if (!client) {
     return htmlError("Unknown application", "This client_id is not registered with this hub.", 400);
   }
+  if (client.status !== "approved") return pendingClientHtml();
   try {
     requireRegisteredRedirectUri(client, params.redirectUri);
   } catch {
@@ -670,6 +694,7 @@ async function handleTokenAuthorizationCode(
   if (!client) {
     return jsonResponse({ error: "invalid_client", error_description: "unknown client_id" }, 401);
   }
+  if (client.status !== "approved") return pendingClientJson();
   const authFailure = authenticateClient(client, req, form, clientId);
   if (authFailure) return authFailure;
   let redeemed: ReturnType<typeof redeemAuthCode>;
@@ -744,6 +769,7 @@ async function handleTokenRefresh(
   if (!client) {
     return jsonResponse({ error: "invalid_client", error_description: "unknown client_id" }, 401);
   }
+  if (client.status !== "approved") return pendingClientJson();
   const authFailure = authenticateClient(client, req, form, clientId);
   if (authFailure) return authFailure;
   const row = findRefreshToken(db, refreshToken);
@@ -871,9 +897,19 @@ interface RegisterRequestBody {
 }
 
 /**
- * POST /oauth/register — RFC 7591 Dynamic Client Registration. Self-serve.
- * Returns the assigned `client_id` (and `client_secret` for confidential
- * clients). The brief defers admin-gating; today, any caller gets a row.
+ * POST /oauth/register — RFC 7591 Dynamic Client Registration.
+ *
+ * Approval gate (closes #74). New rows land as `pending` by default and
+ * cannot participate in OAuth flows until an operator runs
+ * `parachute auth approve-client <id>`. The single bypass is presenting an
+ * `Authorization: Bearer <operator-token>` whose token carries the
+ * `hub:admin` scope — the install-time path used by first-party modules so
+ * `parachute install vault` can self-register without a human follow-up.
+ *
+ * If a bearer is presented but invalid or insufficient, we reject with the
+ * RFC 6750 shape rather than silently downgrading to the public path: a
+ * caller who tried to authenticate but failed wants to know why, not get
+ * `pending` back and wonder why their module can't OAuth.
  */
 export async function handleRegister(
   db: Database,
@@ -907,6 +943,19 @@ export async function handleRegister(
       );
     }
   }
+  // Operator-bearer auto-approve. No header → public DCR path (status=pending).
+  // Header present → must validate as a hub:admin operator token; any failure
+  // is surfaced (don't silently fall through to pending).
+  let status: ClientStatus = "pending";
+  if (req.headers.get("authorization")) {
+    try {
+      await requireScope(db, req, "hub:admin", deps.issuer);
+      status = "approved";
+    } catch (err) {
+      if (err instanceof AdminAuthError) return adminAuthErrorResponse(err);
+      throw err;
+    }
+  }
   const confidential = body.token_endpoint_auth_method === "client_secret_post";
   const scopes = (body.scope ?? "").split(" ").filter((s) => s.length > 0);
   let registered: RegisteredClient;
@@ -916,6 +965,7 @@ export async function handleRegister(
       scopes,
       clientName: body.client_name,
       confidential,
+      status,
       now: deps.now,
     });
   } catch (err) {
@@ -929,6 +979,7 @@ export async function handleRegister(
     response_types: ["code"],
     token_endpoint_auth_method: confidential ? "client_secret_post" : "none",
     client_id_issued_at: Math.floor(new Date(registered.client.registeredAt).getTime() / 1000),
+    status: registered.client.status,
   };
   if (registered.client.scopes.length > 0) respBody.scope = registered.client.scopes.join(" ");
   if (registered.client.clientName) respBody.client_name = registered.client.clientName;

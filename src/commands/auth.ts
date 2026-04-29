@@ -18,6 +18,7 @@
 
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { approveClient, listClientsByStatus } from "../clients.ts";
 import { CONFIG_DIR } from "../config.ts";
 import { readExposeState } from "../expose-state.ts";
 import { HUB_DEFAULT_PORT, readHubPort } from "../hub-control.ts";
@@ -52,6 +53,8 @@ const HUB_LOCAL_SUBCOMMANDS = new Set([
   "set-password",
   "list-users",
   "rotate-operator",
+  "pending-clients",
+  "approve-client",
 ]);
 
 export function authHelp(): string {
@@ -67,6 +70,8 @@ Usage:
   parachute auth 2fa backup-codes      Regenerate backup codes
   parachute auth rotate-key            Rotate the hub's JWT signing key
   parachute auth rotate-operator       Mint a fresh ~/.parachute/operator.token
+  parachute auth pending-clients       List OAuth clients awaiting approval
+  parachute auth approve-client <id>   Approve a pending OAuth client
 
 set-password and list-users are hub-local — they read/write
 ~/.parachute/hub.db. set-password is interactive by default (prompts for
@@ -90,6 +95,12 @@ rotate-operator mints a fresh long-lived operator token at
 ~/.parachute/operator.token (mode 0600). Local CLI tools read this file
 as their bearer when calling on-box services. set-password also writes
 the file on first-run / password reset.
+
+pending-clients + approve-client gate /oauth/register against operator
+approval (closes #74). Self-served DCR registrations land as 'pending'
+and cannot OAuth until you run \`parachute auth approve-client <id>\`.
+First-party install flows that present \`Authorization: Bearer
+<operator-token>\` with \`hub:admin\` scope land as 'approved' immediately.
 `;
 }
 
@@ -374,6 +385,47 @@ async function runRotateOperator(deps: AuthDeps): Promise<number> {
   }
 }
 
+function runPendingClients(deps: AuthDeps): number {
+  const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
+  try {
+    const pending = listClientsByStatus(db, "pending");
+    if (pending.length === 0) {
+      console.log("(no pending OAuth clients)");
+      return 0;
+    }
+    console.log("CLIENT_ID                              NAME                 REGISTERED");
+    for (const c of pending) {
+      const id = c.clientId.padEnd(36).slice(0, 36);
+      const name = (c.clientName ?? "").padEnd(20).slice(0, 20);
+      console.log(`${id}  ${name} ${c.registeredAt}`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function runApproveClient(args: readonly string[], deps: AuthDeps): number {
+  const clientId = args[0];
+  if (!clientId) {
+    console.error("parachute auth approve-client: missing client_id argument");
+    console.error("usage: parachute auth approve-client <client_id>");
+    return 1;
+  }
+  const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
+  try {
+    const ok = approveClient(db, clientId);
+    if (!ok) {
+      console.error(`no OAuth client registered with client_id "${clientId}"`);
+      return 1;
+    }
+    console.log(`Approved OAuth client "${clientId}".`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function runListUsers(deps: AuthDeps): number {
   const db = deps.dbPath ? openHubDb(deps.dbPath) : openHubDb();
   try {
@@ -441,6 +493,24 @@ export async function auth(args: readonly string[], deps: AuthDeps | Runner = {}
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`parachute auth rotate-operator: ${msg}`);
+        return 1;
+      }
+    }
+    if (sub === "pending-clients") {
+      try {
+        return runPendingClients(normalized);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`parachute auth pending-clients: ${msg}`);
+        return 1;
+      }
+    }
+    if (sub === "approve-client") {
+      try {
+        return runApproveClient(args.slice(1), normalized);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`parachute auth approve-client: ${msg}`);
         return 1;
       }
     }
