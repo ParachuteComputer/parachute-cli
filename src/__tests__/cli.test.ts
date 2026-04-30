@@ -122,6 +122,33 @@ describe("cli per-subcommand help", () => {
     expect(stderr).toMatch(/--cloudflare only applies to `public`/);
   });
 
+  test("expose public --tailnet --cloudflare rejected as mutually exclusive", async () => {
+    const { code, stderr } = await runCli([
+      "expose",
+      "public",
+      "--tailnet",
+      "--cloudflare",
+      "--domain",
+      "vault.example.com",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/mutually exclusive/);
+  });
+
+  test("expose tailnet --tailnet rejected (tailnet flag scoped to public layer)", async () => {
+    const { code, stderr } = await runCli(["expose", "tailnet", "--tailnet"]);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/--tailnet pins the public layer/);
+  });
+
+  test("expose --help mentions --tailnet, --skip-provider-check, --tunnel-name", async () => {
+    const { code, stdout } = await runCli(["expose", "--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/--tailnet\b/);
+    expect(stdout).toMatch(/--skip-provider-check\b/);
+    expect(stdout).toMatch(/--tunnel-name\b/);
+  });
+
   test("expose with missing --domain value exits 1", async () => {
     const { code, stderr } = await runCli(["expose", "public", "--cloudflare", "--domain"]);
     expect(code).toBe(1);
