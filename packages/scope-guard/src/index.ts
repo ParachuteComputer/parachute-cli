@@ -1,7 +1,12 @@
 /**
  * @openparachute/scope-guard
  *
- * See README.md for the full overview. Public API is built up across the
- * following commits — this file re-exports it from the per-concern modules.
+ * Hub-issued JWT validation for Parachute resource servers. Build a
+ * `ScopeGuard` bound to your hub origin once per process, then call
+ * `guard.validateHubJwt(token, { expectedAudience? })` on each request.
+ *
+ * See README.md for the full API rundown and design.
  */
-export {};
+
+export { extractBearer, looksLikeJwt, parseScopes } from "./parse";
+export { hasScope } from "./scope";
