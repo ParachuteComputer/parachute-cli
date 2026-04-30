@@ -67,7 +67,7 @@ import {
   parseSessionCookie,
 } from "./sessions.ts";
 import { getUserByUsername, verifyPassword } from "./users.ts";
-import { isVaultEntry, shortName, vaultInstanceName } from "./well-known.ts";
+import { isVaultEntry, shortName, vaultInstanceNameFor } from "./well-known.ts";
 
 const VAULT_VERBS = new Set(["read", "write", "admin"]);
 
@@ -86,22 +86,20 @@ function unnamedVaultVerbs(scopes: string[]): string[] {
 
 /**
  * Vault instance names registered on this host, derived from services.json.
- * Walks both manifest shapes: single-entry-multi-path (`paths: ["/vault/work",
- * "/vault/personal"]`) and per-vault entries (`parachute-vault-work`).
+ * Walks both manifest shapes — single-entry-multi-path (`paths: ["/vault/work",
+ * "/vault/personal"]`) and per-vault entries (`parachute-vault-work`) — by
+ * delegating each (name, path) pair to the canonical `vaultInstanceNameFor`
+ * helper. Entries with no paths still resolve to a name via the helper's
+ * manifest-suffix fallback (#143).
  */
 function listVaultNames(manifest: ServicesManifest): string[] {
   const names = new Set<string>();
   for (const svc of manifest.services) {
     if (!isVaultEntry(svc)) continue;
-    let foundFromPaths = false;
-    for (const path of svc.paths) {
-      const m = path.match(/^\/vault\/([^/]+)/);
-      if (m?.[1]) {
-        names.add(m[1]);
-        foundFromPaths = true;
-      }
+    const paths = svc.paths.length > 0 ? svc.paths : [undefined];
+    for (const path of paths) {
+      names.add(vaultInstanceNameFor(svc.name, path));
     }
-    if (!foundFromPaths) names.add(vaultInstanceName(svc));
   }
   return Array.from(names).sort();
 }

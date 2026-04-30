@@ -49,7 +49,7 @@ import type { Database } from "bun:sqlite";
 import { type AdminAuthError, adminAuthErrorResponse, requireScope } from "./admin-auth.ts";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
 import { findService, readManifest } from "./services-manifest.ts";
-import { type WellKnownVaultEntry, isVaultEntry, vaultInstanceName } from "./well-known.ts";
+import { type WellKnownVaultEntry, isVaultEntry, vaultInstanceNameFor } from "./well-known.ts";
 
 /** Scope required to call POST /vaults. */
 export const HOST_ADMIN_SCOPE = "parachute:host:admin";
@@ -152,8 +152,10 @@ function jsonError(status: number, error: string, description: string): Response
 
 /**
  * Find an existing vault by name in services.json. Vaults live under one
- * `parachute-vault` service entry with a multi-path array (per Q5 of the
- * design — single entry, multi-path). We match on the path suffix.
+ * `parachute-vault` service entry, which may carry a multi-path array (per
+ * Q5 of the design — single entry, multi-path) or a per-vault `parachute-
+ * vault-<name>` entry. Delegates name resolution to `vaultInstanceNameFor`
+ * so well-known.ts, oauth-handlers.ts, and this lookup all agree (#143).
  */
 function findExistingVault(
   manifestPath: string,
@@ -168,14 +170,16 @@ function findExistingVault(
   const target = `/vault/${name}`;
   for (const svc of manifest.services) {
     if (!isVaultEntry(svc)) continue;
-    // Multi-path single-entry shape (Q5): paths includes /vault/<name>.
-    if (svc.paths.includes(target)) {
-      return { url: target, version: svc.version, path: target };
+    if (svc.paths.length === 0) {
+      if (vaultInstanceNameFor(svc.name, undefined) === name) {
+        return { url: target, version: svc.version, path: target };
+      }
+      continue;
     }
-    // Per-vault entry shape (`parachute-vault-<name>`): instance name match.
-    if (vaultInstanceName(svc) === name) {
-      const path = svc.paths[0] ?? target;
-      return { url: path, version: svc.version, path };
+    for (const path of svc.paths) {
+      if (vaultInstanceNameFor(svc.name, path) === name) {
+        return { url: path, version: svc.version, path };
+      }
     }
   }
   return null;
