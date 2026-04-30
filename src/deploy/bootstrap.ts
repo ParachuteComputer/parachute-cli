@@ -27,7 +27,8 @@
  * deploy` v1 only stands up the personal-knowledge tier.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { type InstallOpts, install } from "../commands/install.ts";
 import { configDir as defaultConfigDir } from "../config.ts";
@@ -107,6 +108,21 @@ export async function bootstrap(opts: BootstrapOpts = {}): Promise<BootstrapResu
     return { exitCode: 1 };
   }
 
+  // Container-bootstrap ephemeral-layer guard: PARACHUTE_HOME must point at
+  // the persistent volume mount (e.g. /data on a Fly machine). When it isn't
+  // set, configDir() falls back to ~/.parachute under the running user's
+  // homedir, which on a Fly machine is a writable layer of the *image* —
+  // looks fine until the next deploy/restart wipes it. Warn loudly so a
+  // misconfigured machine config gets caught before the user notices their
+  // vault evaporated.
+  if ((env.PARACHUTE_HOME ?? "").length === 0 && dir.startsWith(homedir())) {
+    log(`bootstrap: ⚠ PARACHUTE_HOME is not set — config dir resolved to ${dir} (under homedir).`);
+    log(
+      "  On a containerized deploy this is the ephemeral image layer; data will NOT survive restart.",
+    );
+    log("  Set PARACHUTE_HOME to your volume mount path (e.g. /data) in the machine env.");
+  }
+
   const vaultName = pickVaultName(env);
   const modules = parseModuleList(env);
 
@@ -133,6 +149,10 @@ export async function bootstrap(opts: BootstrapOpts = {}): Promise<BootstrapResu
   mkdirSync(dir, { recursive: true });
   persistTokenIntoEnvFile(join(dir, ".env"), claudeToken);
 
+  // install() is itself idempotent (see install.ts:418-441 — the bun-add gate
+  // skips re-linking when the package is already wired). That's what lets a
+  // failed mid-loop bootstrap retry cleanly on the next boot without
+  // double-installing the modules that already succeeded.
   for (const short of modules) {
     log(`bootstrap: — ${short} —`);
     const installOpts: InstallOpts = {
@@ -164,9 +184,20 @@ export async function bootstrap(opts: BootstrapOpts = {}): Promise<BootstrapResu
     vault_name: vaultName,
     parachute_version: version,
   };
-  writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+  writeMarkerAtomic(markerPath, marker);
   log(`bootstrap: ✓ complete — marker written to ${markerPath}`);
   return { exitCode: 0, marker };
+}
+
+/**
+ * Atomic marker write — tmp + rename, mirroring `writeEnvFile` in env-file.ts.
+ * Guards against the readMarker() check at next boot picking up a half-written
+ * file if the process is killed mid-write (Fly host maintenance, OOM kill, etc).
+ */
+function writeMarkerAtomic(path: string, marker: BootstrapMarker): void {
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, `${JSON.stringify(marker, null, 2)}\n`);
+  renameSync(tmp, path);
 }
 
 function pickVaultName(env: NodeJS.ProcessEnv): string {
