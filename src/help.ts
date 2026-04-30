@@ -159,6 +159,7 @@ export function exposeHelp(): string {
 Usage:
   parachute expose tailnet [off]
   parachute expose public  [off]
+  parachute expose public  --tailnet
   parachute expose public  --cloudflare --domain <hostname>
   parachute expose public  off --cloudflare
 
@@ -171,12 +172,17 @@ Status:
   hasn't been hardened. Prefer tailnet until public re-enters the
   documented narrative post-OAuth.
 
-Interactive:
-  Run in a terminal with no flags, \`parachute expose public\` walks you
-  through provider selection (Tailscale Funnel vs. Cloudflare Tunnel),
-  offers to install missing dependencies on macOS, and prompts for the
-  Cloudflare hostname when needed. Piped / non-TTY invocations keep the
-  scripted behavior: default to Tailscale, flags override.
+Provider auto-detect (\`expose public\`):
+  - In a terminal with no provider flag, walks an interactive picker
+    (Tailscale Funnel vs. Cloudflare Tunnel), offers to install missing
+    dependencies on macOS, and prompts for the Cloudflare hostname when
+    needed.
+  - In a non-TTY (CI / piped), detects which provider is set up:
+      * exactly one configured → uses it.
+      * both configured        → fails with a hint at --tailnet/--cloudflare.
+      * neither configured     → fails with install pointers for both.
+    \`--skip-provider-check\` bypasses detection and falls through to
+    today's Tailscale-Funnel default (CI escape hatch).
 
 Layers:
   tailnet    HTTPS across your tailnet (tailscale serve) — supported
@@ -189,17 +195,25 @@ Tailscale and Cloudflare modes share no state. Either can be up without the
 other. Inside each mode, switching on/off is idempotent.
 
 Flags:
-  --hub-origin <url>    override the OAuth issuer URL advertised to clients
-                        (default: https://<fqdn> when exposed, else http://127.0.0.1:<hub-port>)
-  --cloudflare          use a named Cloudflare tunnel for the public layer
-                        (requires --domain)
-  --domain <hostname>   fully-qualified hostname to route through the tunnel
-                        (e.g. vault.example.com). The apex must be a zone on
-                        your Cloudflare account.
+  --hub-origin <url>      override the OAuth issuer URL advertised to clients
+                          (default: https://<fqdn> when exposed, else http://127.0.0.1:<hub-port>)
+  --tailnet               pin \`expose public\` to Tailscale Funnel,
+                          bypassing the picker / auto-detect
+  --cloudflare            pin \`expose public\` to a named Cloudflare tunnel
+                          (requires --domain)
+  --domain <hostname>     fully-qualified hostname to route through the tunnel
+                          (e.g. vault.example.com). The apex must be a zone on
+                          your Cloudflare account.
+  --tunnel-name <name>    Cloudflare tunnel name (default: \`parachute\`).
+                          Use to coexist multiple named tunnels on one box.
+  --skip-provider-check   bypass non-TTY auto-detect, default to Tailscale
+                          Funnel as before. Intended for CI / scripts whose
+                          environment is already pre-flighted.
 
 Examples:
   parachute expose tailnet                                 # tailnet HTTPS
-  parachute expose public                                  # Funnel: *.ts.net URL
+  parachute expose public                                  # auto-pick / picker
+  parachute expose public --tailnet                        # force Tailscale Funnel
   parachute expose public off                              # stop the Funnel
   parachute expose public --cloudflare --domain vault.example.com
                                                            # stable URL via cloudflared
