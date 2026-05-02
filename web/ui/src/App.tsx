@@ -1,5 +1,6 @@
 import { Link, Route, Routes } from "react-router-dom";
 import { NewVault } from "./routes/NewVault.tsx";
+import { Permissions } from "./routes/Permissions.tsx";
 import { VaultsList } from "./routes/VaultsList.tsx";
 
 export function App() {
@@ -10,6 +11,7 @@ export function App() {
           Parachute Hub <span className="sub">vault management</span>
         </Link>
         <Link to="/vaults">Vaults</Link>
+        <Link to="/permissions">Permissions</Link>
         <a href="/" title="Hub discovery page (top-level)">
           Discovery
         </a>
@@ -19,6 +21,7 @@ export function App() {
         <Route path="/" element={<VaultsList />} />
         <Route path="/vaults" element={<VaultsList />} />
         <Route path="/vaults/new" element={<NewVault />} />
+        <Route path="/permissions" element={<Permissions />} />
         <Route
           path="*"
           element={

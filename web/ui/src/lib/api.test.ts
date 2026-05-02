@@ -279,6 +279,122 @@ describe("mintVaultAdminToken", () => {
   });
 });
 
+describe("listGrants", () => {
+  it("sends Bearer + parses {grants: [...]} body", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        grants: [
+          {
+            user_id: "u1",
+            client_id: "c1",
+            client_name: "App A",
+            scopes: ["vault:work:read"],
+            granted_at: "2026-04-01T12:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = await import("./api.ts");
+    const grants = await api.listGrants();
+
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.client_name).toBe("App A");
+    expect(grants[0]?.scopes).toEqual(["vault:work:read"]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/grants",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          authorization: "Bearer test-bearer",
+          accept: "application/json",
+        }),
+      }),
+    );
+  });
+
+  it("appends ?vault=<name> when the option is provided", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { grants: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = await import("./api.ts");
+    await api.listGrants({ vault: "work space" });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/grants?vault=work%20space", expect.anything());
+  });
+
+  it("returns [] when the body has no grants key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, {})),
+    );
+    const api = await import("./api.ts");
+    expect(await api.listGrants()).toEqual([]);
+  });
+
+  it("on 401 clears the cached token and throws HttpError(401)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(401, { error: "unauthenticated" })),
+    );
+    const api = await import("./api.ts");
+    await expect(api.listGrants()).rejects.toMatchObject({
+      name: "HttpError",
+      status: 401,
+    });
+    expect(auth.clearCachedToken).toHaveBeenCalled();
+  });
+});
+
+describe("revokeGrant", () => {
+  it("sends DELETE with Bearer and resolves on 204", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = await import("./api.ts");
+    await api.revokeGrant("client-abc");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/grants/client-abc",
+      expect.objectContaining({
+        method: "DELETE",
+        headers: expect.objectContaining({ authorization: "Bearer test-bearer" }),
+      }),
+    );
+  });
+
+  it("URL-encodes the client_id", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = await import("./api.ts");
+    await api.revokeGrant("with/slash");
+    expect(fetchMock).toHaveBeenCalledWith("/api/grants/with%2Fslash", expect.anything());
+  });
+
+  it("throws HttpError on 404", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(404, { error: "not_found" })),
+    );
+    const api = await import("./api.ts");
+    await expect(api.revokeGrant("nope")).rejects.toMatchObject({
+      name: "HttpError",
+      status: 404,
+    });
+  });
+
+  it("on 401 clears the cached token", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(401, { error: "unauthenticated" })),
+    );
+    const api = await import("./api.ts");
+    await expect(api.revokeGrant("c")).rejects.toMatchObject({ status: 401 });
+    expect(auth.clearCachedToken).toHaveBeenCalled();
+  });
+});
+
 describe("resolveManagementUrl", () => {
   // Note: the manifest validator (`asManagementUrl` in module-manifest.ts)
   // rejects paths that don't start with `/`, so the bare-relative branch
