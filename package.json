@@ -26,7 +26,7 @@
     "typecheck": "tsc --noEmit",
     "build:spa": "cd web/ui && bun install --frozen-lockfile && bun run build",
     "postinstall": "if [ -d web/ui ]; then bun run build:spa; fi",
-    "prepublishOnly": "bun run build:spa"
+    "prepack": "bun run build:spa"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
