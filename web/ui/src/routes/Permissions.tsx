@@ -121,18 +121,26 @@ export function Permissions() {
         ) : null}
       </form>
 
-      {renderBody(state, revoke, setRevoke, onConfirmRevoke, () => setReload((n) => n + 1))}
+      {renderBody({
+        state,
+        revoke,
+        setRevoke,
+        onConfirm: onConfirmRevoke,
+        onRetry: () => setReload((n) => n + 1),
+      })}
     </div>
   );
 }
 
-function renderBody(
-  state: State,
-  revoke: RevokeState,
-  setRevoke: (s: RevokeState) => void,
-  onConfirm: (grant: AdminGrantListing) => Promise<void>,
-  onRetry: () => void,
-) {
+interface RenderBodyProps {
+  state: State;
+  revoke: RevokeState;
+  setRevoke: (s: RevokeState) => void;
+  onConfirm: (grant: AdminGrantListing) => Promise<void>;
+  onRetry: () => void;
+}
+
+function renderBody({ state, revoke, setRevoke, onConfirm, onRetry }: RenderBodyProps) {
   if (state.kind === "loading") {
     return <p className="muted">Loading…</p>;
   }
@@ -175,7 +183,7 @@ function renderBody(
               </div>
               <div className="dim">
                 <span className="muted">granted </span>
-                <code>{g.granted_at}</code>
+                <code title={g.granted_at}>{formatGrantedAt(g.granted_at)}</code>
               </div>
               <div className="dim" style={{ marginTop: "0.25rem" }}>
                 <span className="muted">scopes: </span>
@@ -239,4 +247,9 @@ function renderBody(
       })}
     </div>
   );
+}
+
+function formatGrantedAt(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }

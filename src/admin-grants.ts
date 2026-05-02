@@ -32,7 +32,6 @@ import {
   requireScope,
 } from "./admin-auth.ts";
 import { HOST_ADMIN_SCOPE } from "./admin-vaults.ts";
-import { getClient } from "./clients.ts";
 import { listGrantsForUser, revokeGrant } from "./grants.ts";
 
 export interface AdminGrantsDeps {
@@ -72,10 +71,23 @@ export async function handleListGrants(req: Request, deps: AdminGrantsDeps): Pro
     ? grants.filter((g) => grantTouchesVault(g.scopes, vaultFilter))
     : grants;
 
+  // One bulk lookup keyed by client_id, instead of N getClient calls. Empty
+  // list short-circuits because `IN ()` is a SQL syntax error.
+  const names = new Map<string, string | null>();
+  if (filtered.length > 0) {
+    const placeholders = filtered.map(() => "?").join(",");
+    const rows = deps.db
+      .query<{ client_id: string; client_name: string | null }, string[]>(
+        `SELECT client_id, client_name FROM clients WHERE client_id IN (${placeholders})`,
+      )
+      .all(...filtered.map((g) => g.clientId));
+    for (const r of rows) names.set(r.client_id, r.client_name);
+  }
+
   const enriched: AdminGrantListing[] = filtered.map((g) => ({
     user_id: g.userId,
     client_id: g.clientId,
-    client_name: getClient(deps.db, g.clientId)?.clientName ?? null,
+    client_name: names.get(g.clientId) ?? null,
     scopes: g.scopes,
     granted_at: g.grantedAt,
   }));

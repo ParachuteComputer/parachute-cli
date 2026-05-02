@@ -2,7 +2,7 @@
  * Permissions route smoke tests — loading, ok with rows, empty, error,
  * filter submit, revoke confirm flow (cancel + confirm), revoke failure.
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -102,10 +102,10 @@ describe("Permissions", () => {
 
     renderRoute();
     fireEvent.click(await screen.findByRole("button", { name: /^revoke app a$/i }));
-    // The dialog renders its own Revoke button — pick the one inside the dialog.
+    // Scope the selector to the dialog so we don't pick up the row's own
+    // Revoke button (which is hidden while the dialog is open anyway).
     const dialog = screen.getByRole("dialog", { name: /confirm revoke app a/i });
-    const confirmBtn = dialog.querySelector("button:not(.secondary)") as HTMLButtonElement;
-    fireEvent.click(confirmBtn);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^revoke$/i }));
 
     await waitFor(() => expect(api.revokeGrant).toHaveBeenCalledWith("c1"));
     // Row gone, empty state shows.
@@ -119,8 +119,7 @@ describe("Permissions", () => {
     renderRoute();
     fireEvent.click(await screen.findByRole("button", { name: /^revoke app a$/i }));
     const dialog = screen.getByRole("dialog", { name: /confirm revoke app a/i });
-    const confirmBtn = dialog.querySelector("button:not(.secondary)") as HTMLButtonElement;
-    fireEvent.click(confirmBtn);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^revoke$/i }));
 
     await waitFor(() =>
       expect(screen.getByText(/revoke failed \(409\): in flight/i)).toBeInTheDocument(),
