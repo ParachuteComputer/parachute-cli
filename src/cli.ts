@@ -31,6 +31,7 @@ import {
   topLevelHelp,
   upgradeHelp,
 } from "./help.ts";
+import { HUB_SVC } from "./hub-control.ts";
 import { knownServices } from "./service-spec.ts";
 import { ServicesManifestError } from "./services-manifest.ts";
 import { TailscaleError } from "./tailscale/run.ts";
@@ -565,7 +566,7 @@ async function main(argv: string[]): Promise<number> {
       const svc = rest[0];
       if (!svc) {
         console.error("usage: parachute logs <service> [-f]");
-        console.error(`services: hub, ${knownServices().join(", ")}`);
+        console.error(`services: ${[HUB_SVC, ...knownServices()].join(", ")}`);
         return 1;
       }
       const follow = rest.includes("-f") || rest.includes("--follow");

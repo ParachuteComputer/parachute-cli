@@ -423,13 +423,20 @@ export async function restart(svc: string | undefined, opts: LifecycleOpts = {})
  * port-fallback probe, the port-file write, and the issuer flag — none of
  * which fit a generic `SERVICE_SPECS` entry. The hub origin (when known)
  * doubles as the OAuth `iss` claim, so we forward it as `issuer`.
+ *
+ * Silences `ensureHubRunning`'s own log and emits our own `✓ hub started …`
+ * line so the output matches the service-start shape (`✓ vault started
+ * (pid X); logs: …`) and `stopHubSvc`'s `✓ hub stopped.` symmetry.
  */
 async function startHubSvc(r: Resolved): Promise<number> {
-  const ensureOpts: EnsureHubOpts = { configDir: r.configDir, log: r.log };
+  const ensureOpts: EnsureHubOpts = { configDir: r.configDir, log: () => {} };
   if (r.hubOrigin) ensureOpts.issuer = r.hubOrigin;
   try {
     const result = await r.ensureHub(ensureOpts);
-    if (!result.started) {
+    if (result.started) {
+      const logFile = logPathFor(HUB_SVC, r.configDir);
+      r.log(`✓ hub started (pid ${result.pid}) on port ${result.port}; logs: ${logFile}`);
+    } else {
       r.log(`hub already running (pid ${result.pid}) on port ${result.port}.`);
     }
     return 0;
