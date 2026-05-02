@@ -3,7 +3,15 @@ import { join } from "node:path";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import { readEnvFileValues } from "../env-file.ts";
 import { readExposeState } from "../expose-state.ts";
-import { readHubPort } from "../hub-control.ts";
+import {
+  type EnsureHubOpts,
+  type EnsureHubResult,
+  HUB_SVC,
+  type StopHubOpts,
+  ensureHubRunning,
+  readHubPort,
+  stopHub,
+} from "../hub-control.ts";
 import { HUB_ORIGIN_ENV, deriveHubOrigin } from "../hub-origin.ts";
 import { ModuleManifestError } from "../module-manifest.ts";
 import {
@@ -135,6 +143,18 @@ export interface LifecycleOpts {
    * and the service advertises its own default issuer.
    */
   hubOrigin?: string;
+  /**
+   * Hub-lifecycle seams for `parachute start|stop|restart hub`. The hub
+   * doesn't go through the generic services-manifest path because its
+   * start has special semantics (port-fallback probe, port-file write,
+   * --issuer flag) — `lifecycle.start("hub")` dispatches to
+   * `ensureHubRunning` and `lifecycle.stop("hub")` dispatches to
+   * `stopHub`. Tests inject stubs to avoid spawning real bun processes.
+   */
+  hub?: {
+    ensureRunning?: (opts: EnsureHubOpts) => Promise<EnsureHubResult>;
+    stop?: (opts: StopHubOpts) => Promise<boolean>;
+  };
 }
 
 interface Resolved {
@@ -149,6 +169,8 @@ interface Resolved {
   killWaitMs: number;
   pollIntervalMs: number;
   hubOrigin: string | undefined;
+  ensureHub: (opts: EnsureHubOpts) => Promise<EnsureHubResult>;
+  stopHubFn: (opts: StopHubOpts) => Promise<boolean>;
 }
 
 function resolve(opts: LifecycleOpts): Resolved {
@@ -165,6 +187,8 @@ function resolve(opts: LifecycleOpts): Resolved {
     killWaitMs: opts.killWaitMs ?? 10_000,
     pollIntervalMs: opts.pollIntervalMs ?? 200,
     hubOrigin: resolveHubOrigin(opts.hubOrigin, configDir),
+    ensureHub: opts.hub?.ensureRunning ?? ensureHubRunning,
+    stopHubFn: opts.hub?.stop ?? stopHub,
   };
 }
 
@@ -278,6 +302,7 @@ async function resolveTargets(
 
 export async function start(svc: string | undefined, opts: LifecycleOpts = {}): Promise<number> {
   const r = resolve(opts);
+  if (svc === HUB_SVC) return startHubSvc(r);
   const picked = await resolveTargets(svc, r.manifestPath);
   if ("error" in picked) {
     r.log(picked.error);
@@ -337,6 +362,7 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
 
 export async function stop(svc: string | undefined, opts: LifecycleOpts = {}): Promise<number> {
   const r = resolve(opts);
+  if (svc === HUB_SVC) return stopHubSvc(r);
   const picked = await resolveTargets(svc, r.manifestPath);
   if ("error" in picked) {
     r.log(picked.error);
@@ -392,6 +418,48 @@ export async function restart(svc: string | undefined, opts: LifecycleOpts = {})
   return await start(svc, opts);
 }
 
+/**
+ * Start the internal hub. Delegates to `ensureHubRunning`, which owns the
+ * port-fallback probe, the port-file write, and the issuer flag — none of
+ * which fit a generic `SERVICE_SPECS` entry. The hub origin (when known)
+ * doubles as the OAuth `iss` claim, so we forward it as `issuer`.
+ */
+async function startHubSvc(r: Resolved): Promise<number> {
+  const ensureOpts: EnsureHubOpts = { configDir: r.configDir, log: r.log };
+  if (r.hubOrigin) ensureOpts.issuer = r.hubOrigin;
+  try {
+    const result = await r.ensureHub(ensureOpts);
+    if (!result.started) {
+      r.log(`hub already running (pid ${result.pid}) on port ${result.port}.`);
+    }
+    return 0;
+  } catch (err) {
+    r.log(`✗ hub failed to start: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
+/**
+ * Stop the internal hub. `stopHub` returns false when nothing was running
+ * (no pidfile, or stale pidfile cleared) — that's a clean no-op for the
+ * operator, so we still exit 0.
+ */
+async function stopHubSvc(r: Resolved): Promise<number> {
+  try {
+    const stopped = await r.stopHubFn({
+      configDir: r.configDir,
+      log: r.log,
+      killWaitMs: r.killWaitMs,
+      pollIntervalMs: r.pollIntervalMs,
+    });
+    r.log(stopped ? "✓ hub stopped." : "hub wasn't running.");
+    return 0;
+  } catch (err) {
+    r.log(`✗ hub failed to stop: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
 export interface LogsOpts {
   configDir?: string;
   manifestPath?: string;
@@ -411,14 +479,15 @@ export async function logs(svc: string, opts: LogsOpts = {}): Promise<number> {
   const follow = opts.follow ?? false;
 
   // logs only needs a valid short name to find the log file. First-party
-  // wins via the spec lookup; third-party rows match by `entry.name`. We
-  // don't need the full spec here — we just need to confirm the name maps
-  // to something the CLI manages.
+  // wins via the spec lookup; third-party rows match by `entry.name`; the
+  // internal hub is a known short outside of services.json. We don't need
+  // the full spec here — we just need to confirm the name maps to
+  // something the CLI manages.
   const isFirstParty = getSpec(svc) !== undefined;
-  if (!isFirstParty) {
+  if (!isFirstParty && svc !== HUB_SVC) {
     const entry = readManifest(manifestPath).services.find((s) => s.name === svc);
     if (!entry?.installDir) {
-      log(`unknown service "${svc}". known: ${knownServices().join(", ")}`);
+      log(`unknown service "${svc}". known: ${[HUB_SVC, ...knownServices()].join(", ")}`);
       return 1;
     }
   }

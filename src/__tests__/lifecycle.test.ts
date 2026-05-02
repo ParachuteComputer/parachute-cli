@@ -938,3 +938,185 @@ describe("process-group lifecycle (hub#88)", () => {
     }
   });
 });
+
+/**
+ * `parachute start|stop|restart hub` — the bug Aaron filed as hub#166. Hub
+ * isn't a row in services.json, so the generic services-manifest path
+ * surfaced "unknown service: hub". The fix dispatches `svc === "hub"`
+ * straight to hub-control.ts. These tests inject `ensureRunning`/`stop`
+ * stubs so we don't actually fork bun.
+ */
+describe("parachute start|stop|restart hub", () => {
+  test("start hub: dispatches to ensureHubRunning, propagates configDir + issuer", async () => {
+    const h = makeHarness();
+    try {
+      const log: string[] = [];
+      const ensureCalls: Array<{ configDir?: string; issuer?: string }> = [];
+      const code = await start("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        hubOrigin: "https://hub.example.com",
+        hub: {
+          ensureRunning: async (opts) => {
+            ensureCalls.push({ configDir: opts.configDir, issuer: opts.issuer });
+            return { pid: 4711, port: 1939, started: true };
+          },
+        },
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(ensureCalls).toHaveLength(1);
+      expect(ensureCalls[0]).toEqual({
+        configDir: h.configDir,
+        issuer: "https://hub.example.com",
+      });
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("start hub: reports already-running cleanly when ensureHubRunning returns started=false", async () => {
+    const h = makeHarness();
+    try {
+      const log: string[] = [];
+      const code = await start("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        hub: {
+          ensureRunning: async () => ({ pid: 8888, port: 1939, started: false }),
+        },
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(log.join("\n")).toMatch(/hub already running \(pid 8888\) on port 1939/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("start hub: surfaces ensureHubRunning errors as exit 1", async () => {
+    const h = makeHarness();
+    try {
+      const log: string[] = [];
+      const code = await start("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        hub: {
+          ensureRunning: async () => {
+            throw new Error("hub: port 1939 unavailable");
+          },
+        },
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(1);
+      expect(log.join("\n")).toMatch(/hub failed to start.*port 1939 unavailable/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("stop hub: dispatches to stopHub, true → '✓ hub stopped'", async () => {
+    const h = makeHarness();
+    try {
+      const log: string[] = [];
+      const stopCalls: Array<{ configDir?: string }> = [];
+      const code = await stop("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        hub: {
+          stop: async (opts) => {
+            stopCalls.push({ configDir: opts.configDir });
+            return true;
+          },
+        },
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(stopCalls).toHaveLength(1);
+      expect(stopCalls[0]?.configDir).toBe(h.configDir);
+      expect(log.join("\n")).toMatch(/✓ hub stopped/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("stop hub: false → 'wasn't running' (still exit 0)", async () => {
+    const h = makeHarness();
+    try {
+      const log: string[] = [];
+      const code = await stop("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        hub: { stop: async () => false },
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(log.join("\n")).toMatch(/hub wasn't running/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("restart hub: chains stop then start through the same hub seam", async () => {
+    const h = makeHarness();
+    try {
+      const log: string[] = [];
+      const order: string[] = [];
+      const code = await restart("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        hub: {
+          stop: async () => {
+            order.push("stop");
+            return true;
+          },
+          ensureRunning: async () => {
+            order.push("start");
+            return { pid: 5151, port: 1939, started: true };
+          },
+        },
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(order).toEqual(["stop", "start"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("logs hub: doesn't reject 'hub' as an unknown service", async () => {
+    const h = makeHarness();
+    try {
+      // No log file yet — exercise the "no logs yet" branch, which still
+      // returns 0. Goal of this test is just the unknown-service guard.
+      const log: string[] = [];
+      const code = await logs("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(log.join("\n")).toMatch(/no logs yet for hub/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("logs hub: prints the tail when a log file exists", async () => {
+    const h = makeHarness();
+    try {
+      const path = ensureLogPath("hub", h.configDir);
+      writeFileSync(path, "hub line one\nhub line two\n");
+      const log: string[] = [];
+      const code = await logs("hub", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => log.push(l),
+      });
+      expect(code).toBe(0);
+      expect(log).toEqual(["hub line one", "hub line two"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
