@@ -170,6 +170,69 @@ export async function mintVaultAdminToken(name: string): Promise<MintedVaultAdmi
 }
 
 /**
+ * Operator-visible OAuth grant from `GET /api/grants`. The hub returns a
+ * snake_case row to keep the wire format aligned with the underlying
+ * sqlite schema; the SPA reads it directly.
+ */
+export interface AdminGrantListing {
+  user_id: string;
+  client_id: string;
+  /** Display name from the OAuth client registration. Null when the client never set one. */
+  client_name: string | null;
+  scopes: string[];
+  granted_at: string;
+}
+
+/**
+ * GET /api/grants — list the operator's OAuth-grant skip-list. Optional
+ * `vault` filter narrows to grants whose scope set touches `vault:<name>:*`.
+ * Same Bearer pattern as `createVault`: a 401/403 dumps the cached token so
+ * the next call re-mints from the session cookie (or hands off to login).
+ */
+export async function listGrants(opts: { vault?: string } = {}): Promise<AdminGrantListing[]> {
+  const bearer = await getHostAdminToken();
+  const query = opts.vault ? `?vault=${encodeURIComponent(opts.vault)}` : "";
+  const res = await fetch(`/api/grants${query}`, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${bearer}`,
+    },
+  });
+  if (res.status === 401 || res.status === 403) {
+    clearCachedToken();
+    throw new HttpError(res.status, await readError(res));
+  }
+  if (!res.ok) {
+    throw new HttpError(res.status, await readError(res));
+  }
+  const body = (await res.json()) as { grants: AdminGrantListing[] };
+  return body.grants ?? [];
+}
+
+/**
+ * DELETE /api/grants/<client_id> — revoke a single grant. Returns void on
+ * 204; throws HttpError on 4xx. Note: revoking a grant only forces the
+ * next OAuth flow for this client to show the consent screen again — it
+ * does NOT revoke active access tokens. That's a separate `/oauth/revoke`
+ * call (out of scope for the admin UI).
+ */
+export async function revokeGrant(clientId: string): Promise<void> {
+  const bearer = await getHostAdminToken();
+  const res = await fetch(`/api/grants/${encodeURIComponent(clientId)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  if (res.status === 401 || res.status === 403) {
+    clearCachedToken();
+    throw new HttpError(res.status, await readError(res));
+  }
+  if (!res.ok) {
+    throw new HttpError(res.status, await readError(res));
+  }
+}
+
+/**
  * Resolve a vault's `managementUrl` against the vault's mounted URL.
  * Absolute URL → returned verbatim. Path → joined onto `vaultUrl` after
  * stripping the trailing slash so we don't double-slash.
