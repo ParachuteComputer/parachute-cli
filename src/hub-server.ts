@@ -667,12 +667,13 @@ export function hubFetch(
     //      from services.json by longest-mount-prefix. Read per request so a
     //      `parachute vault create` performed after `parachute expose` is
     //      immediately reachable (#144).
-    //   3. `/vault/<anything else>` → SPA shell. `/vault/new`, `/vault/<name>`
-    //      detail (planned), and `/vault/assets/*` static assets all land
-    //      here. Caveat: a vault named `new` or `assets` would shadow the
-    //      SPA route — relying on the operator not naming vaults after
-    //      reserved-looking words is the same shape the existing
-    //      RESERVED_VAULT_NAMES set uses.
+    //   3. `/vault/<spa-route>` → SPA shell. Only single-segment paths
+    //      (`/vault/new`, `/vault/<name>`) and `/vault/assets/*` count as
+    //      SPA routes. Multi-segment requests like `/vault/<unknown>/health`
+    //      are vault-API shapes targeting a non-existent vault and 404 —
+    //      otherwise the SPA shell would mask backend 404s with HTML.
+    //      Caveat: a vault named `new` or `assets` would shadow the SPA
+    //      route — `RESERVED_VAULT_NAMES` already enforces this.
     if (pathname === "/vault") {
       if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
       return serveSpa(spaDistDir, pathname, "/vault");
@@ -680,10 +681,9 @@ export function hubFetch(
     if (pathname.startsWith("/vault/")) {
       const proxied = await proxyToVault(req, manifestPath);
       if (proxied) return proxied;
-      // No vault claims this path — fall through to the SPA shell so the
-      // client-side router can render a `/new`, `/:name`, etc. route. Only
-      // GET reaches the SPA; non-GET writes that don't hit a vault upstream
-      // are operator errors, not SPA traffic, so 404 them.
+      const sub = pathname.slice("/vault/".length);
+      const isSpaRoute = !sub.includes("/") || sub.startsWith("assets/");
+      if (!isSpaRoute) return new Response("not found", { status: 404 });
       if (req.method !== "GET") return new Response("not found", { status: 404 });
       return serveSpa(spaDistDir, pathname, "/vault");
     }
