@@ -59,7 +59,7 @@ describe("VaultsList", () => {
     await waitFor(() => expect(screen.getByText(/no vaults yet/i)).toBeInTheDocument());
     expect(screen.getByRole("link", { name: /create a vault/i })).toHaveAttribute(
       "href",
-      "/vaults/new",
+      "/new",
     );
   });
 
