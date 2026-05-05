@@ -214,8 +214,10 @@ interface ResolvedTarget {
    * Lifecycle spec resolved at request time. First-party comes from
    * `getSpec(short)`; third-party comes from
    * `getSpecFromInstallDir(entry.installDir, ...)`. May be undefined when
-   * a row has neither — lifecycle prints "lifecycle not yet supported"
-   * for that service rather than crashing the whole sweep.
+   * a row has neither — `start` prints the actionable "no installDir"
+   * re-install message for an installDir-less third-party row, or
+   * "lifecycle not yet supported" otherwise; `stop`/`logs` keep working
+   * via pidfile/logfile semantics keyed by `short`.
    */
   spec: ServiceSpec | undefined;
 }
@@ -248,6 +250,13 @@ async function specForEntry(
  * `module.json` (which is what install copied to `entry.name` for
  * third-party). First-party are addressed by their short name (vault,
  * notes, …) and matched via `shortNameForManifest`.
+ *
+ * Named-path detail: a third-party row whose name matches but lacks
+ * `installDir` resolves to the entry with `spec: undefined` (rather than
+ * an "unknown service" error). `stop`/`logs` handle the spec-less case
+ * via pidfile/logfile semantics; `start` surfaces an actionable
+ * re-install hint downstream. The genuinely-unknown path (no first-party
+ * fallback AND no row in services.json) still errors as `unknown service`.
  */
 async function resolveTargets(
   svc: string | undefined,
@@ -268,13 +277,19 @@ async function resolveTargets(
       }
       return { targets: [{ short: svc, entry, spec: firstPartySpec }] };
     }
-    // Third-party: match a services.json row by name. Third-party rows
-    // carry `installDir`; without it we have no way to resolve a spec.
+    // Third-party: match a services.json row by name. Rows with `installDir`
+    // resolve a full spec from the on-disk module.json. Rows without it are
+    // still managed (stop/logs use pidfile/logfile semantics keyed by short
+    // name), but with `spec: undefined` — `start` will surface an
+    // installDir-specific error downstream rather than reject up front.
     const entry = manifest.services.find((s) => s.name === svc);
-    if (entry?.installDir) {
-      const { spec, error } = await specForEntry(svc, entry);
-      if (error) return { error: `${svc}: invalid module.json — ${error}` };
-      return { targets: [{ short: svc, entry, spec }] };
+    if (entry) {
+      if (entry.installDir) {
+        const { spec, error } = await specForEntry(svc, entry);
+        if (error) return { error: `${svc}: invalid module.json — ${error}` };
+        return { targets: [{ short: svc, entry, spec }] };
+      }
+      return { targets: [{ short: svc, entry, spec: undefined }] };
     }
     return {
       error: `unknown service "${svc}". known: ${knownServices().join(", ")}`,
@@ -323,7 +338,17 @@ export async function start(svc: string | undefined, opts: LifecycleOpts = {}): 
 
     const cmd = spec?.startCmd?.(entry);
     if (!cmd || cmd.length === 0) {
-      r.log(`${short}: lifecycle not yet supported for this service.`);
+      // Distinguish the missing-installDir case from "spec resolved but has
+      // no startCmd" — the former is fixable by re-registering the module,
+      // the latter is a hub-level limitation. Third-party rows hit the first
+      // branch when their self-registration predates the installDir contract.
+      if (!getSpec(short) && !entry.installDir) {
+        r.log(
+          `${short}: services.json entry has no installDir, so the start command can't be resolved. Re-run \`parachute install <path-to-${short}>\` to refresh its registration, or upgrade the module to a version that self-registers with installDir.`,
+        );
+      } else {
+        r.log(`${short}: lifecycle not yet supported for this service.`);
+      }
       failures++;
       continue;
     }
@@ -487,13 +512,14 @@ export async function logs(svc: string, opts: LogsOpts = {}): Promise<number> {
 
   // logs only needs a valid short name to find the log file. First-party
   // wins via the spec lookup; third-party rows match by `entry.name`; the
-  // internal hub is a known short outside of services.json. We don't need
-  // the full spec here — we just need to confirm the name maps to
-  // something the CLI manages.
+  // internal hub is a known short outside of services.json. installDir is
+  // irrelevant here — the log file is keyed by short name and exists once
+  // the service has run, regardless of how it was registered. We just need
+  // to confirm the name maps to something the CLI manages.
   const isFirstParty = getSpec(svc) !== undefined;
   if (!isFirstParty && svc !== HUB_SVC) {
     const entry = readManifest(manifestPath).services.find((s) => s.name === svc);
-    if (!entry?.installDir) {
+    if (!entry) {
       log(`unknown service "${svc}". known: ${[HUB_SVC, ...knownServices()].join(", ")}`);
       return 1;
     }
