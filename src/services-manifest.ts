@@ -136,7 +136,47 @@ export function readManifest(path: string = SERVICES_MANIFEST_PATH): ServicesMan
       `failed to parse ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  return validateManifest(raw, path);
+  const validated = validateManifest(raw, path);
+  const migrated = migrateClawToAgent(validated);
+  if (migrated.changed) writeManifest(migrated.manifest, path);
+  return migrated.manifest;
+}
+
+/**
+ * Migrate legacy `claw` entries to `agent` in-place. Paraclaw was renamed
+ * to parachute-agent across the ecosystem (npm package, mount path, short
+ * name); operators who upgraded hub but still have the old paraclaw row
+ * in services.json would otherwise see a tile labelled "Claw" and a hub
+ * route at `/claw` while their newly-upgraded daemon listens on `/agent`.
+ *
+ * Idempotent. Only rewrites when both `name === "claw"` AND the first path
+ * is `/claw` — narrow enough that a deliberately-named third-party module
+ * (e.g. `name: "claw"` on a different mount) is left alone. Health and any
+ * `/claw`-rooted paths are rewritten in lockstep.
+ */
+function migrateClawToAgent(manifest: ServicesManifest): {
+  manifest: ServicesManifest;
+  changed: boolean;
+} {
+  let changed = false;
+  const services = manifest.services.map((entry) => {
+    if (entry.name !== "claw" || entry.paths[0] !== "/claw") return entry;
+    changed = true;
+    const next: ServiceEntry = {
+      ...entry,
+      name: "agent",
+      paths: entry.paths.map((p) => rewriteClawPath(p)),
+      health: rewriteClawPath(entry.health),
+    };
+    return next;
+  });
+  return { manifest: { services }, changed };
+}
+
+function rewriteClawPath(p: string): string {
+  if (p === "/claw") return "/agent";
+  if (p.startsWith("/claw/")) return `/agent${p.slice("/claw".length)}`;
+  return p;
 }
 
 export function writeManifest(
