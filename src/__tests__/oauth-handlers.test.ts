@@ -121,8 +121,8 @@ describe("authorizationServerMetadata", () => {
       "vault:admin",
       "hub:admin",
       "parachute:host:admin", // declared but operator-only — must still be filtered
-      "claw:read",
-      "claw:write",
+      "agent:read",
+      "agent:write",
       "mymodule:do-thing",
     ]);
     const res = authorizationServerMetadata({
@@ -132,8 +132,8 @@ describe("authorizationServerMetadata", () => {
     const body = (await res.json()) as Record<string, unknown>;
     const scopesSupported = body.scopes_supported as string[];
     // Third-party scopes show up
-    expect(scopesSupported).toContain("claw:read");
-    expect(scopesSupported).toContain("claw:write");
+    expect(scopesSupported).toContain("agent:read");
+    expect(scopesSupported).toContain("agent:write");
     expect(scopesSupported).toContain("mymodule:do-thing");
     // First-party still advertised — no regression
     expect(scopesSupported).toContain("vault:read");

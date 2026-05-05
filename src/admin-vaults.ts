@@ -3,7 +3,7 @@
  *
  * The hub's first authenticated, mutating endpoint. Until now the hub has
  * been a pure issuer; Phase 1 of the vault-config-and-scopes design (D1)
- * lifts vault provisioning into a hub UI surface so paraclaw / hub-admin
+ * lifts vault provisioning into a hub UI surface so parachute-agent / hub-admin
  * pages can mint a vault without shelling out to a terminal.
  *
  * Wire shape:

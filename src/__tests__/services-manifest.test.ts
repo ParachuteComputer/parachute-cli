@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -192,6 +192,123 @@ describe("services-manifest", () => {
       expect(() => upsertService({ ...vault, installDir: 42 as unknown as string }, path)).toThrow(
         /installDir/,
       );
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("claw → agent migration", () => {
+  // Paraclaw was renamed to parachute-agent across the ecosystem (npm
+  // package, mount path, short name). Operators who upgraded hub but
+  // still have the old paraclaw row in services.json otherwise see a
+  // tile labelled "Claw" and a hub route at `/claw` while their newly
+  // upgraded daemon listens on `/agent`. The migration runs on
+  // readManifest, rewrites the row in-place, and writes back.
+  const claw: ServiceEntry = {
+    name: "claw",
+    port: 1944,
+    paths: ["/claw"],
+    health: "/claw/health",
+    version: "0.1.0",
+  };
+  const agent: ServiceEntry = {
+    name: "agent",
+    port: 1944,
+    paths: ["/agent"],
+    health: "/agent/health",
+    version: "0.1.0",
+  };
+
+  test("rewrites name + paths + health when both name=claw and paths[0]=/claw", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      writeFileSync(path, `${JSON.stringify({ services: [claw] }, null, 2)}\n`);
+      const got = readManifest(path);
+      expect(got.services).toEqual([agent]);
+      // Persisted: a second read sees the migrated shape directly, no
+      // re-migration required.
+      const reread = JSON.parse(readFileSync(path, "utf8")) as {
+        services: ServiceEntry[];
+      };
+      expect(reread.services[0]?.name).toBe("agent");
+      expect(reread.services[0]?.paths).toEqual(["/agent"]);
+      expect(reread.services[0]?.health).toBe("/agent/health");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("idempotent: an already-agent entry is not rewritten and not rewritten on re-read", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      writeFileSync(path, `${JSON.stringify({ services: [agent] }, null, 2)}\n`);
+      const beforeMtime = statSync(path).mtimeMs;
+      const got = readManifest(path);
+      expect(got.services).toEqual([agent]);
+      // No write back when nothing changed: mtime stays put.
+      const afterMtime = statSync(path).mtimeMs;
+      expect(afterMtime).toBe(beforeMtime);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("mixed manifest: vault and scribe are untouched, only claw migrates", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const scribe: ServiceEntry = {
+        name: "parachute-scribe",
+        port: 1943,
+        paths: ["/scribe"],
+        health: "/scribe/health",
+        version: "0.1.0",
+      };
+      writeFileSync(
+        path,
+        `${JSON.stringify({ services: [vault, claw, scribe] }, null, 2)}\n`,
+      );
+      const got = readManifest(path);
+      expect(got.services).toHaveLength(3);
+      expect(got.services[0]).toEqual(vault);
+      expect(got.services[1]).toEqual(agent);
+      expect(got.services[2]).toEqual(scribe);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("preserves nested /claw paths when present (e.g. /claw/api)", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const clawNested: ServiceEntry = {
+        name: "claw",
+        port: 1944,
+        paths: ["/claw", "/claw/api"],
+        health: "/claw/api/health",
+        version: "0.1.0",
+      };
+      writeFileSync(path, `${JSON.stringify({ services: [clawNested] }, null, 2)}\n`);
+      const got = readManifest(path);
+      expect(got.services[0]?.paths).toEqual(["/agent", "/agent/api"]);
+      expect(got.services[0]?.health).toBe("/agent/api/health");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("leaves a row alone if name is claw but mount is something else (deliberate third-party reuse)", () => {
+    const { path, cleanup } = makeTempPath();
+    try {
+      const oddClaw: ServiceEntry = {
+        name: "claw",
+        port: 9000,
+        paths: ["/something-else"],
+        health: "/something-else/health",
+        version: "0.1.0",
+      };
+      writeFileSync(path, `${JSON.stringify({ services: [oddClaw] }, null, 2)}\n`);
+      expect(readManifest(path).services).toEqual([oddClaw]);
     } finally {
       cleanup();
     }

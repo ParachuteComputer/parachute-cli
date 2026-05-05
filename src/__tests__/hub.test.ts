@@ -40,8 +40,8 @@ describe("renderHub", () => {
     expect(html).toContain("MODULE_ORDER");
   });
 
-  test("known module display order is vault → scribe → notes → claw", () => {
-    expect(html).toContain("['vault', 'scribe', 'notes', 'claw']");
+  test("known module display order is vault → scribe → notes → agent", () => {
+    expect(html).toContain("['vault', 'scribe', 'notes', 'agent']");
   });
 
   test("vault tile counts vaults[] (per instance) and links to /vault", () => {
@@ -56,7 +56,7 @@ describe("renderHub", () => {
 
   test("non-vault tiles take their manageUrl from the service's path", () => {
     // shortName('parachute-scribe') = 'scribe' → tile links to svc.path,
-    // which is whatever the module declared (e.g. /scribe, /notes, /claw).
+    // which is whatever the module declared (e.g. /scribe, /notes, /agent).
     // Hardcoding the link would silently break on a custom mount.
     expect(html).toContain("manageUrl: svc.path");
   });
@@ -68,11 +68,11 @@ describe("renderHub", () => {
     expect(html).toContain("count === 1 ? '1 registered'");
   });
 
-  test("module labels are humanized (Vault / Scribe / Notes / Claw)", () => {
+  test("module labels are humanized (Vault / Scribe / Notes / Agent)", () => {
     expect(html).toContain("vault: 'Vault'");
     expect(html).toContain("scribe: 'Scribe'");
     expect(html).toContain("notes: 'Notes'");
-    expect(html).toContain("claw: 'Claw'");
+    expect(html).toContain("agent: 'Agent'");
   });
 
   test("vault-name detection covers parachute-vault and parachute-vault-<name>", () => {

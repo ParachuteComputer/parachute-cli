@@ -494,14 +494,14 @@ describe("parachute start", () => {
     // gets cwd=installDir so manifest-declared relative paths work.
     const h = makeHarness();
     try {
-      const installDir = join(h.configDir, "_pkg-claw");
-      seedThirdParty(h.manifestPath, h.configDir, "claw", {
+      const installDir = join(h.configDir, "_pkg-agent");
+      seedThirdParty(h.manifestPath, h.configDir, "agent", {
         installDir,
         startCmd: ["bun", "web/server/src/server.ts"],
         port: 1944,
       });
       const spawner = makeSpawner([8080]);
-      const code = await start("claw", {
+      const code = await start("agent", {
         configDir: h.configDir,
         manifestPath: h.manifestPath,
         spawner,
@@ -511,7 +511,7 @@ describe("parachute start", () => {
       expect(spawner.calls).toHaveLength(1);
       expect(spawner.calls[0]?.cmd).toEqual(["bun", "web/server/src/server.ts"]);
       expect(spawner.calls[0]?.cwd).toBe(installDir);
-      expect(readPid("claw", h.configDir)).toBe(8080);
+      expect(readPid("agent", h.configDir)).toBe(8080);
     } finally {
       h.cleanup();
     }
@@ -549,8 +549,8 @@ describe("parachute start", () => {
     const h = makeHarness();
     try {
       seedVault(h.manifestPath);
-      const installDir = join(h.configDir, "_pkg-claw");
-      seedThirdParty(h.manifestPath, h.configDir, "claw", {
+      const installDir = join(h.configDir, "_pkg-agent");
+      seedThirdParty(h.manifestPath, h.configDir, "agent", {
         installDir,
         startCmd: ["bun", "server.ts"],
         port: 1944,
@@ -803,21 +803,21 @@ describe("parachute logs", () => {
   test("third-party module name with installDir is recognised", async () => {
     const h = makeHarness();
     try {
-      const installDir = join(h.configDir, "_pkg-claw");
-      seedThirdParty(h.manifestPath, h.configDir, "claw", {
+      const installDir = join(h.configDir, "_pkg-agent");
+      seedThirdParty(h.manifestPath, h.configDir, "agent", {
         installDir,
         startCmd: ["bun", "server.ts"],
       });
-      const p = ensureLogPath("claw", h.configDir);
-      writeFileSync(p, "claw line 1\nclaw line 2\n");
+      const p = ensureLogPath("agent", h.configDir);
+      writeFileSync(p, "agent line 1\nagent line 2\n");
       const lines: string[] = [];
-      const code = await logs("claw", {
+      const code = await logs("agent", {
         configDir: h.configDir,
         manifestPath: h.manifestPath,
         log: (l) => lines.push(l),
       });
       expect(code).toBe(0);
-      expect(lines).toEqual(["claw line 1", "claw line 2"]);
+      expect(lines).toEqual(["agent line 1", "agent line 2"]);
     } finally {
       h.cleanup();
     }
