@@ -517,9 +517,13 @@ describe("parachute start", () => {
     }
   });
 
-  test("third-party with no installDir errors as unknown service", async () => {
-    // A row whose name isn't a known short name AND has no installDir is
-    // unmanageable — we have no way to find a spec for it.
+  test("start: installDir-less third-party row surfaces an actionable error", async () => {
+    // A services.json row whose name isn't first-party AND has no installDir
+    // can't yield a startCmd. Pre-fix this hit the generic "unknown service"
+    // path (misleading — the row exists, just with stale shape). Post-fix
+    // resolveTargets returns the entry with spec=undefined and start prints
+    // an actionable message that points at the real fix (re-install or
+    // upgrade-the-module).
     const h = makeHarness();
     try {
       upsertService(
@@ -539,7 +543,30 @@ describe("parachute start", () => {
         log: (l) => lines.push(l),
       });
       expect(code).toBe(1);
-      expect(lines.join("\n")).toMatch(/unknown service "mystery"/);
+      const out = lines.join("\n");
+      expect(out).toMatch(/services\.json entry has no installDir/);
+      expect(out).toMatch(/parachute install <path-to-mystery>/);
+      expect(out).not.toMatch(/unknown service/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("start: name absent from services.json still errors as unknown service", async () => {
+    // The genuinely-unknown path: no first-party fallback, no row in
+    // services.json. Distinguish from the above (row exists but lacks
+    // installDir) so the error message is right-shaped for each.
+    const h = makeHarness();
+    try {
+      seedVault(h.manifestPath);
+      const lines: string[] = [];
+      const code = await start("ghost", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => lines.push(l),
+      });
+      expect(code).toBe(1);
+      expect(lines.join("\n")).toMatch(/unknown service "ghost"/);
     } finally {
       h.cleanup();
     }
@@ -721,6 +748,45 @@ describe("parachute stop", () => {
       h.cleanup();
     }
   });
+
+  test("third-party row without installDir: stops via pidfile", async () => {
+    // Graceful-degradation path: an installed-but-stale third-party row
+    // (no installDir field — pre-installDir-contract self-registration)
+    // should still be stoppable. stop only needs the short name to find
+    // the pidfile; spec resolution isn't on the critical path for stop.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "mystery",
+          port: 1944,
+          paths: ["/mystery"],
+          health: "/mystery/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      writePid("mystery", 4242, h.configDir);
+      const killed: Array<[number, string | number]> = [];
+      let aliveCall = 0;
+      const code = await stop("mystery", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        kill: (pid, sig) => killed.push([pid, sig]),
+        alive: () => {
+          aliveCall++;
+          return aliveCall === 1;
+        },
+        sleep: async () => {},
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(killed).toEqual([[4242, "SIGTERM"]]);
+      expect(readPid("mystery", h.configDir)).toBeUndefined();
+    } finally {
+      h.cleanup();
+    }
+  });
 });
 
 describe("parachute restart", () => {
@@ -818,6 +884,37 @@ describe("parachute logs", () => {
       });
       expect(code).toBe(0);
       expect(lines).toEqual(["agent line 1", "agent line 2"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("third-party row without installDir: tails by short name", async () => {
+    // Graceful-degradation path: log file is keyed by short name, written by
+    // start. installDir is irrelevant for tailing — the entry just needs to
+    // exist in services.json.
+    const h = makeHarness();
+    try {
+      upsertService(
+        {
+          name: "mystery",
+          port: 1944,
+          paths: ["/mystery"],
+          health: "/mystery/health",
+          version: "0.0.1",
+        },
+        h.manifestPath,
+      );
+      const p = ensureLogPath("mystery", h.configDir);
+      writeFileSync(p, "mystery line 1\nmystery line 2\n");
+      const lines: string[] = [];
+      const code = await logs("mystery", {
+        configDir: h.configDir,
+        manifestPath: h.manifestPath,
+        log: (l) => lines.push(l),
+      });
+      expect(code).toBe(0);
+      expect(lines).toEqual(["mystery line 1", "mystery line 2"]);
     } finally {
       h.cleanup();
     }
