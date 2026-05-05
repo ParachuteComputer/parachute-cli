@@ -3,7 +3,7 @@ import { type JwksGetter, type JwksOptions, getOrCreateJwksGetter, resetCache } 
 import { parseScopes } from "./parse";
 
 /**
- * Hub-issued JWT validation, factored out of vault/scribe/paraclaw's
+ * Hub-issued JWT validation, factored out of vault/scribe/parachute-agent's
  * near-identical implementations.
  *
  * Trust model:
@@ -67,8 +67,9 @@ export interface CreateScopeGuardOptions {
   /**
    * The hub's origin. Either a literal string or a resolver function — the
    * function form lets consumers layer their own env-var precedence (e.g.
-   * paraclaw's `PARACLAW_HUB_ORIGIN` over `PARACHUTE_HUB_ORIGIN`). Trailing
-   * slashes are stripped so the canonical form matches what the hub mints.
+   * parachute-agent's `PARACHUTE_AGENT_HUB_ORIGIN` over
+   * `PARACHUTE_HUB_ORIGIN`). Trailing slashes are stripped so the canonical
+   * form matches what the hub mints.
    */
   hubOrigin: string | (() => string);
 

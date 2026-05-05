@@ -73,8 +73,8 @@ export function findUnknownScopes(
  *   1. If `installDir` is provided (hub#84 stamps this on every services.json
  *      row at install time), read directly from there. This is the canonical
  *      path — services.json's `name` is the manifest's canonical short
- *      (e.g. "claw"), which doesn't match the npm package name on disk
- *      (e.g. "nanoclaw" for forks). bun-globals lookup-by-name fails for
+ *      (e.g. "agent"), which doesn't match the npm package name on disk
+ *      (e.g. "nanoagent" for forks). bun-globals lookup-by-name fails for
  *      that case; installDir is the source of truth.
  *   2. Fall back to `<bun-globals>/<packageName>/.parachute/module.json`
  *      for entries without installDir (older installs, or services that

@@ -140,7 +140,7 @@ describe("loadDeclaredScopes", () => {
   test("readModuleScopes receives installDir from services.json (closes #85 follow-up)", () => {
     // Regression: scope-registry was looking up by services.json `name` in
     // bun-globals. For third-party modules where name (canonical short like
-    // "claw") differs from the npm package name on disk ("nanoclaw" for
+    // "agent") differs from the npm package name on disk ("nanoagent" for
     // forks), that lookup fails and the module's scopes are never declared.
     // installDir from hub#84 is the correct path source.
     const { manifestPath, cleanup } = tmp();
@@ -150,12 +150,12 @@ describe("loadDeclaredScopes", () => {
         JSON.stringify({
           services: [
             {
-              name: "claw",
+              name: "agent",
               port: 1944,
-              paths: ["/claw"],
+              paths: ["/agent"],
               health: "/api/health",
               version: "0.0.0-linked",
-              installDir: "/Users/test/ParachuteComputer/paraclaw",
+              installDir: "/Users/test/ParachuteComputer/parachute-agent",
             },
           ],
         }),
@@ -165,15 +165,15 @@ describe("loadDeclaredScopes", () => {
         manifestPath,
         readModuleScopes: (pkg, installDir) => {
           calls.push({ pkg, installDir });
-          return pkg === "claw" ? ["claw:read", "claw:write", "claw:admin"] : null;
+          return pkg === "agent" ? ["agent:read", "agent:write", "agent:admin"] : null;
         },
       });
       expect(calls).toEqual([
-        { pkg: "claw", installDir: "/Users/test/ParachuteComputer/paraclaw" },
+        { pkg: "agent", installDir: "/Users/test/ParachuteComputer/parachute-agent" },
       ]);
-      expect(declared.has("claw:read")).toBe(true);
-      expect(declared.has("claw:write")).toBe(true);
-      expect(declared.has("claw:admin")).toBe(true);
+      expect(declared.has("agent:read")).toBe(true);
+      expect(declared.has("agent:write")).toBe(true);
+      expect(declared.has("agent:admin")).toBe(true);
     } finally {
       cleanup();
     }

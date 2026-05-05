@@ -67,8 +67,8 @@ describe("hasScope — narrowed inheritance", () => {
 });
 
 describe("hasScope — cross-resource never matches", () => {
-  test("vault:admin does NOT satisfy claw:read", () => {
-    expect(hasScope(["vault:admin"], "claw:read")).toBe(false);
+  test("vault:admin does NOT satisfy agent:read", () => {
+    expect(hasScope(["vault:admin"], "agent:read")).toBe(false);
   });
 
   test("vault:admin does NOT satisfy scribe:read", () => {

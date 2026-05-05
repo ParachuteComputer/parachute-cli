@@ -291,7 +291,7 @@ function defaultSpaDistDir(): string {
  * The SPA serves at two mounts:
  *
  * - `/vault` — primary, since hub#168-realignment. Matches the operator
- *   pattern of `/<module>` as the entry point (alongside `/notes`, `/claw`,
+ *   pattern of `/<module>` as the entry point (alongside `/notes`, `/agent`,
  *   `/scribe`). VaultsList, NewVault, and per-vault detail routes hang off
  *   here.
  * - `/hub` — back-compat. `/hub/permissions` (cross-vault grants) is a hub

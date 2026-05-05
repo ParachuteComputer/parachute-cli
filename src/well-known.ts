@@ -39,7 +39,7 @@ export interface WellKnownServicesEntry {
  * Canonical `/.well-known/parachute.json` shape.
  *
  * Two parts:
- *   - `vaults: []`, `notes: []`, `claw: []`, … — every kind is a plural
+ *   - `vaults: []`, `notes: []`, `agent: []`, … — every kind is a plural
  *     array, so consumers always read `notes[0]` if they want "the one" and
  *     the multi-install case is visible at every call site (closes #92).
  *   - `services: []` — flat list the hub page iterates. Scales to N frontends
@@ -122,7 +122,7 @@ export function buildWellKnown(opts: BuildWellKnownOpts): WellKnownDocument {
     // Vault services are mounted at one path per vault instance — a single
     // ServiceEntry with `paths: ["/vault/default", "/vault/techne"]` represents
     // two distinct vault instances behind the same backend. Iterate each path
-    // so consumers (paraclaw vault picker, hub page) see every instance
+    // so consumers (parachute-agent vault picker, hub page) see every instance
     // (closes #141). Non-vault services keep the legacy paths[0] semantic;
     // multi-path on those is treated as aliases rather than separate
     // installs.

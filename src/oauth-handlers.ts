@@ -233,7 +233,7 @@ export function authorizationServerMetadata(deps: OAuthDeps): Response {
   const iss = deps.issuer;
   // Advertise the full declared-scope set — FIRST_PARTY ∪ each registered
   // module's `scopes.defines` — so standards-following clients discover
-  // third-party scopes (e.g. paraclaw's `claw:*`) the same way they discover
+  // third-party scopes (e.g. parachute-agent's `agent:*`) the same way they discover
   // first-party ones. The token-issuance path already consults
   // `loadDeclaredScopes` (see #90); metadata had to follow or the issuer's
   // public advertisement would be a strict subset of what it'll actually
