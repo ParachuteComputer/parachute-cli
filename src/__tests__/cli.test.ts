@@ -155,19 +155,16 @@ describe("cli per-subcommand help", () => {
     // is set up" output — proving the skip flag bypassed auto-pick and went
     // straight to the Funnel path. If we regressed and skip-flag tumbled
     // into auto-pick, we'd see the auto-pick neither-ready report instead.
-    const proc = Bun.spawn(
-      [process.execPath, CLI, "expose", "public", "--skip-provider-check"],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          PATH: "",
-          HOME: "/tmp/parachute-hub-nonexistent-home",
-          PARACHUTE_HOME: "/tmp/parachute-hub-nonexistent-home",
-        },
+    const proc = Bun.spawn([process.execPath, CLI, "expose", "public", "--skip-provider-check"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        PATH: "",
+        HOME: "/tmp/parachute-hub-nonexistent-home",
+        PARACHUTE_HOME: "/tmp/parachute-hub-nonexistent-home",
       },
-    );
+    });
     const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     expect(code).toBe(1);
     expect(stdout).toMatch(/tailscale is not installed or not on PATH/);

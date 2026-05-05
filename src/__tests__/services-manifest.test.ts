@@ -264,10 +264,7 @@ describe("claw → agent migration", () => {
         health: "/scribe/health",
         version: "0.1.0",
       };
-      writeFileSync(
-        path,
-        `${JSON.stringify({ services: [vault, claw, scribe] }, null, 2)}\n`,
-      );
+      writeFileSync(path, `${JSON.stringify({ services: [vault, claw, scribe] }, null, 2)}\n`);
       const got = readManifest(path);
       expect(got.services).toHaveLength(3);
       expect(got.services[0]).toEqual(vault);
