@@ -6,9 +6,9 @@ import { CONFIG_DIR } from "./config.ts";
  * Hub page served at `/` when the node is exposed.
  *
  * The page is a *module directory*: one tile per module type (vault, scribe,
- * notes, claw), not one row per service instance. Aaron's original shape
+ * notes, agent), not one row per service instance. Aaron's original shape
  * iterated `services[]` and rendered a card per entry — fine at one vault,
- * but at three vaults plus scribe + notes + claw the page reads as a flat
+ * but at three vaults plus scribe + notes + agent the page reads as a flat
  * list of instances rather than the modules themselves (#168). The new shape
  * aggregates: "Vault — 3 registered — Manage →" links to the per-vault SPA at
  * `/vault`; "Scribe — 1 registered" links to the running scribe instance;
@@ -249,12 +249,12 @@ const HTML = `<!doctype html>
 
   // Display order for known module types. Unknown short-names append after,
   // so a third-party module mounted at /foo still gets a tile.
-  const MODULE_ORDER = ['vault', 'scribe', 'notes', 'claw'];
+  const MODULE_ORDER = ['vault', 'scribe', 'notes', 'agent'];
   const MODULE_LABELS = {
     vault: 'Vault',
     scribe: 'Scribe',
     notes: 'Notes',
-    claw: 'Claw',
+    agent: 'Agent',
   };
 
   function isVaultName(name) {
