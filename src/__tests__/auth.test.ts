@@ -6,11 +6,13 @@ import { registerClient } from "../clients.ts";
 import { type AuthDeps, type Runner, auth, authHelp } from "../commands/auth.ts";
 import { findGrant, recordGrant } from "../grants.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
-import { validateAccessToken } from "../jwt-sign.ts";
+import { signAccessToken, validateAccessToken } from "../jwt-sign.ts";
 import {
   OPERATOR_TOKEN_AUDIENCE,
+  OPERATOR_TOKEN_CLIENT_ID,
   OPERATOR_TOKEN_SCOPES,
   readOperatorTokenFile,
+  writeOperatorTokenFile,
 } from "../operator-token.ts";
 import { createUser, listUsers, verifyPassword } from "../users.ts";
 
@@ -843,6 +845,9 @@ describe("parachute auth mint-token", () => {
       expect(code).toBe(0);
       const token = stdout.trim();
       expect(token.split(".").length).toBe(3);
+      // Strict purity: stdout is exactly the token + trailing newline,
+      // nothing extra. Pipes (`| pbcopy`, `| jq`) depend on this.
+      expect(stdout).toBe(`${token}\n`);
       const db = openHubDb(tmp.dbPath);
       try {
         const validated = await validateAccessToken(db, token);
@@ -853,6 +858,50 @@ describe("parachute auth mint-token", () => {
       } finally {
         db.close();
       }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("operator token without hub:admin scope is rejected (no token emitted)", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      // Bootstrap: set-password to seed the user + signing key.
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      // Now overwrite operator.token with a valid-signature, valid-expiry
+      // JWT that lacks hub:admin — simulating someone stashing a narrow
+      // token at the operator path.
+      const db = openHubDb(tmp.dbPath);
+      let narrow: string;
+      try {
+        const owner = listUsers(db)[0]!;
+        const signed = await signAccessToken(db, {
+          sub: owner.id,
+          scopes: ["scribe:transcribe"],
+          audience: "scribe",
+          clientId: OPERATOR_TOKEN_CLIENT_ID,
+          issuer: "http://127.0.0.1:1939",
+          ttlSeconds: 3600,
+        });
+        narrow = signed.token;
+      } finally {
+        db.close();
+      }
+      await writeOperatorTokenFile(narrow, tmp.dir);
+
+      const { code, stdout, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], deps),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("lacks hub:admin scope");
+      expect(stderr).toContain("rotate-operator");
+      // Purity: no token written to stdout.
+      expect(stdout).toBe("");
     } finally {
       tmp.cleanup();
     }
@@ -936,6 +985,56 @@ describe("parachute auth mint-token", () => {
       } finally {
         db.close();
       }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--ttl=365d is accepted (boundary)", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe", "--ttl", "365d"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        const exp = validated.payload.exp;
+        const iat = validated.payload.iat;
+        if (typeof exp !== "number" || typeof iat !== "number") {
+          throw new Error("expected numeric exp+iat");
+        }
+        expect(exp - iat).toBe(365 * 24 * 60 * 60);
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--ttl=0s is rejected (must be > 0)", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe", "--ttl", "0s"], deps),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("must be > 0");
     } finally {
       tmp.cleanup();
     }

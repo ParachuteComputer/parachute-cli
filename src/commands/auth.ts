@@ -717,6 +717,22 @@ async function runMintToken(args: readonly string[], deps: AuthDeps): Promise<nu
         console.error("parachute auth mint-token: operator token has no sub claim");
         return 1;
       }
+      // Scope gate: a valid signature + non-expired JWT at this path is not
+      // sufficient — the token must carry operator-equivalent scope. Without
+      // this, a narrowly-scoped JWT stashed at ~/.parachute/operator.token
+      // would be treated as operator-bearer and mint arbitrary tokens
+      // (privilege escalation: narrow → arbitrary). Only set-password and
+      // rotate-operator legitimately write to this path; both seed the full
+      // OPERATOR_TOKEN_SCOPES set, so hub:admin is the right gate.
+      const tokenScope =
+        typeof validated.payload.scope === "string"
+          ? validated.payload.scope.split(/\s+/).filter((s) => s.length > 0)
+          : [];
+      if (!tokenScope.includes("hub:admin")) {
+        console.error("parachute auth mint-token: operator token lacks hub:admin scope");
+        console.error("run `parachute auth rotate-operator` to mint a fresh one");
+        return 1;
+      }
       operatorSub = sub;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
