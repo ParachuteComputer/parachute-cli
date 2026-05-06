@@ -794,3 +794,255 @@ describe("parachute auth list-grants / revoke-grant", () => {
     }
   });
 });
+
+// closes #179 — scope-narrow JWT minting against operator identity, for
+// agent-secret injection and other on-box callers that want a tight bearer.
+describe("parachute auth mint-token", () => {
+  test("missing --scope is a usage error", async () => {
+    const tmp = makeTmp();
+    try {
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token"], { dbPath: tmp.dbPath, configDir: tmp.dir }),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("--scope is required");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("no operator.token on disk is an actionable error", async () => {
+    const tmp = makeTmp();
+    try {
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], {
+          dbPath: tmp.dbPath,
+          configDir: tmp.dir,
+        }),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("operator.token");
+      expect(stderr).toContain("rotate-operator");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("scope-only mint emits a JWT signed by the active key, audience inferred", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      expect(token.split(".").length).toBe(3);
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        expect(validated.payload.aud).toBe("scribe");
+        expect(validated.payload.scope).toBe("scribe:transcribe");
+        const users = listUsers(db);
+        expect(validated.payload.sub).toBe(users[0]?.id);
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("named vault scope infers aud=vault.<name>", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "vault:work:read"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        expect(validated.payload.aud).toBe("vault.work");
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--aud override beats inference", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "vault:work:read", "--aud", "custom-resource"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        expect(validated.payload.aud).toBe("custom-resource");
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--ttl honored; expiry math matches", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe", "--ttl", "1h"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        const exp = validated.payload.exp;
+        const iat = validated.payload.iat;
+        if (typeof exp !== "number" || typeof iat !== "number") {
+          throw new Error("expected numeric exp+iat");
+        }
+        expect(exp - iat).toBe(3600);
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--ttl > 365d errors", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe", "--ttl", "400d"], deps),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("365d cap");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--ttl with invalid format errors", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe", "--ttl", "1week"], deps),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("invalid --ttl");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("multiple scopes (space-separated) carried verbatim into the JWT", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "vault:work:read scribe:transcribe"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        expect(validated.payload.scope).toBe("vault:work:read scribe:transcribe");
+        // Named vault scope wins for audience inference.
+        expect(validated.payload.aud).toBe("vault.work");
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("--sub override emits the JWT with that subject", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps: AuthDeps = {
+        dbPath: tmp.dbPath,
+        configDir: tmp.dir,
+        isInteractive: () => false,
+      };
+      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe", "--sub", "agent:scribe-runner"], deps),
+      );
+      expect(code).toBe(0);
+      const token = stdout.trim();
+      const db = openHubDb(tmp.dbPath);
+      try {
+        const validated = await validateAccessToken(db, token);
+        expect(validated.payload.sub).toBe("agent:scribe-runner");
+      } finally {
+        db.close();
+      }
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("unknown flag errors", async () => {
+    const tmp = makeTmp();
+    try {
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--lol"], { dbPath: tmp.dbPath, configDir: tmp.dir }),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("unknown flag");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
