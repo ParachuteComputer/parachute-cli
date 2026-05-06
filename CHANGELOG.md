@@ -2,6 +2,12 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.2-rc.1] - 2026-05-06
+
+### Added
+
+- **Hub-as-unified-proxy: services.json-driven `/<svc>/*` dispatch on `:1939`.** Until now the hub only proxied `/vault/<name>/*` paths into a backend port; every other module (scribe, notes, agent — formerly paraclaw) had to be reached through tailscale's per-mount routing or through the module's own listener. PR generalizes that into a single dispatch step: after every specific hub handler runs (`/`, `/admin/*`, `/oauth/*`, `/.well-known/*`, `/hub/*`, `/vault/*`, `/api/*`), the hub does a longest-prefix lookup against every non-vault `services.json` row and forwards to `127.0.0.1:<port>` with the path preserved byte-for-byte (matches `serviceProxyTarget` in `commands/expose.ts`). Reads `services.json` per-request so a `parachute install <svc>` made seconds ago is reachable without a hub restart — same dynamism as the well-known doc and `/vault/<name>/*` proxy. Internally the loopback-fetch + 502-on-unreachable shape was extracted from `proxyToVault` into a reusable `proxyRequest(req, port, serviceLabel)` helper; `findServiceUpstream` is exported for downstream use. Vault routing (`/vault/*`) is unchanged and still owns the SPA-fallback seam from #173. Subsumes most of hub#178 (`/scribe/*` was a tracking issue under it). (#182)
+
 ## [0.5.1] - 2026-05-06
 
 ### Added
