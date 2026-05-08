@@ -169,6 +169,9 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
       // first-party services where we have a canonical assignment. Third-party
       // rows have no canonical to compare against. Warning is informational —
       // operators may have moved a service off canonical deliberately.
+      // Note: multi-vault instance rows (`parachute-vault-<instance>`) don't
+      // match a canonical manifest name, so drift warnings don't fire for
+      // them. Intentional — see `canonicalPortForManifest` for the rationale.
       const canonical = canonicalPortForManifest(entry.name);
       const driftWarning =
         canonical !== undefined && canonical !== entry.port

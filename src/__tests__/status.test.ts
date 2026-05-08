@@ -454,6 +454,40 @@ describe("status", () => {
         cleanup();
       }
     });
+
+    test("multi-vault instance rows do not surface a drift warning (intentional gap)", async () => {
+      // Pinning the documented gap: `parachute-vault-default` is not
+      // a canonical manifest name in FIRST_PARTY_FALLBACKS, so
+      // `canonicalPortForManifest` returns undefined and no drift
+      // warning fires — even when the row's port differs from the
+      // canonical `parachute-vault` port (1940). Rationale lives on
+      // `canonicalPortForManifest` in service-spec.ts; this test pins
+      // the behavior so a future change to the lookup shape doesn't
+      // accidentally start emitting drift on every multi-vault row
+      // without an explicit decision.
+      const { path, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "parachute-vault-default",
+            port: 1944,
+            paths: ["/vault/default"],
+            health: "/vault/default/health",
+            version: "0.2.4",
+          },
+          path,
+        );
+        const lines: string[] = [];
+        await status({
+          manifestPath: path,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: (l) => lines.push(l),
+        });
+        expect(lines.some((l) => l.includes("canonical port"))).toBe(false);
+      } finally {
+        cleanup();
+      }
+    });
   });
 
   test("stopped services still render a URL line so the user knows where to point clients post-start", async () => {
