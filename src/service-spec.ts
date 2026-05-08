@@ -420,6 +420,22 @@ export function knownServices(): string[] {
 }
 
 /**
+ * Canonical port assignment for a known short name, or `undefined` for
+ * third-party services we don't have a fallback for. Drives the
+ * canonical-port drift warning in `parachute status` (hub#195) — when an
+ * entry's actual port doesn't match the canonical, we surface it without
+ * blocking. Operators may have intentionally moved a service off canonical
+ * (e.g. to dodge a third-party clash), so the drift is a warning, not an
+ * error.
+ */
+export function canonicalPortForManifest(manifestName: string): number | undefined {
+  const short = shortNameForManifest(manifestName);
+  if (short === undefined) return undefined;
+  const fb = FIRST_PARTY_FALLBACKS[short];
+  return fb?.manifest.port;
+}
+
+/**
  * Resolve the runtime spec for a known short name. Returns undefined for
  * unknown names; third-party modules installed via `module.json` resolve
  * via {@link getSpecFromInstallDir} instead, since their spec isn't

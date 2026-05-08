@@ -222,6 +222,216 @@ describe("services-manifest", () => {
       cleanup();
     }
   });
+
+  // Duplicate-port detection (hub#195). The original collision had
+  // parachute-scribe and agent both at 1944 in services.json with no
+  // operator-visible warning. The OS lets only one service bind, the
+  // hub reverse-proxy quietly routes everyone to whoever won the race,
+  // and `/agent` requests silently land on scribe. Reject at parse time
+  // so the same shape can't recur silently. Underlying overwrite bugs
+  // were fixed in parachute-scribe#41 + parachute-agent#146; this is
+  // the hub-side gate.
+  describe("duplicate port rejection", () => {
+    test("rejects manifest where two entries share a port", () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        writeFileSync(
+          path,
+          JSON.stringify({
+            services: [
+              {
+                name: "parachute-scribe",
+                port: 1944,
+                paths: ["/scribe"],
+                health: "/scribe/health",
+                version: "0.4.0",
+              },
+              {
+                name: "agent",
+                port: 1944,
+                paths: ["/agent"],
+                health: "/agent/health",
+                version: "0.1.0",
+              },
+            ],
+          }),
+        );
+        expect(() => readManifest(path)).toThrow(ServicesManifestError);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("error message names both conflicting services and the colliding port", () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        writeFileSync(
+          path,
+          JSON.stringify({
+            services: [
+              {
+                name: "parachute-scribe",
+                port: 1944,
+                paths: ["/scribe"],
+                health: "/scribe/health",
+                version: "0.4.0",
+              },
+              {
+                name: "agent",
+                port: 1944,
+                paths: ["/agent"],
+                health: "/agent/health",
+                version: "0.1.0",
+              },
+            ],
+          }),
+        );
+        // The error names the conflicting port (so an operator scanning
+        // services.json knows where to look) and both service names (so
+        // they know which two rows to reconcile).
+        expect(() => readManifest(path)).toThrow(/duplicate port 1944/);
+        expect(() => readManifest(path)).toThrow(/parachute-scribe/);
+        expect(() => readManifest(path)).toThrow(/agent/);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("accepts manifest with all unique ports", () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        writeFileSync(
+          path,
+          JSON.stringify({
+            services: [
+              {
+                name: "parachute-vault",
+                port: 1940,
+                paths: ["/"],
+                health: "/health",
+                version: "0.2.4",
+              },
+              {
+                name: "parachute-scribe",
+                port: 1943,
+                paths: ["/scribe"],
+                health: "/scribe/health",
+                version: "0.4.0",
+              },
+            ],
+          }),
+        );
+        const m = readManifest(path);
+        expect(m.services).toHaveLength(2);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("allows multi-vault: parachute-vault-default + parachute-vault-techne on the same port", () => {
+      // Multi-vault is the deliberate exception. One parachute-vault process
+      // serves N vault instances on a single port at distinct mount paths.
+      // The duplicate-port gate must not break that shape.
+      const { path, cleanup } = makeTempPath();
+      try {
+        writeFileSync(
+          path,
+          JSON.stringify({
+            services: [
+              {
+                name: "parachute-vault-default",
+                port: 1940,
+                paths: ["/vault/default"],
+                health: "/vault/default/health",
+                version: "0.4.0",
+              },
+              {
+                name: "parachute-vault-techne",
+                port: 1940,
+                paths: ["/vault/techne"],
+                health: "/vault/techne/health",
+                version: "0.4.0",
+              },
+            ],
+          }),
+        );
+        const m = readManifest(path);
+        expect(m.services).toHaveLength(2);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("rejects vault sharing a port with a non-vault service", () => {
+      // The vault exception is narrow: same-port is allowed only between
+      // multi-vault rows. A vault sharing a port with anything else is the
+      // same silent-miswire shape we're guarding against.
+      const { path, cleanup } = makeTempPath();
+      try {
+        writeFileSync(
+          path,
+          JSON.stringify({
+            services: [
+              {
+                name: "parachute-vault-default",
+                port: 1940,
+                paths: ["/vault/default"],
+                health: "/vault/default/health",
+                version: "0.4.0",
+              },
+              {
+                name: "parachute-scribe",
+                port: 1940,
+                paths: ["/scribe"],
+                health: "/scribe/health",
+                version: "0.4.0",
+              },
+            ],
+          }),
+        );
+        expect(() => readManifest(path)).toThrow(/duplicate port 1940/);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("three-way collision still surfaces (first pair caught)", () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        writeFileSync(
+          path,
+          JSON.stringify({
+            services: [
+              {
+                name: "a",
+                port: 9000,
+                paths: ["/a"],
+                health: "/a/health",
+                version: "0.1.0",
+              },
+              {
+                name: "b",
+                port: 9000,
+                paths: ["/b"],
+                health: "/b/health",
+                version: "0.1.0",
+              },
+              {
+                name: "c",
+                port: 9000,
+                paths: ["/c"],
+                health: "/c/health",
+                version: "0.1.0",
+              },
+            ],
+          }),
+        );
+        expect(() => readManifest(path)).toThrow(/duplicate port 9000/);
+      } finally {
+        cleanup();
+      }
+    });
+  });
 });
 
 describe("claw → agent migration", () => {

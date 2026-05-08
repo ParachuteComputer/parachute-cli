@@ -115,18 +115,21 @@ describe("setup", () => {
     const h = makeHarness();
     try {
       // Pre-seed every first-party shortname so survey returns all-installed.
-      for (const m of [
-        "parachute-vault",
-        "parachute-notes",
-        "parachute-scribe",
-        "parachute-channel",
-      ]) {
+      // Distinct canonical ports per service — services-manifest.ts now
+      // rejects duplicate ports between distinct services (hub#195).
+      const seeds: Array<{ name: string; port: number }> = [
+        { name: "parachute-vault", port: 1940 },
+        { name: "parachute-notes", port: 1942 },
+        { name: "parachute-scribe", port: 1943 },
+        { name: "parachute-channel", port: 1941 },
+      ];
+      for (const s of seeds) {
         upsertService(
           {
-            name: m,
+            name: s.name,
             version: "0.0.0",
-            port: 1940,
-            paths: [`/${m.replace(/^parachute-/, "")}`],
+            port: s.port,
+            paths: [`/${s.name.replace(/^parachute-/, "")}`],
             health: "/health",
           },
           h.manifestPath,
