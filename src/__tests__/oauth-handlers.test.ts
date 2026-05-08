@@ -2304,6 +2304,34 @@ describe("DCR auto-approve via session cookie (#199)", () => {
     }
   });
 
+  test("valid session cookie + Origin: 'null' (opaque/sandbox iframe) → pending", async () => {
+    // Sandbox iframes (`<iframe sandbox>` without `allow-same-origin`),
+    // `data:`/`file:` documents, and some privacy contexts send the literal
+    // string `Origin: null` rather than omitting the header. `new URL("null")`
+    // throws → originMatchesIssuer's try/catch returns false → DCR stays
+    // pending. This test pins that invariant: an opaque-origin caller does
+    // NOT ride the cookie path even with a valid session, because we can't
+    // prove the request came from the issuer's own origin.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const req = registerRequest({
+        cookie: buildSessionCookie(session.id, SESSION_COOKIE_TTL_S),
+        origin: "null",
+      });
+      const res = await handleRegister(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.status).toBe("pending");
+      // Persisted, not just response-shaped.
+      const row = getClient(db, body.client_id as string);
+      expect(row?.status).toBe("pending");
+    } finally {
+      cleanup();
+    }
+  });
+
   test("valid session cookie + Origin matching exact origin (port included) → approved", async () => {
     // URL.origin includes scheme + host + port, so a port-mismatched Origin
     // must NOT match. https://hub.example:8443 ≠ https://hub.example.
