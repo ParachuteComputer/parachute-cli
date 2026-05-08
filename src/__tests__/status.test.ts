@@ -317,6 +317,179 @@ describe("status", () => {
     }
   });
 
+  // Canonical-port drift warning (hub#195). When a known service ends up at
+  // a non-canonical port (because of an upgrade rewrite, a port-walk fallback,
+  // or an operator edit), surface it in `parachute status` so a silent miswire
+  // is operator-visible. Warning, not error — operators may have moved the
+  // service deliberately to dodge a third-party clash.
+  describe("canonical-port drift warning", () => {
+    test("warns when scribe is at non-canonical port (1944 instead of 1943)", async () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "parachute-scribe",
+            port: 1944,
+            paths: ["/scribe"],
+            health: "/scribe/health",
+            version: "0.4.0",
+          },
+          path,
+        );
+        const lines: string[] = [];
+        await status({
+          manifestPath: path,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: (l) => lines.push(l),
+        });
+        expect(lines.some((l) => l.includes("canonical port is 1943"))).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("does not warn when service is on its canonical port", async () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "parachute-scribe",
+            port: 1943,
+            paths: ["/scribe"],
+            health: "/scribe/health",
+            version: "0.4.0",
+          },
+          path,
+        );
+        const lines: string[] = [];
+        await status({
+          manifestPath: path,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: (l) => lines.push(l),
+        });
+        expect(lines.some((l) => l.includes("canonical port"))).toBe(false);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("does not warn for third-party services with no canonical port", async () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "third-party-thing",
+            port: 9000,
+            paths: ["/widget"],
+            health: "/health",
+            version: "1.0.0",
+          },
+          path,
+        );
+        const lines: string[] = [];
+        await status({
+          manifestPath: path,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: (l) => lines.push(l),
+        });
+        expect(lines.some((l) => l.includes("canonical port"))).toBe(false);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("warning does not affect exit code (status stays 0 when healthy)", async () => {
+      const { path, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "parachute-scribe",
+            port: 1944,
+            paths: ["/scribe"],
+            health: "/scribe/health",
+            version: "0.4.0",
+          },
+          path,
+        );
+        const code = await status({
+          manifestPath: path,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: () => {},
+        });
+        // Drift is informational. A healthy probed service still returns 0
+        // even when the port has drifted off canonical.
+        expect(code).toBe(0);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("warning still fires when service is stopped (probe skipped)", async () => {
+      const { path, configDir, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "parachute-scribe",
+            port: 1944,
+            paths: ["/scribe"],
+            health: "/scribe/health",
+            version: "0.4.0",
+          },
+          path,
+        );
+        writePid("scribe", 4242, configDir);
+        const lines: string[] = [];
+        await status({
+          manifestPath: path,
+          configDir,
+          alive: () => false,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: (l) => lines.push(l),
+        });
+        // Drift is computed from services.json, not from the probe — a
+        // stopped service with a drifted port should still surface the
+        // warning so operators see the miswire even before they start it.
+        expect(lines.some((l) => l.includes("canonical port is 1943"))).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    test("multi-vault instance rows do not surface a drift warning (intentional gap)", async () => {
+      // Pinning the documented gap: `parachute-vault-default` is not
+      // a canonical manifest name in FIRST_PARTY_FALLBACKS, so
+      // `canonicalPortForManifest` returns undefined and no drift
+      // warning fires — even when the row's port differs from the
+      // canonical `parachute-vault` port (1940). Rationale lives on
+      // `canonicalPortForManifest` in service-spec.ts; this test pins
+      // the behavior so a future change to the lookup shape doesn't
+      // accidentally start emitting drift on every multi-vault row
+      // without an explicit decision.
+      const { path, cleanup } = makeTempPath();
+      try {
+        upsertService(
+          {
+            name: "parachute-vault-default",
+            port: 1944,
+            paths: ["/vault/default"],
+            health: "/vault/default/health",
+            version: "0.2.4",
+          },
+          path,
+        );
+        const lines: string[] = [];
+        await status({
+          manifestPath: path,
+          fetchImpl: async () => new Response(null, { status: 200 }),
+          print: (l) => lines.push(l),
+        });
+        expect(lines.some((l) => l.includes("canonical port"))).toBe(false);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   test("stopped services still render a URL line so the user knows where to point clients post-start", async () => {
     const { path, configDir, cleanup } = makeTempPath();
     try {

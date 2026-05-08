@@ -134,6 +134,21 @@ function validateEntry(raw: unknown, where: string): ServiceEntry {
   return entry;
 }
 
+/**
+ * Vault is a multi-instance service: one parachute-vault process serves
+ * every vault on a single port at distinct mount paths (`/vault/default`,
+ * `/vault/techne`, …). Every multi-vault row carries a `parachute-vault*`
+ * name. Sharing a port between vault rows is intentional and not a
+ * collision; sharing a port between two non-vault services (or between a
+ * vault and a non-vault) is.
+ *
+ * Inlined rather than imported from `well-known.ts` to keep the parser
+ * self-contained — well-known.ts already imports from this file.
+ */
+function isVaultName(name: string): boolean {
+  return name === "parachute-vault" || name.startsWith("parachute-vault-");
+}
+
 function validateManifest(raw: unknown, where: string): ServicesManifest {
   if (!raw || typeof raw !== "object") {
     throw new ServicesManifestError(`${where}: root must be an object`);
@@ -142,9 +157,31 @@ function validateManifest(raw: unknown, where: string): ServicesManifest {
   if (!Array.isArray(services)) {
     throw new ServicesManifestError(`${where}: "services" must be an array`);
   }
-  return {
-    services: services.map((s, i) => validateEntry(s, `${where} services[${i}]`)),
-  };
+  const entries = services.map((s, i) => validateEntry(s, `${where} services[${i}]`));
+  // Reject manifests where two distinct services share a port. Without this
+  // gate, both services land in services.json, the OS lets only one bind,
+  // and the hub reverse-proxy quietly routes everyone to whichever service
+  // won the race. That's exactly how parachute-hub#195 (scribe + agent both
+  // at 1944) produced a silent /agent → scribe miswire. The underlying
+  // overwrite bugs are fixed in parachute-scribe#41 + parachute-agent#146;
+  // this is the hub-side gate so the same class can't recur silently.
+  //
+  // Multi-vault is the deliberate exception: one parachute-vault process
+  // serves N vault instances on a single port at distinct mount paths, so
+  // multiple `parachute-vault*` rows sharing a port is intentional, not a
+  // collision. The check fires only when the conflicting names aren't
+  // both vault rows.
+  const portsSeen = new Map<number, string>();
+  for (const entry of entries) {
+    const prev = portsSeen.get(entry.port);
+    if (prev !== undefined && !(isVaultName(prev) && isVaultName(entry.name))) {
+      throw new ServicesManifestError(
+        `${where}: duplicate port ${entry.port} — claimed by both "${prev}" and "${entry.name}". Edit services.json to give each service a unique port.`,
+      );
+    }
+    if (prev === undefined) portsSeen.set(entry.port, entry.name);
+  }
+  return { services: entries };
 }
 
 export function readManifest(path: string = SERVICES_MANIFEST_PATH): ServicesManifest {

@@ -420,6 +420,32 @@ export function knownServices(): string[] {
 }
 
 /**
+ * Canonical port assignment for a known short name, or `undefined` for
+ * third-party services we don't have a fallback for. Drives the
+ * canonical-port drift warning in `parachute status` (hub#195) — when an
+ * entry's actual port doesn't match the canonical, we surface it without
+ * blocking. Operators may have intentionally moved a service off canonical
+ * (e.g. to dodge a third-party clash), so the drift is a warning, not an
+ * error.
+ *
+ * Known gap (intentional, tracked separately): multi-vault instance rows
+ * (`parachute-vault-default`, `parachute-vault-techne`, etc.) don't match
+ * any `manifestName` in `FIRST_PARTY_FALLBACKS` — only the canonical
+ * `parachute-vault` does — so `shortNameForManifest` returns undefined and
+ * drift warnings never fire for them. That's tolerable: multi-vault is the
+ * deliberate exception in the duplicate-port gate (one process, N mounts,
+ * one port), and no operator-actionable drift signal is well-defined when
+ * N rows share a port. Documented here so the gap doesn't read as an
+ * oversight; revisit if a clean drift shape for multi-vault emerges.
+ */
+export function canonicalPortForManifest(manifestName: string): number | undefined {
+  const short = shortNameForManifest(manifestName);
+  if (short === undefined) return undefined;
+  const fb = FIRST_PARTY_FALLBACKS[short];
+  return fb?.manifest.port;
+}
+
+/**
  * Resolve the runtime spec for a known short name. Returns undefined for
  * unknown names; third-party modules installed via `module.json` resolve
  * via {@link getSpecFromInstallDir} instead, since their spec isn't

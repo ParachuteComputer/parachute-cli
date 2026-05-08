@@ -1,7 +1,7 @@
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
 import { HUB_SVC, readHubPort } from "../hub-control.ts";
 import { type AliveFn, defaultAlive, formatUptime, processState } from "../process-state.ts";
-import { getSpec, shortNameForManifest } from "../service-spec.ts";
+import { canonicalPortForManifest, getSpec, shortNameForManifest } from "../service-spec.ts";
 import { type ServiceEntry, readManifest } from "../services-manifest.ts";
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
@@ -74,6 +74,14 @@ interface StatusRow {
   url: string | undefined;
   healthy: boolean;
   skipped: boolean;
+  /**
+   * Canonical-port drift warning. Set when the entry has a known canonical
+   * port (first-party / known short) AND the actual port differs. Surfaced
+   * as a continuation line under the row so operators see a silent miswire
+   * (e.g. parachute-hub#195: scribe + agent both at 1944) without us
+   * hard-erroring on a deliberate operator port change.
+   */
+  driftWarning?: string;
 }
 
 /**
@@ -157,6 +165,19 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
 
       const url = urlForEntry(entry, short);
 
+      // Canonical-port drift detection (hub#195). Only fires for known
+      // first-party services where we have a canonical assignment. Third-party
+      // rows have no canonical to compare against. Warning is informational —
+      // operators may have moved a service off canonical deliberately.
+      // Note: multi-vault instance rows (`parachute-vault-<instance>`) don't
+      // match a canonical manifest name, so drift warnings don't fire for
+      // them. Intentional — see `canonicalPortForManifest` for the rationale.
+      const canonical = canonicalPortForManifest(entry.name);
+      const driftWarning =
+        canonical !== undefined && canonical !== entry.port
+          ? `canonical port is ${canonical}`
+          : undefined;
+
       // Only skip probe when we know the process is dead (PID file was
       // present but kill(pid, 0) failed). "unknown" status (no PID file)
       // still probes — externally-managed services should report health.
@@ -173,6 +194,7 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
           url,
           healthy: false,
           skipped: true,
+          driftWarning,
         };
       }
 
@@ -194,6 +216,7 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
         url,
         healthy: p.healthy,
         skipped: false,
+        driftWarning,
       };
     }),
   );
@@ -228,6 +251,10 @@ export async function status(opts: StatusOpts = {}): Promise<number> {
     if (!cells || !row) continue;
     print(formatRow(cells, widths));
     if (row.url) print(`  → ${row.url}`);
+    // Drift warning rides as its own continuation line. Plain ASCII (no
+    // emoji / unicode glyphs) for terminal compatibility — the same
+    // surface that prints to scripts piping `parachute status`.
+    if (row.driftWarning) print(`  ! ${row.driftWarning}`);
   }
 
   /**
