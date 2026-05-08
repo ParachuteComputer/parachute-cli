@@ -1887,6 +1887,49 @@ describe("hubFetch publicExposure layer-gate (proxyToService)", () => {
       h.cleanup();
     }
   });
+
+  test("unknown third-party service (no SERVICE_SPECS row, no publicExposure) → defaults to allowed, reaches public layer", async () => {
+    // Third-party modules installed via `module.json` aren't in
+    // FIRST_PARTY_FALLBACKS, so effectivePublicExposure has no spec to
+    // derive from. The contract documented on effectivePublicExposure is
+    // "default to 'allowed'", which means the gate must NOT fire from the
+    // public layer for an unknown service that didn't opt into a stricter
+    // exposure. Regression-guards anyone tightening the default to
+    // "loopback" without realizing it would silently 404 every
+    // third-party module on tailnet/public.
+    const h = makeHarness();
+    const upstream = startUpstream("unknown-thirdparty");
+    try {
+      writeManifest(
+        {
+          services: [
+            {
+              name: "parachute-unknown-thirdparty",
+              port: upstream.port,
+              paths: ["/parachute-unknown-thirdparty"],
+              health: "/parachute-unknown-thirdparty/health",
+              version: "0.1.0",
+              // publicExposure absent — exercises the unknown-spec default path
+              // kind absent — no SERVICE_SPECS / FIRST_PARTY_FALLBACKS row matches
+            },
+          ],
+        },
+        h.manifestPath,
+      );
+      const fetcher = hubFetch(h.dir, { manifestPath: h.manifestPath });
+      const r = req("/parachute-unknown-thirdparty/health", {
+        headers: { "CF-Ray": "abc123" },
+      });
+      const res = await fetcher(r);
+      // Default "allowed" → no gate. Forwarded to upstream.
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { tag: string };
+      expect(body.tag).toBe("unknown-thirdparty");
+    } finally {
+      upstream.stop();
+      h.cleanup();
+    }
+  });
 });
 
 describe("hubFetch publicExposure layer-gate (proxyToVault)", () => {

@@ -195,7 +195,13 @@ export type RequestLayer = "loopback" | "tailnet" | "public";
 export function layerOf(req: Request): RequestLayer {
   const h = req.headers;
   if (h.get("cf-ray") !== null || h.get("cf-connecting-ip") !== null) return "public";
-  if (h.get("tailscale-funnel-request") !== null) return "public";
+  // Match the structured-header value (`?1`) rather than mere presence:
+  // serve.go only ever emits `?1`, so insisting on the canonical value keeps
+  // the classifier's intent obvious to a future reader (don't loosen this to
+  // `!== null` — Tailscale's contract is the value, not the header name).
+  // CF-Ray / CF-Connecting-IP are open-string identifiers with no canonical
+  // value to compare against, hence the presence-check above.
+  if (h.get("tailscale-funnel-request") === "?1") return "public";
   if (h.get("tailscale-user-login") !== null) return "tailnet";
   return "loopback";
 }

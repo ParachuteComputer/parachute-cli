@@ -2,6 +2,19 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.3-rc.2] - 2026-05-08
+
+Review nit fold (PR #187) — no behavior change beyond test coverage.
+
+### Changed
+
+- **`layerOf` matches `Tailscale-Funnel-Request: ?1` by value, not presence.** The structured-header value is the contract per `tailscale.com/ipnlocal/serve.go`; comparing on value (rather than `!== null`) makes the classifier's intent explicit and prevents a future loosening from accidentally accepting any value. CF-Ray / CF-Connecting-IP stay on presence-checks (open-string identifiers, no canonical value).
+- **`warnLegacyRoot` typed as `void`; unused binding dropped at the call site.** The function has been warning-only since the path-rewrite was removed in 0.5.3-rc.1; `const services = warnLegacyRoot(...)` implied a transform that wasn't happening. Caller now uses `manifest.services` directly downstream.
+
+### Added
+
+- **Test: unknown third-party service (no `FIRST_PARTY_FALLBACKS` row, no explicit `publicExposure`) defaults to `"allowed"` and reaches the public layer.** Regression-guards anyone tightening `effectivePublicExposure`'s default toward `"loopback"` — that would silently 404 every third-party module installed via `module.json` on tailnet/public exposure.
+
 ## [0.5.3-rc.1] - 2026-05-08
 
 ### Added

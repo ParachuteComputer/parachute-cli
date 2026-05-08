@@ -127,10 +127,7 @@ const HUB_CATCHALL_MOUNT = "/";
  * still wouldn't route correctly, but the failure is hub-side rather than a
  * tailscale plan collision. Emit the warning so operators know to re-install.
  */
-function warnLegacyRoot(
-  services: readonly ServiceEntry[],
-  log: (line: string) => void,
-): readonly ServiceEntry[] {
+function warnLegacyRoot(services: readonly ServiceEntry[], log: (line: string) => void): void {
   for (const s of services) {
     if (s.paths[0] !== "/") continue;
     const sn = shortName(s.name);
@@ -138,7 +135,6 @@ function warnLegacyRoot(
       `note: ${s.name} claims "/"; hub page lives there — re-run \`parachute install ${sn}\` to update services.json.`,
     );
   }
-  return services;
 }
 
 /**
@@ -262,8 +258,10 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   // Plan no longer partitions services — every service goes through the
   // single hub catchall, and hub gates per request (`publicExposure` +
   // `layerOf` in hub-server.ts). Just surface the legacy `paths: ["/"]`
-  // warning so operators know to re-install.
-  const services = warnLegacyRoot(manifest.services, log);
+  // warning so operators know to re-install. `warnLegacyRoot` is
+  // side-effect-only (warning to `log`); use `manifest.services` directly
+  // downstream.
+  warnLegacyRoot(manifest.services, log);
 
   /**
    * Probe each service port before wiring tailscale up. A service that's
@@ -273,7 +271,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
    */
   const portProbe = opts.servicePortProbe ?? (async (p: number) => !(await defaultPortProbe(p)));
   const probeResults = await Promise.all(
-    services.map(async (s) => ({ svc: s, up: await portProbe(s.port) })),
+    manifest.services.map(async (s) => ({ svc: s, up: await portProbe(s.port) })),
   );
   for (const { svc, up } of probeResults) {
     if (up) continue;
@@ -286,7 +284,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
   // Kept for manual debugging / inspection only — the hub server now builds
   // /.well-known/parachute.json dynamically from services.json at request time
   // (#135), so this on-disk copy is no longer load-bearing for any consumer.
-  const wellKnownDoc = buildWellKnown({ services, canonicalOrigin });
+  const wellKnownDoc = buildWellKnown({ services: manifest.services, canonicalOrigin });
   writeWellKnownFile(wellKnownDoc, wellKnownFilePath);
   log(`Wrote ${wellKnownFilePath}`);
   writeHubFile(hubFilePath);
@@ -308,7 +306,7 @@ export async function exposeUp(layer: ExposeLayer, opts: ExposeOpts = {}): Promi
     hubPort = existing;
   } else {
     const hub = await ensureHubRunning({
-      reservedPorts: services.map((s) => s.port),
+      reservedPorts: manifest.services.map((s) => s.port),
       ...(opts.hubEnsureOpts ?? {}),
       configDir,
       wellKnownDir,
