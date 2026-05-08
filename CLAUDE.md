@@ -49,7 +49,7 @@ Bun everywhere. No Node.js runtime assumptions, no tsc for emit (types only).
 
 ```sh
 bun src/cli.ts --help            # dogfood the CLI from source
-bun test                         # run all tests
+bun test ./src                   # run all tests (canonical — see "Test gate counts" below)
 bun test src/__tests__/expose    # one suite
 bunx biome check --write .       # format + lint
 bun run typecheck                # tsc --noEmit (types only)
