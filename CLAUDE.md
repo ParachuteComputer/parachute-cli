@@ -57,6 +57,10 @@ bun run typecheck                # tsc --noEmit (types only)
 
 For end-to-end against a real install, `bun link` this repo; the linked `parachute` binary follows the checked-out branch (see post-merge hygiene below).
 
+### Test gate counts in commit messages and PR descriptions
+
+Test gate counts in commit messages and PR descriptions are produced by `bun test ./src` (the `package.json` `"test"` script), not `bun test src/__tests__/`. The latter pulls in `packages/scope-guard/` tests and produces an inflated count that's not what CI runs. When quoting numbers ("358 pass / 1 known flake"), use the literal output of `bun test ./src` — it's what the reviewer's run will produce.
+
 ## Post-merge hygiene
 
 **After a PR merges, locally:**
