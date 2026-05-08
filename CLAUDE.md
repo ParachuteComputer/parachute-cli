@@ -49,13 +49,17 @@ Bun everywhere. No Node.js runtime assumptions, no tsc for emit (types only).
 
 ```sh
 bun src/cli.ts --help            # dogfood the CLI from source
-bun test                         # run all tests
+bun test ./src                   # run all tests (canonical — see "Test gate counts" below)
 bun test src/__tests__/expose    # one suite
 bunx biome check --write .       # format + lint
 bun run typecheck                # tsc --noEmit (types only)
 ```
 
 For end-to-end against a real install, `bun link` this repo; the linked `parachute` binary follows the checked-out branch (see post-merge hygiene below).
+
+### Test gate counts in commit messages and PR descriptions
+
+Test gate counts in commit messages and PR descriptions are produced by `bun test ./src` (the `package.json` `"test"` script), not `bun test src/__tests__/`. The latter pulls in `packages/scope-guard/` tests and produces an inflated count that's not what CI runs. When quoting numbers ("358 pass / 1 known flake"), use the literal output of `bun test ./src` — it's what the reviewer's run will produce.
 
 ## Post-merge hygiene
 

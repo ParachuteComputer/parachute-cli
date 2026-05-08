@@ -2,6 +2,21 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.5] - 2026-05-08
+
+Promotes the 0.5.5-rc cycle (#187 layer-aware proxy + #188 admin-login rate-limit + #191 2FA-not-enrolled warning) to stable, plus a small content-only / formatting-only housekeeping bundle. Skips the `-rc.N` step per the doc-only-changes rule (no semantic code changes since rc.2). No intermediate RCs were published to npm during the cycle; this is the first publish to `@latest`.
+
+### Changed
+
+- **Refresh stale comment on `effectivePublicExposure` in `src/service-spec.ts` (closes #189).** The pre-#187 comment said `auth-required` services were "treated as loopback at launch." Post-#187 (layer-aware proxy + collapse tailnet to single catchall) `auth-required` reaches all layers and the service self-gates — the loopback-block is the dedicated `loopback` value's job. Comment now spells out the matrix (allowed → all layers, service self-gates; loopback → hub layer-gates; auth-required → all layers, service self-gates, field documents intent). Code unchanged — the function's return values were already correct against #187's contract.
+- **Canonicalize test-count invocation in `CLAUDE.md` (closes #190).** New "Test gate counts in commit messages and PR descriptions" subsection under "Running" pins `bun test ./src` (the `package.json` `"test"` script, what CI runs) as the source of gate counts quoted in commit messages and PR descriptions, and calls out that `bun test src/__tests__/` pulls in `packages/scope-guard/` tests and reports an inflated count. Recent PRs reported 1028 vs 1076 from these two invocations — the note is the cheapest way to stop divergence.
+- **`bunx biome check src/commands/expose-public-auto.ts --write` fix-up (closes #192).** Pure formatting + import-order fixes (organizeImports + format) that had been failing for multiple PRs. No semantic change. Rest of the repo passes `bunx biome check .` clean.
+
+### Fixed
+
+- **`CLAUDE.md` "Running" fence: harmonize the test command with the canonical `bun test ./src` invocation called out in the "Test gate counts" subsection just below.** Reviewer nit on PR #193 — a reader could reasonably wonder whether the bare `bun test` shown in the fence and the `bun test ./src` shown in the gate-counts subsection were equivalent. They aren't (the bare form pulls in `packages/scope-guard/` and inflates the count). The fence now shows `bun test ./src` with an inline comment back-pointing to the subsection.
+- **Biome file count: verified `bunx biome check .` reports `Checked 167 files` at this PR's HEAD, matching the count quoted in the original PR body / CHANGELOG entry.** Reviewer's run reported 166. Re-ran on a clean working tree and via the `summary` reporter — both reproducibly report 167 against the same commit. The formatter pass in `chore(format): biome fix-up on expose-public-auto.ts` was the only thing that changed tree shape during the cycle, and no files were added or removed; most likely cause of the reviewer-side delta is a stale-cache or pre-formatter working state on their end. Stated count stands.
+
 ## [0.5.5-rc.2] - 2026-05-08
 
 Review nit fold (PR #191) — no behavior change.
