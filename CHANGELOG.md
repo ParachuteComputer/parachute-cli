@@ -2,6 +2,14 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.5-rc.2] - 2026-05-08
+
+Review nit fold (PR #191) — no behavior change.
+
+### Added
+
+- **Test: malformed `config.yaml` → `is2FAEnrolled()` returns `false` (`src/__tests__/expose-2fa-warning.test.ts`).** Pins the safer-fail contract — junk YAML doesn't match the regex, the probe resolves to `hasTotp: false`, and the public-exposure warning fires rather than silently suppressing. Guards against a future refactor of `auth-status.ts` quietly inverting the default.
+
 ## [0.5.5-rc.1] - 2026-05-08
 
 ### Added

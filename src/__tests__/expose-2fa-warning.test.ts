@@ -53,6 +53,21 @@ describe("is2FAEnrolled", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("malformed config.yaml → not enrolled (safer fail mode, fires warning)", () => {
+    // The probe parses config.yaml with a line-anchored regex (no YAML
+    // dependency), so junk content simply doesn't match `totp_secret: "..."`
+    // and resolves to `hasTotp: false` — which fires the public-exposure
+    // warning rather than silently suppressing it. Pin that contract so a
+    // future refactor of auth-status.ts can't quietly invert it.
+    const dir = mkdtempSync(join(tmpdir(), "pcli-2fa-warn-"));
+    try {
+      writeFileSync(join(dir, "config.yaml"), "totp_secret: [unbalanced\n  ::: not yaml\n");
+      expect(is2FAEnrolled({ vaultHome: dir })).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("printPublic2FAWarning", () => {
