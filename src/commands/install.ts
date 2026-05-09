@@ -598,7 +598,7 @@ export async function install(input: string, opts: InstallOpts = {}): Promise<nu
   } else if (entry && entry.port !== portResult.port) {
     // init wrote an entry on the canonical port but the CLI assigned a
     // different one (collision). Reflect the CLI's choice so the hub and
-    // status views stay consistent with the .env we just wrote.
+    // status views stay consistent with the canonical-port assignment.
     upsertService({ ...entry, port: portResult.port }, manifestPath);
     entry = findService(entryName, manifestPath);
     log(
