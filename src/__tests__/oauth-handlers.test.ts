@@ -3552,6 +3552,91 @@ describe("inline approve button on pending /oauth/authorize (#208)", () => {
     }
   });
 
+  test("approve POST: Origin: 'null' (sandbox iframe / opaque origin) → 403", async () => {
+    // Opaque-origin contexts (sandboxed iframes, some `data:` and `file:`
+    // pages) send the literal string "null" as the Origin header. The DCR
+    // /register path covers this; the inline-approve endpoint must reject it
+    // too. originMatchesIssuer() handles this correctly because new URL("null")
+    // throws → returns false; this test pins that contract.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        status: "pending",
+      });
+      const form = new URLSearchParams({
+        __csrf: TEST_CSRF,
+        client_id: reg.client.clientId,
+        return_to: `/oauth/authorize?client_id=${reg.client.clientId}`,
+      });
+      const req = new Request(`${ISSUER}/oauth/authorize/approve`, {
+        method: "POST",
+        body: form,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, SESSION_COOKIE_TTL_S)}`,
+          origin: "null",
+        },
+      });
+      const res = await handleApproveClientPost(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(403);
+      // Row stays pending.
+      const row = getClient(db, reg.client.clientId);
+      expect(row?.status).toBe("pending");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("approve POST: idempotent on already-approved client (double-click / refresh)", async () => {
+    // approveClient() short-circuits if the row is already approved
+    // (clients.ts:153). A double-click or page refresh should not error —
+    // the second POST also succeeds with a 302 to return_to and the row
+    // stays approved. This pins idempotency end-to-end.
+    const { db, cleanup } = await makeDb();
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const session = createSession(db, { userId: user.id });
+      const reg = registerClient(db, {
+        redirectUris: ["https://app.example/cb"],
+        status: "pending",
+      });
+      const returnTo = `/oauth/authorize?client_id=${reg.client.clientId}&state=rt-208`;
+      const buildReq = () => {
+        const form = new URLSearchParams({
+          __csrf: TEST_CSRF,
+          client_id: reg.client.clientId,
+          return_to: returnTo,
+        });
+        return new Request(`${ISSUER}/oauth/authorize/approve`, {
+          method: "POST",
+          body: form,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, SESSION_COOKIE_TTL_S)}`,
+            origin: ISSUER,
+          },
+        });
+      };
+
+      // First POST: pending → approved.
+      const first = await handleApproveClientPost(db, buildReq(), { issuer: ISSUER });
+      expect(first.status).toBe(302);
+      expect(first.headers.get("location")).toBe(returnTo);
+      expect(getClient(db, reg.client.clientId)?.status).toBe("approved");
+
+      // Second POST (same client_id, same form): also succeeds, no error.
+      const second = await handleApproveClientPost(db, buildReq(), { issuer: ISSUER });
+      expect(second.status).toBe(302);
+      expect(second.headers.get("location")).toBe(returnTo);
+      expect(getClient(db, reg.client.clientId)?.status).toBe("approved");
+    } finally {
+      cleanup();
+    }
+  });
+
   test("approve POST: unknown client_id → 404", async () => {
     const { db, cleanup } = await makeDb();
     try {
@@ -3581,9 +3666,8 @@ describe("inline approve button on pending /oauth/authorize (#208)", () => {
   test("approve POST: malicious return_to (absolute URL) → 400 (open-redirect defense)", async () => {
     // The form must always supply a hub-relative /oauth/authorize?... URL.
     // Anything else is either an open-redirect attempt or a misuse — refuse
-    // to follow it. The client is still flipped to approved (we already
-    // committed the call before the return_to check), but we surface the
-    // bad-form error rather than redirecting away.
+    // to follow it. return_to is validated BEFORE the DB mutation, so a bad
+    // value also leaves the client row at status=pending.
     const { db, cleanup } = await makeDb();
     try {
       const user = await createUser(db, "owner", "pw");
@@ -3610,6 +3694,9 @@ describe("inline approve button on pending /oauth/authorize (#208)", () => {
       expect(res.status).toBe(400);
       // No redirect to evil.example.
       expect(res.headers.get("location")).toBeNull();
+      // DB row remains pending — validate-before-mutate ordering.
+      const row = getClient(db, reg.client.clientId);
+      expect(row?.status).toBe("pending");
     } finally {
       cleanup();
     }
@@ -3643,6 +3730,9 @@ describe("inline approve button on pending /oauth/authorize (#208)", () => {
       });
       const res = await handleApproveClientPost(db, req, { issuer: ISSUER });
       expect(res.status).toBe(400);
+      // DB row remains pending — validate-before-mutate ordering.
+      const row = getClient(db, reg.client.clientId);
+      expect(row?.status).toBe("pending");
     } finally {
       cleanup();
     }
@@ -3677,6 +3767,9 @@ describe("inline approve button on pending /oauth/authorize (#208)", () => {
       });
       const res = await handleApproveClientPost(db, req, { issuer: ISSUER });
       expect(res.status).toBe(400);
+      // DB row remains pending — validate-before-mutate ordering.
+      const row = getClient(db, reg.client.clientId);
+      expect(row?.status).toBe("pending");
     } finally {
       cleanup();
     }

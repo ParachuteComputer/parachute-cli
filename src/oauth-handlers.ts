@@ -740,7 +740,10 @@ export async function handleApproveClientPost(
   if (!client) {
     return htmlError("Unknown application", "This client_id is not registered with this hub.", 404);
   }
-  approveClient(db, clientId);
+  // Validate return_to BEFORE the DB mutation: if an authenticated operator
+  // submits a hand-crafted form with a bad return_to, we refuse without
+  // committing the client to `approved`. Practical risk is low (all three
+  // belts already passed), but ordering matters — validate, then mutate.
   const returnTo = String(form.get("return_to") ?? "");
   if (!isSafeAuthorizeReturnTo(returnTo)) {
     return htmlError(
@@ -749,6 +752,7 @@ export async function handleApproveClientPost(
       400,
     );
   }
+  approveClient(db, clientId);
   return redirectResponse(returnTo);
 }
 
