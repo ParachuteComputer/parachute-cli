@@ -8,9 +8,16 @@
  * See README.md for the full API rundown and design.
  */
 
-export { extractBearer, looksLikeJwt, parseScopes } from "./parse";
-export { hasScope } from "./scope";
-export type { JwksGetter, JwksOptions } from "./jwks";
+// Note: relative imports MUST carry `.js` extensions even though the source
+// files are `.ts`. tsc emits the extension verbatim into dist, and NodeNext-
+// strict consumers (e.g. agent's tsc + vitest under Node ESM) require the
+// extension to resolve compiled JS modules. Bun + bundler-resolution
+// consumers (vault, scribe, hub workspace) resolve `.js` back to `.ts`
+// transparently. Dropping the extension breaks NodeNext silently — see #225
+// for the bug that motivated 0.2.1.
+export { extractBearer, looksLikeJwt, parseScopes } from "./parse.js";
+export { hasScope } from "./scope.js";
+export type { JwksGetter, JwksOptions } from "./jwks.js";
 // Revocation-cache surface: the cache itself is internal — `ScopeGuard` owns
 // the lifecycle so downstream RSes don't accidentally instantiate parallel
 // caches with diverging policies. The seam exposed here is `RevocationFetcher`
@@ -22,7 +29,7 @@ export {
   defaultRevocationFetcher,
   type RevocationFetcher,
   type RevocationListBody,
-} from "./revocation-cache";
+} from "./revocation-cache.js";
 export {
   createScopeGuard,
   HubJwtError,
@@ -31,4 +38,4 @@ export {
   type HubJwtErrorCode,
   type ScopeGuard,
   type ValidateHubJwtOptions,
-} from "./validate";
+} from "./validate.js";
