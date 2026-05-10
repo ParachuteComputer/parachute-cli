@@ -120,7 +120,7 @@ export function NewVault() {
           >
             {state.kind === "submitting" ? "Creating…" : "Create vault"}
           </button>
-          <Link to="/" className="muted">
+          <Link to="/vaults" className="muted">
             Cancel
           </Link>
         </div>

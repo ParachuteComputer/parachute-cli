@@ -1,90 +1,80 @@
 /**
- * Parachute Hub admin SPA.
+ * Parachute Admin SPA.
  *
- * This bundle is the operator-facing browser UI for the **hub**. Two
- * concerns live under one roof, served at two mounts on the same hub:
+ * Hub-served browser UI for cross-cutting host concerns:
  *
- *   - **`/vault/*`** — vault provisioning. Lists every vault registered
- *     with the hub (`/.well-known/parachute.json`); operators create new
- *     vaults via `/vault/new`. This is NOT a per-vault admin UI; vaults
- *     own their own surfaces (the MCP endpoint for AI clients, the Notes
- *     PWA for human content browsing). Per-vault admin (config, schemas)
- *     doesn't have a hub-served UI today; if/when it does, it'll be
- *     vault-served — analogous to how the agent has its own admin.
+ *   - **`/admin/vaults`** — vault provisioning. List + create. Per-vault
+ *     content (the Notes PWA, etc.) lives at `/vault/<name>/*` and is NOT
+ *     part of this SPA — vaults own their own user-facing surfaces.
+ *   - **`/admin/permissions`** — OAuth consent grant management.
+ *   - **`/admin/tokens`** — token registry: mint, list, revoke.
  *
- *   - **`/hub/*`** — cross-cutting host concerns. `/hub/permissions`
- *     manages the OAuth consent skip-list; `/hub/tokens` manages the
- *     hub's token registry (mint / list / revoke). These are operator
- *     state about the hub itself, not about any single vault.
+ * Single mount at `/admin/*` (as of hub#231). The prior dual mounts
+ * (`/vault` for the vault SPA, `/hub/*` for permissions+tokens) are
+ * 301-redirected in `hub-server.ts` so cached URLs keep working.
  *
- * The active mount picks the route table — we don't render every route
- * under both basenames since the concerns are unrelated. Cross-mount
- * navigation uses plain `<a href>` because react-router's `<Link>`
- * resolves against the active basename.
+ * Cross-surface navigation off the SPA (e.g. to `/` or `/vault/<name>/`)
+ * uses plain `<a href>` since react-router's `<Link>` resolves against
+ * the SPA basename.
  *
- * The brand subtitle reflects the active mount so an operator who lands
- * deep in either tree knows which surface they're on.
+ * The discovery page at `/` (see `src/hub.ts`) is the operator's
+ * entry point — its Use section links to per-service surfaces; its
+ * Admin section links here.
  */
-import { Link, Route, Routes } from "react-router-dom";
+import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { NewVault } from "./routes/NewVault.tsx";
 import { Permissions } from "./routes/Permissions.tsx";
 import { Tokens } from "./routes/Tokens.tsx";
 import { VaultsList } from "./routes/VaultsList.tsx";
 
-const isHubMount =
-  typeof window !== "undefined" &&
-  (window.location.pathname === "/hub" || window.location.pathname.startsWith("/hub/"));
-
-const subtitle = isHubMount ? "host admin" : "vault provisioning";
+/**
+ * Subtitle reflects the active route's section so a deep-link operator
+ * knows where they are without reading the URL bar. Updates on
+ * client-side navigation via the router's pathname.
+ */
+function subtitleFor(pathname: string): string {
+  if (pathname === "/permissions" || pathname.startsWith("/permissions/")) {
+    return "permissions";
+  }
+  if (pathname === "/tokens" || pathname.startsWith("/tokens/")) {
+    return "tokens";
+  }
+  return "vaults";
+}
 
 export function App() {
+  const { pathname } = useLocation();
+  const subtitle = subtitleFor(pathname);
+
   return (
     <div className="page">
       <nav className="nav">
-        <a href="/vault" className="brand">
-          Parachute Hub <span className="sub">{subtitle}</span>
-        </a>
-        {/* Group 1 — vault provisioning (lives under /vault). */}
-        <a href="/vault">Vaults</a>
+        <Link to="/vaults" className="brand">
+          Parachute Admin <span className="sub">{subtitle}</span>
+        </Link>
+        <Link to="/vaults">Vaults</Link>
+        <Link to="/permissions">Permissions</Link>
+        <Link to="/tokens">Tokens</Link>
         <span className="nav-divider" aria-hidden="true" />
-        {/* Group 2 — host admin (lives under /hub). */}
-        <a href="/hub/permissions">Permissions</a>
-        <a href="/hub/tokens">Tokens</a>
-        <span className="nav-divider" aria-hidden="true" />
-        {/* Group 3 — top-level: the public discovery page at /. */}
         <a href="/" title="Hub discovery page (top-level)">
           Discovery
         </a>
       </nav>
 
       <Routes>
-        {isHubMount ? (
-          <>
-            <Route path="/permissions" element={<Permissions />} />
-            <Route path="/tokens" element={<Tokens />} />
-            <Route
-              path="*"
-              element={
-                <div className="empty">
-                  404 — back to <a href="/vault">vaults</a>.
-                </div>
-              }
-            />
-          </>
-        ) : (
-          <>
-            <Route path="/" element={<VaultsList />} />
-            <Route path="/new" element={<NewVault />} />
-            <Route
-              path="*"
-              element={
-                <div className="empty">
-                  404 — back to <Link to="/">vaults</Link>.
-                </div>
-              }
-            />
-          </>
-        )}
+        <Route path="/" element={<VaultsList />} />
+        <Route path="/vaults" element={<VaultsList />} />
+        <Route path="/vaults/new" element={<NewVault />} />
+        <Route path="/permissions" element={<Permissions />} />
+        <Route path="/tokens" element={<Tokens />} />
+        <Route
+          path="*"
+          element={
+            <div className="empty">
+              404 — back to <Link to="/vaults">vaults</Link>.
+            </div>
+          }
+        />
       </Routes>
     </div>
   );

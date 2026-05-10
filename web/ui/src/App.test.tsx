@@ -1,84 +1,79 @@
 /**
- * App-level smoke tests — brand subtitle reflects the active mount; nav
- * has the right groups + dividers.
+ * App-level smoke tests — brand subtitle reflects the active route; nav
+ * has the right groups + dividers; routes render the expected components.
  *
- * Note: `isHubMount` is computed at module-load time from
- * `window.location.pathname`. To test both branches we re-import the
- * module after mutating jsdom's location. Vitest's `vi.resetModules()`
- * + dynamic import gives us a fresh evaluation per test.
+ * Subtitle is now derived from the router's pathname (via `useLocation`),
+ * so tests drive route changes via `MemoryRouter`'s `initialEntries` —
+ * no `window.location` munging needed.
  */
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-afterEach(() => {
-  vi.resetModules();
+import { App } from "./App.tsx";
+import type * as api from "./lib/api.ts";
+
+// Stub all API helpers — App pulls in VaultsList / Permissions / Tokens
+// at module-load time, and each of those calls into lib/api.ts on mount.
+// Without stubs, jsdom would attempt real fetches and the route tests
+// would race against unmounted state.
+vi.mock("./lib/api.ts", async (orig) => {
+  const actual = (await orig()) as typeof api;
+  return {
+    ...actual,
+    listVaults: vi.fn().mockResolvedValue([]),
+    listGrants: vi.fn().mockResolvedValue([]),
+    listTokens: vi.fn().mockResolvedValue({ tokens: [], next_cursor: null }),
+  };
 });
 
-async function renderAtPath(pathname: string) {
-  // jsdom's `window.location` is read-only via assignment; replace via
-  // `Object.defineProperty` so the module sees the new pathname when
-  // re-evaluated.
-  Object.defineProperty(window, "location", {
-    value: { ...window.location, pathname },
-    writable: true,
-  });
-  vi.resetModules();
-  const { App } = await import("./App.tsx");
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+function renderAt(pathname: string) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[pathname]}>
       <App />
     </MemoryRouter>,
   );
 }
 
-describe("App — brand subtitle", () => {
-  it("/vault* renders 'vault provisioning'", async () => {
-    await renderAtPath("/vault");
-    expect(screen.getByText(/vault provisioning/i)).toBeInTheDocument();
-    expect(screen.queryByText(/host admin/i)).toBeNull();
+describe("App — brand subtitle (route-derived)", () => {
+  it("/vaults renders 'vaults'", () => {
+    renderAt("/vaults");
+    expect(screen.getByText(/vaults/i, { selector: ".sub" })).toBeInTheDocument();
   });
 
-  it("/vault/new also renders 'vault provisioning'", async () => {
-    await renderAtPath("/vault/new");
-    expect(screen.getByText(/vault provisioning/i)).toBeInTheDocument();
+  it("/vaults/new renders 'vaults' (sub-route still under vaults)", () => {
+    renderAt("/vaults/new");
+    expect(screen.getByText(/vaults/i, { selector: ".sub" })).toBeInTheDocument();
   });
 
-  it("/hub* renders 'host admin'", async () => {
-    await renderAtPath("/hub/tokens");
-    expect(screen.getByText(/host admin/i)).toBeInTheDocument();
-    expect(screen.queryByText(/vault provisioning/i)).toBeNull();
+  it("/permissions renders 'permissions'", () => {
+    renderAt("/permissions");
+    expect(screen.getByText(/permissions/i, { selector: ".sub" })).toBeInTheDocument();
   });
 
-  it("/hub/permissions also renders 'host admin'", async () => {
-    await renderAtPath("/hub/permissions");
-    expect(screen.getByText(/host admin/i)).toBeInTheDocument();
+  it("/tokens renders 'tokens'", () => {
+    renderAt("/tokens");
+    expect(screen.getByText(/tokens/i, { selector: ".sub" })).toBeInTheDocument();
   });
 
-  // Bare `/hub` path — `isHubMount` explicitly handles this case alongside
-  // `pathname.startsWith("/hub/")`. Pinning here so a future change to the
-  // detection that breaks the bare-prefix path can't slip through.
-  it("/hub (bare path, no trailing route) also renders 'host admin'", async () => {
-    await renderAtPath("/hub");
-    expect(screen.getByText(/host admin/i)).toBeInTheDocument();
-    expect(screen.queryByText(/vault provisioning/i)).toBeNull();
-  });
-
-  it("origin root falls back to vault-provisioning subtitle", async () => {
-    await renderAtPath("/");
-    expect(screen.getByText(/vault provisioning/i)).toBeInTheDocument();
+  it("origin root (/) falls back to 'vaults' (the SPA's home)", () => {
+    renderAt("/");
+    expect(screen.getByText(/vaults/i, { selector: ".sub" })).toBeInTheDocument();
   });
 });
 
 describe("App — nav structure", () => {
-  it("renders all four nav links in order: Vaults, Permissions, Tokens, Discovery", async () => {
-    await renderAtPath("/vault");
+  it("renders all nav links in order: brand, Vaults, Permissions, Tokens, Discovery", () => {
+    renderAt("/vaults");
     const nav = screen.getByRole("navigation");
     const links = within(nav).getAllByRole("link");
-    // Brand link is index 0; the four nav items follow.
     const labels = links.map((a) => a.textContent?.trim());
     expect(labels).toEqual([
-      expect.stringMatching(/parachute hub/i),
+      expect.stringMatching(/parachute admin/i),
       "Vaults",
       "Permissions",
       "Tokens",
@@ -86,15 +81,59 @@ describe("App — nav structure", () => {
     ]);
   });
 
-  it("renders two visual dividers between nav groups", async () => {
-    const { container } = await renderAtPath("/vault");
-    // Two `.nav-divider` spans: one between Vaults and Permissions, one
-    // between Tokens and Discovery. aria-hidden so screen readers skip
-    // them as decorative.
+  it("renders one visual divider between SPA-internal links and Discovery", () => {
+    // Single mount = single SPA section. The remaining divider separates
+    // in-SPA `<Link>` nav from the cross-mount Discovery `<a href>` (which
+    // leaves the SPA basename).
+    const { container } = renderAt("/vaults");
     const dividers = container.querySelectorAll(".nav-divider");
-    expect(dividers).toHaveLength(2);
+    expect(dividers).toHaveLength(1);
     for (const d of dividers) {
       expect(d.getAttribute("aria-hidden")).toBe("true");
     }
+  });
+
+  it("brand label is 'Parachute Admin' (renamed from 'Parachute Hub' in #231)", () => {
+    renderAt("/vaults");
+    expect(screen.getByText(/parachute admin/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^parachute hub/i)).toBeNull();
+  });
+});
+
+describe("App — route rendering", () => {
+  it("/vaults renders VaultsList (heading 'Vaults')", async () => {
+    renderAt("/vaults");
+    expect(await screen.findByRole("heading", { name: /^vaults/i })).toBeInTheDocument();
+  });
+
+  it("/vaults/new renders NewVault (form input for vault name)", () => {
+    renderAt("/vaults/new");
+    // NewVault's form has a name input — surfaces immediately on mount.
+    expect(screen.getByLabelText(/vault name/i)).toBeInTheDocument();
+  });
+
+  it("/permissions renders Permissions (heading 'Permissions')", () => {
+    renderAt("/permissions");
+    expect(screen.getByRole("heading", { name: /^permissions$/i })).toBeInTheDocument();
+  });
+
+  it("/tokens renders Tokens (heading 'Tokens')", () => {
+    renderAt("/tokens");
+    expect(screen.getByRole("heading", { name: /^tokens$/i })).toBeInTheDocument();
+  });
+
+  it("origin root (/) renders VaultsList (the SPA's home)", async () => {
+    renderAt("/");
+    expect(await screen.findByRole("heading", { name: /^vaults/i })).toBeInTheDocument();
+  });
+
+  it("unknown path renders 404 with link back to vaults", () => {
+    renderAt("/this-does-not-exist");
+    const empty = screen.getByText(/404/).closest(".empty");
+    expect(empty).not.toBeNull();
+    // Scope the link query to the 404 body — the brand link in the nav
+    // also matches /vaults/i and would otherwise multi-match.
+    const backLink = within(empty as HTMLElement).getByRole("link", { name: /vaults/i });
+    expect(backLink).toHaveAttribute("href", "/vaults");
   });
 });

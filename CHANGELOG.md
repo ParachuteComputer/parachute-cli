@@ -2,6 +2,53 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.11] - 2026-05-10
+
+Holistic restructure of the integrated hub experience — the bigger redesign Aaron asked for after rc.10's small relabel ("clicked Vault on discovery, took me to hub management — there's confusion between use vs admin"). Discovery page split into Use / Admin; the admin SPA relocates to `/admin/*` with 301 redirects from the prior `/vault` and `/hub/*` mounts. Closes hub#231.
+
+### Changed
+
+- **Discovery page (`/`) restructured** into two `<section>`s:
+  - **Use** — per-service primary affordances. Browse notes (the Notes PWA, which is the vault-content browse path); Transcribe audio (Scribe); Run agents (Agent). Entries are dynamic, derived from `services.json`; only installed services appear, paths come from the registered mount (so custom paths still work). Vault deliberately omitted — its content is browsed via Notes; provisioning lives under Admin.
+  - **Admin** — three always-visible cards: Vaults (`/admin/vaults`), Permissions (`/admin/permissions`), Tokens (`/admin/tokens`). Renders synchronously so an operator sees admin even if the well-known fetch is slow.
+- **Admin SPA mounts at `/admin/*` (was `/vault` + `/hub/*`).** Single mount; the SPA's basename is `/admin`; Vite build base is `/admin/`; assets resolve at `/admin/assets/*`. main.tsx and App.tsx simplified — `isHubMount` and the dual-mount detection both gone.
+- **Brand renamed** from "Parachute Hub" to "Parachute Admin" (it's unambiguously admin now). Subtitle is route-derived ("vaults" / "permissions" / "tokens") via `useLocation` — updates on client-side nav.
+
+### Added
+
+- **301 back-compat redirects** for every pre-rename SPA URL:
+  - `/vault` → `/admin/vaults`
+  - `/vault/new` → `/admin/vaults/new`
+  - `/hub/vaults*` → `/admin/vaults*` (this redirect predated #231; now retargets at the final mount instead of bouncing through the interim `/vault`)
+  - `/hub/permissions` → `/admin/permissions`
+  - `/hub/tokens` → `/admin/tokens`
+  - `/hub` (bare) → `/admin/vaults`
+  - All preserve query strings; method-agnostic (no POST endpoint at any of these paths).
+
+### Compatibility
+
+- **`/vault/<name>/*` (per-vault content proxy) is unchanged** — that's user-facing vault data (Notes PWA, etc.), not the admin SPA. Stays where it is.
+- **Pre-rename `/vault/<unknown>/*` SPA-shell fallback removed.** Under the prior shape, an unregistered vault name fell through to the SPA shell (which would client-side render a 404). Now it 404s directly. No operator workflow relied on the SPA-shell fallback.
+- **Pre-rename `/hub/*` SPA mount removed.** Known prefixes 301 to the new locations; unknown `/hub/*` paths 404 (was: SPA shell). Documented in the dispatch comments.
+
+### Out of scope (deferred — separate issues)
+
+- Module.json `useUrl` / `adminUrl` fields (cross-repo work; future Phase 2 follow-up).
+- Vault-side per-instance admin UI (filed as vault#283).
+- Discovery functionality beyond the Use/Admin split — status pills, real-time health, etc. (Phase 3 if anyone wants).
+
+### Test gate
+
+All test suites pass. New coverage in this PR:
+
+- **`hub.test.ts`** rewritten for the new discovery shape — 15 tests covering the Use/Admin section structure, dynamic Use entries from services.json, hardcoded Admin entries, the synchronous-Admin-render guarantee, and absence of the retired aggregate-by-module-type code.
+- **`hub-server.test.ts`** retired the pre-rename `/vault` and `/hub/*` SPA tests; added 9 new tests across the new `/admin/*` SPA mount (vaults / vaults/new / permissions / tokens / assets / 503 + 405 surfaces) and every 301 redirect (`/vault`, `/vault/new`, `/hub/vaults*`, `/hub/permissions`, `/hub/tokens`, `/hub` bare) including query-string preservation.
+- **`App.test.tsx`** rewritten to use `MemoryRouter`'s `initialEntries` (subtitle is now router-derived; no more `Object.defineProperty(window.location, ...)`). Covers route-derived subtitle, single-mount nav structure, and per-route component rendering (including the 404 fallback).
+
+Typecheck (both packages): clean. biome: clean. UI build + `verify-base`: clean (asserts `/admin/`-prefixed asset URLs).
+
+(Test-count numbers intentionally omitted — the canonical-vs-combined ambiguity is tracked at hub#219.)
+
 ## [0.5.8-rc.10] - 2026-05-10
 
 UX polish on the admin SPA — addresses the "/hub/tokens feels inside of the /vault UI" concern Aaron raised after rc.9. Three small changes; no API surface change, no behavior change beyond labels and visual grouping.

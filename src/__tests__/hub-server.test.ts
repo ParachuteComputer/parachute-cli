@@ -398,15 +398,12 @@ describe("hubFetch routing", () => {
     }
   });
 
-  // SPA mounts after hub#168-realignment:
-  //   /vault — primary (vault list, NewVault, etc.)
-  //   /hub   — back-compat (only /hub/permissions; /hub/vaults* is 301'd
-  //            below, /hub/ root falls through to the SPA's 404 route)
-  //
-  // Same bundle at both mounts. Build base is /vault/, so asset URLs are
-  // origin-absolute and resolve regardless of which mount served the HTML.
+  // SPA mount after hub#231: single `/admin/*` mount serves vault
+  // provisioning + permissions + tokens. Pre-rename `/vault` and `/hub/*`
+  // SPA URLs are 301-redirected; the per-vault content proxy at
+  // `/vault/<name>/*` stays where it is.
 
-  test("/vault serves index.html when the SPA bundle exists", async () => {
+  test("/admin/vaults serves the SPA shell when the bundle exists", async () => {
     const h = makeHarness();
     try {
       const dist = join(h.dir, "dist");
@@ -414,7 +411,7 @@ describe("hubFetch routing", () => {
       writeFileSync(join(dist, "index.html"), "<!doctype html><div id=root></div>");
       writeManifest({ services: [] }, h.manifestPath);
       const res = await hubFetch(h.dir, { spaDistDir: dist, manifestPath: h.manifestPath })(
-        req("/vault"),
+        req("/admin/vaults"),
       );
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -424,10 +421,7 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/vault/new (client-side route, no matching vault) falls back to index.html", async () => {
-    // Routing-order check: `new` isn't a known vault, so proxyToVault
-    // returns undefined and we fall through to the SPA shell. The router
-    // takes over client-side and renders the NewVault form.
+  test("/admin/vaults/new serves the SPA shell (client-side route)", async () => {
     const h = makeHarness();
     try {
       const dist = join(h.dir, "dist");
@@ -435,7 +429,7 @@ describe("hubFetch routing", () => {
       writeFileSync(join(dist, "index.html"), "<!doctype html><div id=root></div>");
       writeManifest({ services: [] }, h.manifestPath);
       const res = await hubFetch(h.dir, { spaDistDir: dist, manifestPath: h.manifestPath })(
-        req("/vault/new"),
+        req("/admin/vaults/new"),
       );
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -445,7 +439,34 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/vault/assets/*.js is served with the matching content-type", async () => {
+  test("/admin/permissions serves the SPA shell", async () => {
+    const h = makeHarness();
+    try {
+      const dist = join(h.dir, "dist");
+      mkdirIfMissing(dist);
+      writeFileSync(join(dist, "index.html"), "<!doctype html><div id=root></div>");
+      const res = await hubFetch(h.dir, { spaDistDir: dist })(req("/admin/permissions"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/admin/tokens serves the SPA shell", async () => {
+    const h = makeHarness();
+    try {
+      const dist = join(h.dir, "dist");
+      mkdirIfMissing(dist);
+      writeFileSync(join(dist, "index.html"), "<!doctype html><div id=root></div>");
+      const res = await hubFetch(h.dir, { spaDistDir: dist })(req("/admin/tokens"));
+      expect(res.status).toBe(200);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/admin/assets/*.js is served with the matching content-type", async () => {
     const h = makeHarness();
     try {
       const dist = join(h.dir, "dist");
@@ -456,7 +477,7 @@ describe("hubFetch routing", () => {
       writeFileSync(join(assets, "main.js"), "console.log('hi');");
       writeManifest({ services: [] }, h.manifestPath);
       const res = await hubFetch(h.dir, { spaDistDir: dist, manifestPath: h.manifestPath })(
-        req("/vault/assets/main.js"),
+        req("/admin/assets/main.js"),
       );
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("application/javascript; charset=utf-8");
@@ -466,14 +487,14 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/vault/* returns 503 with build hint when dist is missing", async () => {
+  test("/admin/* returns 503 with build hint when dist is missing", async () => {
     const h = makeHarness();
     try {
       writeManifest({ services: [] }, h.manifestPath);
       const res = await hubFetch(h.dir, {
         spaDistDir: join(h.dir, "missing"),
         manifestPath: h.manifestPath,
-      })(req("/vault"));
+      })(req("/admin/vaults"));
       expect(res.status).toBe(503);
       expect(await res.text()).toContain("bun run build");
     } finally {
@@ -481,55 +502,14 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/vault rejects non-GET methods with 405", async () => {
-    const h = makeHarness();
-    try {
-      const dist = join(h.dir, "dist");
-      mkdirIfMissing(dist);
-      writeFileSync(join(dist, "index.html"), "<!doctype html>");
-      const res = await hubFetch(h.dir, { spaDistDir: dist })(req("/vault", { method: "POST" }));
-      expect(res.status).toBe(405);
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  test("/hub/permissions serves the SPA shell (back-compat mount)", async () => {
-    const h = makeHarness();
-    try {
-      const dist = join(h.dir, "dist");
-      mkdirIfMissing(dist);
-      writeFileSync(join(dist, "index.html"), "<!doctype html><div id=root></div>");
-      const res = await hubFetch(h.dir, { spaDistDir: dist })(req("/hub/permissions"));
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
-      expect(await res.text()).toContain("<div id=root>");
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  test("/hub/* returns 503 with build hint when dist is missing", async () => {
-    const h = makeHarness();
-    try {
-      const res = await hubFetch(h.dir, { spaDistDir: join(h.dir, "missing") })(
-        req("/hub/permissions"),
-      );
-      expect(res.status).toBe(503);
-      expect(await res.text()).toContain("bun run build");
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  test("/hub rejects non-GET methods with 405", async () => {
+  test("/admin/vaults rejects non-GET methods with 405", async () => {
     const h = makeHarness();
     try {
       const dist = join(h.dir, "dist");
       mkdirIfMissing(dist);
       writeFileSync(join(dist, "index.html"), "<!doctype html>");
       const res = await hubFetch(h.dir, { spaDistDir: dist })(
-        req("/hub/permissions", { method: "POST" }),
+        req("/admin/vaults", { method: "POST" }),
       );
       expect(res.status).toBe(405);
     } finally {
@@ -537,36 +517,120 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/hub/vaults issues a 301 redirect to /vault", async () => {
-    // Back-compat for bookmarks. The exact mount path used to be /hub/vaults
-    // before the realignment; permanent redirect keeps stale URLs working.
+  // 301 back-compat redirects (closes hub#231): pre-rename SPA URLs
+  // 301-redirect to the new /admin/* mount. Tests cover every entry in the
+  // dispatch — operator bookmarks landing on any of these still work.
+
+  test("301: /vault → /admin/vaults", async () => {
+    const h = makeHarness();
+    try {
+      const res = await hubFetch(h.dir)(req("/vault"));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe("/admin/vaults");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("301: /vault/new → /admin/vaults/new", async () => {
+    const h = makeHarness();
+    try {
+      const res = await hubFetch(h.dir)(req("/vault/new"));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe("/admin/vaults/new");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("301: /vault preserves query string", async () => {
+    const h = makeHarness();
+    try {
+      const res = await hubFetch(h.dir)(req("/vault?next=foo"));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe("/admin/vaults?next=foo");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("301: /hub/vaults → /admin/vaults (chain through the rename)", async () => {
+    // The /hub/vaults redirect predates #231 — it used to land at /vault.
+    // Now it lands at the final /admin/vaults so old bookmarks don't bounce
+    // through two redirects.
     const h = makeHarness();
     try {
       const res = await hubFetch(h.dir)(req("/hub/vaults"));
       expect(res.status).toBe(301);
-      expect(res.headers.get("location")).toBe("/vault");
+      expect(res.headers.get("location")).toBe("/admin/vaults");
     } finally {
       h.cleanup();
     }
   });
 
-  test("/hub/vaults/new redirects to /vault/new", async () => {
+  test("301: /hub/vaults/new → /admin/vaults/new", async () => {
     const h = makeHarness();
     try {
       const res = await hubFetch(h.dir)(req("/hub/vaults/new"));
       expect(res.status).toBe(301);
-      expect(res.headers.get("location")).toBe("/vault/new");
+      expect(res.headers.get("location")).toBe("/admin/vaults/new");
     } finally {
       h.cleanup();
     }
   });
 
-  test("/hub/vaults/* preserves the query string in the redirect", async () => {
+  test("301: /hub/vaults/* preserves the query string", async () => {
     const h = makeHarness();
     try {
       const res = await hubFetch(h.dir)(req("/hub/vaults/foo?bar=1&baz=2"));
       expect(res.status).toBe(301);
-      expect(res.headers.get("location")).toBe("/vault/foo?bar=1&baz=2");
+      expect(res.headers.get("location")).toBe("/admin/vaults/foo?bar=1&baz=2");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("301: /hub/permissions → /admin/permissions", async () => {
+    const h = makeHarness();
+    try {
+      const res = await hubFetch(h.dir)(req("/hub/permissions"));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe("/admin/permissions");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("301: /hub/tokens → /admin/tokens", async () => {
+    const h = makeHarness();
+    try {
+      const res = await hubFetch(h.dir)(req("/hub/tokens"));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe("/admin/tokens");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("301: /hub bare → /admin/vaults", async () => {
+    const h = makeHarness();
+    try {
+      const res = await hubFetch(h.dir)(req("/hub"));
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe("/admin/vaults");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/hub/<unknown> (no SPA mount anymore) → 404", async () => {
+    const h = makeHarness();
+    try {
+      writeManifest({ services: [] }, h.manifestPath);
+      const res = await hubFetch(h.dir, { manifestPath: h.manifestPath })(
+        req("/hub/unknown-thing"),
+      );
+      expect(res.status).toBe(404);
     } finally {
       h.cleanup();
     }
@@ -1024,15 +1088,15 @@ describe("hubFetch /vault/<name>/* dynamic proxy (#144)", () => {
     }
   });
 
-  test("single-segment /vault/<name> picks proxy when registered, SPA shell when not", async () => {
+  test("single-segment /vault/<name> picks proxy when registered, 404 when not", async () => {
     // Two cases share one fixture so the contrast is explicit:
     //   - `/vault/default` is registered → proxy answers (200, JSON tag).
-    //   - `/vault/nonexistent` has no match → falls through to the SPA
-    //     shell (200, text/html). The SPA's :name route renders client-side
-    //     and shows a 404 in-app, but at the wire it's the shell.
+    //   - `/vault/nonexistent` has no match → 404 directly (no SPA-shell
+    //     fallback under /vault since hub#231 moved the admin SPA to
+    //     /admin/*; the /vault/<name>/* slot is now exclusively the
+    //     per-vault content proxy).
     // This is the routing-order seam #173 introduced — proxy is consulted
-    // before the SPA fallback, and the fallback only triggers when no
-    // vault claims the path.
+    // before the 404; the SPA fallback that used to live here is gone.
     const h = makeHarness();
     const upstream = startUpstream("default-vault");
     try {
@@ -1065,10 +1129,8 @@ describe("hubFetch /vault/<name>/* dynamic proxy (#144)", () => {
       expect(body.tag).toBe("default-vault");
       expect(body.pathname).toBe("/vault/default");
 
-      const shelled = await fetcher(req("/vault/nonexistent"));
-      expect(shelled.status).toBe(200);
-      expect(shelled.headers.get("content-type")).toBe("text/html; charset=utf-8");
-      expect(await shelled.text()).toContain("<div id=root>");
+      const notFound = await fetcher(req("/vault/nonexistent"));
+      expect(notFound.status).toBe(404);
     } finally {
       upstream.stop();
       h.cleanup();

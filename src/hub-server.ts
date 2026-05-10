@@ -9,17 +9,58 @@
  * `tailscale serve … --set-path=/ http://127.0.0.1:<port>`. This shim is
  * that localhost backing.
  *
- * Routes (all bound to 127.0.0.1):
- *   /                                         → hub.html
- *   /hub.html                                 → hub.html
- *   /.well-known/parachute.json               → built dynamically from services.json
- *   /.well-known/jwks.json                    → JWKS from hub.db
- *   /.well-known/oauth-authorization-server   → RFC 8414 metadata (issuer, endpoints)
- *   /oauth/authorize  (GET + POST)            → login → consent → auth code
- *   /oauth/authorize/approve (POST)           → inline DCR approve form (#208)
- *   /oauth/token      (POST)                  → authorization_code + refresh_token grants
- *   /oauth/register   (POST)                  → RFC 7591 dynamic client registration
- *   anything else                             → 404
+ * Routes (all bound to 127.0.0.1) — listed in dispatch order. Order is
+ * load-bearing: 301 redirects fire before the proxies and SPA mount they
+ * preempt; admin API endpoints fire before the /admin/* SPA catch-all.
+ *
+ *   # Pre-rename 301 back-compat (hub#231 — first so they preempt any
+ *   # remaining handlers under /vault or /hub).
+ *   /vault, /vault/, /vault/new                → 301 → /admin/vaults[/new]
+ *   /hub/vaults*                               → 301 → /admin/vaults*
+ *   /hub/permissions                           → 301 → /admin/permissions
+ *   /hub/tokens                                → 301 → /admin/tokens
+ *   /hub, /hub/                                → 301 → /admin/vaults
+ *
+ *   # Discovery + well-known.
+ *   /, /hub.html                               → hub.html (the discovery page)
+ *   /.well-known/parachute.json                → built dynamically from services.json
+ *   /.well-known/parachute-revocation.json     → revoked-jti list (hub#212 Phase 1)
+ *   /.well-known/jwks.json                     → JWKS from hub.db
+ *   /.well-known/oauth-authorization-server    → RFC 8414 metadata (issuer, endpoints)
+ *
+ *   # OAuth issuer.
+ *   /oauth/authorize  (GET + POST)             → login → consent → auth code
+ *   /oauth/authorize/approve (POST)            → inline DCR approve form (#208)
+ *   /oauth/token      (POST)                   → authorization_code + refresh_token grants
+ *   /oauth/register   (POST)                   → RFC 7591 dynamic client registration
+ *   /oauth/revoke     (POST)                   → RFC 7009 refresh-token revocation
+ *
+ *   # Admin API + bearer-mint surfaces (must precede /admin/* SPA mount).
+ *   /vaults                       (POST)       → create vault
+ *   /admin/host-admin-token       (GET)        → SPA bearer mint (cookie-gated)
+ *   /admin/vault-admin-token/<n>  (GET)        → per-vault bearer mint (cookie-gated)
+ *   /api/auth/mint-token          (POST)       → CLI/automation token mint (bearer)
+ *   /api/auth/revoke-token        (POST)       → revoke registry-row token by jti
+ *   /api/auth/tokens              (GET)        → paginated registry list
+ *   /api/grants                   (GET)        → OAuth consent grants list
+ *   /api/grants/<client_id>       (DELETE)     → revoke a single OAuth grant
+ *   /admin/login                  (GET + POST) → operator password login
+ *   /admin/logout                 (POST)       → end admin session
+ *   /admin/config                 (GET)        → operator config view
+ *   /admin/config/<key>           (POST)       → operator config write
+ *
+ *   # Per-vault content proxy (user-facing vault data: Notes PWA, MCP, etc.).
+ *   /vault/<name>/*                            → proxy to the vault backend
+ *
+ *   # Admin SPA mount (catch-all under /admin; runs after all admin API
+ *   # handlers above, so /admin/<known> reaches the right handler and
+ *   # /admin/<spa-route> serves the SPA shell).
+ *   /admin, /admin/, /admin/*                  → SPA shell (vaults / new / permissions / tokens)
+ *
+ *   # Generic services.json-driven proxy (non-vault modules: notes, scribe, agent).
+ *   /<service-mount>/*                         → proxy via services.json longest-prefix
+ *
+ *   anything else                              → 404
  *
  * Invoked as:
  *   bun <this-file> --port <n> --well-known-dir <path> [--db <path>] [--issuer <url>]
@@ -507,22 +548,23 @@ function defaultSpaDistDir(): string {
 }
 
 /**
- * The SPA serves at two mounts:
+ * The admin SPA serves at a single mount: `/admin/*` (since hub#231).
  *
- * - `/vault` — primary, since hub#168-realignment. Matches the operator
- *   pattern of `/<module>` as the entry point (alongside `/notes`, `/agent`,
- *   `/scribe`). VaultsList, NewVault, and per-vault detail routes hang off
- *   here.
- * - `/hub` — back-compat. `/hub/permissions` (cross-vault grants) is a hub
- *   concern and stays where bookmarks expect it. `/hub/vaults*` is a 301 to
- *   `/vault*` further up the dispatch — keeping it out of this mount.
+ * Routes:
+ *   - `/admin/vaults`       → vault list (the SPA's home)
+ *   - `/admin/vaults/new`   → vault create form
+ *   - `/admin/permissions`  → OAuth consent grant management
+ *   - `/admin/tokens`       → token registry: mint / list / revoke
  *
- * Both mounts serve the same SPA bundle. Asset URLs are origin-absolute
- * (`/vault/assets/...`) per the build base, so the HTML loads correctly
- * regardless of which mount served it. main.tsx detects the active mount
- * at runtime and configures react-router's `basename` accordingly.
+ * Asset URLs are origin-absolute (`/admin/assets/...`) per the Vite build
+ * base. main.tsx pins react-router's basename to `/admin`.
+ *
+ * Pre-rename mounts (the old `/vault` for the vault SPA, `/hub/*` for
+ * permissions+tokens) are 301-redirected further up the dispatch so cached
+ * operator URLs keep working. `/vault/<name>/*` (per-vault content proxy)
+ * stays — that's user-facing vault data, not part of this admin SPA.
  */
-type SpaMount = "/vault" | "/hub";
+type SpaMount = "/admin";
 
 /**
  * Pick a content type for static assets the SPA build produces. Vite's
@@ -569,8 +611,8 @@ function spaContentType(pathname: string): string {
  * filter rejects sub-paths containing "..", and the resolved absolute
  * path is checked to start with `dist/` before any read.
  *
- * `mount` is the prefix being served (`/vault` or `/hub`); we strip it
- * from `pathname` to land on the file path inside `dist/`.
+ * `mount` is the prefix being served (`/admin`); we strip it from
+ * `pathname` to land on the file path inside `dist/`.
  */
 async function serveSpa(spaDistDir: string, pathname: string, mount: SpaMount): Promise<Response> {
   if (!existsSync(spaDistDir)) {
@@ -579,7 +621,7 @@ async function serveSpa(spaDistDir: string, pathname: string, mount: SpaMount): 
       { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } },
     );
   }
-  // Strip the mount prefix; "/vault" → "", "/vault/" → "/", "/vault/x" → "/x".
+  // Strip the mount prefix; "/admin" → "", "/admin/" → "/", "/admin/x" → "/x".
   const sub = pathname === mount ? "" : pathname.slice(mount.length);
   const indexPath = join(spaDistDir, "index.html");
 
@@ -630,18 +672,55 @@ export function hubFetch(
     const url = new URL(req.url);
     const pathname = url.pathname;
 
-    // 301 back-compat: `/hub/vaults*` was the SPA's vault-management entry
-    // before hub#168-realignment. Bookmarks and any cached operator-typed
-    // URLs land here; permanent redirect keeps them working without leaving
-    // a dangling SPA route. Query string preserved; fragment is client-side
-    // and survives the redirect at the browser. Method-agnostic — even a
-    // misrouted POST gets the redirect, since there's no /hub/vaults POST
-    // endpoint to protect.
+    // 301 back-compat for the pre-hub#231 admin-SPA mounts:
+    //
+    //   `/vault`            → `/admin/vaults`
+    //   `/vault/new`        → `/admin/vaults/new`
+    //   `/hub/vaults*`      → `/admin/vaults*` (this redirect predates #231;
+    //                        it now retargets at the new admin mount instead
+    //                        of the interim `/vault` mount)
+    //   `/hub/permissions`  → `/admin/permissions`
+    //   `/hub/tokens`       → `/admin/tokens`
+    //   `/hub` (bare)       → `/admin/vaults`
+    //
+    // Permanent redirect so cached operator URLs keep working without
+    // leaving dangling SPA routes. Query string preserved; fragment is
+    // client-side and survives the redirect at the browser. Method-agnostic
+    // — even a misrouted POST gets the redirect; none of these paths host a
+    // POST endpoint to protect.
+    //
+    // `/vault/<name>/*` is INTENTIONALLY excluded — that's the per-vault
+    // content proxy (Notes PWA, etc.), not the admin SPA. Stays where it is.
+    if (pathname === "/vault" || pathname === "/vault/" || pathname === "/vault/new") {
+      const sub = pathname === "/vault/new" ? "/new" : "";
+      return new Response("", {
+        status: 301,
+        headers: { location: `/admin/vaults${sub}${url.search}` },
+      });
+    }
     if (pathname === "/hub/vaults" || pathname.startsWith("/hub/vaults/")) {
-      const newPath = `/vault${pathname.slice("/hub/vaults".length)}`;
+      const newPath = `/admin/vaults${pathname.slice("/hub/vaults".length)}`;
       return new Response("", {
         status: 301,
         headers: { location: `${newPath}${url.search}` },
+      });
+    }
+    if (pathname === "/hub/permissions") {
+      return new Response("", {
+        status: 301,
+        headers: { location: `/admin/permissions${url.search}` },
+      });
+    }
+    if (pathname === "/hub/tokens") {
+      return new Response("", {
+        status: 301,
+        headers: { location: `/admin/tokens${url.search}` },
+      });
+    }
+    if (pathname === "/hub" || pathname === "/hub/") {
+      return new Response("", {
+        status: 301,
+        headers: { location: `/admin/vaults${url.search}` },
       });
     }
 
@@ -828,15 +907,10 @@ export function hubFetch(
       });
     }
 
-    // /hub SPA mount (back-compat). Kept for `/hub/permissions` and any other
-    // hub-level admin surface that lived under /hub/ before the realignment.
-    // /hub/vaults* is a separate concern handled by the 301 redirect lower
-    // down — the redirect runs first so it never reaches here. Only GET —
-    // POSTs for vault create go to /vaults, not the SPA mount.
-    if (pathname === "/hub" || pathname.startsWith("/hub/")) {
-      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
-      return serveSpa(spaDistDir, pathname, "/hub");
-    }
+    // Note: the old `/hub/*` SPA mount has been retired. Known prefixes
+    // (`/hub`, `/hub/vaults*`, `/hub/permissions`, `/hub/tokens`) are
+    // 301-redirected at the top of dispatch. Any other `/hub/*` path falls
+    // through to the catch-all 404 — there's no admin surface left there.
 
     if (pathname === "/admin/host-admin-token") {
       if (!getDb) return new Response("hub db not configured", { status: 503 });
@@ -954,34 +1028,36 @@ export function hubFetch(
       return handleAdminConfigPost(getDb(), req, name);
     }
 
-    // /vault — primary SPA mount + dynamic per-vault proxy share this
-    // namespace. Order matters:
-    //   1. `/vault` exact → SPA shell (vault list).
-    //   2. `/vault/<known-vault>/...` → proxy to the vault backend, picked
-    //      from services.json by longest-mount-prefix. Read per request so a
-    //      `parachute vault create` performed after `parachute expose` is
-    //      immediately reachable (#144).
-    //   3. `/vault/<spa-route>` → SPA shell. Only single-segment paths
-    //      (`/vault/new`, `/vault/<name>`) and `/vault/assets/*` count as
-    //      SPA routes. Multi-segment requests like `/vault/<unknown>/health`
-    //      are vault-API shapes targeting a non-existent vault and 404 —
-    //      otherwise the SPA shell would mask backend 404s with HTML.
-    //      `new` and `assets` are reserved vault names (see
-    //      `RESERVED_VAULT_NAMES` in admin-vaults.ts) so an operator
-    //      can't register a vault that shadows the SPA's create route or
-    //      its static asset bundle.
-    if (pathname === "/vault") {
-      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
-      return serveSpa(spaDistDir, pathname, "/vault");
-    }
+    // /vault/<name>/* — per-vault content proxy. Stays as user-facing
+    // surface (the Notes PWA loads through here, etc.). The bare `/vault`
+    // and `/vault/new` paths were SPA routes pre-#231; they 301-redirect at
+    // the top of dispatch now. Multi-segment requests like
+    // `/vault/<unknown>/health` are vault-API shapes targeting a
+    // non-existent vault and 404 directly — there's no SPA-shell fallback
+    // here anymore (the SPA moved to /admin), so we can't accidentally
+    // mask a backend 404 with HTML.
     if (pathname.startsWith("/vault/")) {
       const proxied = await proxyToVault(req, manifestPath);
       if (proxied) return proxied;
-      const sub = pathname.slice("/vault/".length);
-      const isSpaRoute = !sub.includes("/") || sub.startsWith("assets/");
-      if (!isSpaRoute) return new Response("not found", { status: 404 });
-      if (req.method !== "GET") return new Response("not found", { status: 404 });
-      return serveSpa(spaDistDir, pathname, "/vault");
+      return new Response("not found", { status: 404 });
+    }
+
+    // /admin/* SPA mount. All non-SPA admin handlers (host-admin-token,
+    // vault-admin-token, login, logout, config, api/auth/*, api/grants,
+    // grants/*) ran above and either matched or returned. Anything that
+    // makes it here under /admin/* is a SPA route or asset request; the
+    // SPA's own router renders the page and handles 404 client-side for
+    // unknown sub-paths.
+    if (pathname === "/admin" || pathname === "/admin/") {
+      // Unprefixed /admin → SPA shell pointed at the vault list (its home).
+      // The SPA's basename is /admin, so the router will land on / and
+      // render VaultsList.
+      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+      return serveSpa(spaDistDir, pathname, "/admin");
+    }
+    if (pathname.startsWith("/admin/")) {
+      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+      return serveSpa(spaDistDir, pathname, "/admin");
     }
 
     // Generic services.json-driven dispatch for non-vault modules. Reaches

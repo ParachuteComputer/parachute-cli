@@ -5,14 +5,22 @@ import { CONFIG_DIR } from "./config.ts";
 /**
  * Hub page served at `/` when the node is exposed.
  *
- * The page is a *module directory*: one tile per module type (vault, scribe,
- * notes, agent), not one row per service instance. Aaron's original shape
- * iterated `services[]` and rendered a card per entry — fine at one vault,
- * but at three vaults plus scribe + notes + agent the page reads as a flat
- * list of instances rather than the modules themselves (#168). The new shape
- * aggregates: "Vault — 3 registered — Manage →" links to the per-vault SPA at
- * `/vault`; "Scribe — 1 registered" links to the running scribe instance;
- * etc. Zero-count types are hidden entirely.
+ * The page is split into two sections:
+ *
+ *   - **Use** — per-service primary human affordances. Browse notes
+ *     (the Notes PWA, which is the vault-content browse path); transcribe
+ *     audio (Scribe); run agents (Agent). Entries are dynamic, derived
+ *     from `/.well-known/parachute.json`; only installed services show up.
+ *     Vault deliberately doesn't have its own Use entry — its content is
+ *     browsed via Notes, so a separate "Vault" tile would just send the
+ *     operator to the admin SPA, which is exactly the friction Aaron
+ *     flagged ("clicked Vault, took me to hub management").
+ *
+ *   - **Admin** — hub-served admin SPA routes for cross-cutting host
+ *     concerns. Always visible: even with zero vaults installed, an
+ *     operator may want to provision the first one. Three entries:
+ *     Vaults (provisioning), Permissions (OAuth consent grants), Tokens
+ *     (registry mint/list/revoke).
  *
  * The file stays self-contained (inline CSS + JS, no external assets) so
  * `tailscale serve` can mount it directly from disk with `--set-path=/`.
@@ -108,6 +116,22 @@ const HTML = `<!doctype html>
     font-size: 1.1rem;
     margin: 0;
   }
+  .section {
+    margin-bottom: 3rem;
+  }
+  .section h2 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 1.5rem;
+    color: var(--fg);
+    margin: 0 0 0.4rem;
+    letter-spacing: -0.005em;
+  }
+  .section .section-sub {
+    color: var(--fg-muted);
+    font-size: 0.92rem;
+    margin: 0 0 1.25rem;
+  }
   .grid {
     display: grid;
     gap: 1.25rem;
@@ -117,12 +141,12 @@ const HTML = `<!doctype html>
     background: var(--card-bg);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 1.75rem;
+    padding: 1.5rem;
     text-decoration: none;
     color: inherit;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
     transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
     opacity: 0;
     animation: fadeUp 0.4s ease forwards;
@@ -131,46 +155,22 @@ const HTML = `<!doctype html>
   .card:nth-child(2) { animation-delay: 0.06s; }
   .card:nth-child(3) { animation-delay: 0.1s; }
   .card:nth-child(4) { animation-delay: 0.14s; }
-  .card:nth-child(5) { animation-delay: 0.18s; }
-  .card:nth-child(n+6) { animation-delay: 0.22s; }
   .card:hover {
     border-color: var(--accent-light);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
     transform: translateY(-2px);
   }
-  .card-head {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-  .icon {
-    width: 2.25rem;
-    height: 2.25rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--accent-soft);
-    border-radius: 8px;
-    color: var(--accent);
-    font-size: 1.25rem;
-    flex-shrink: 0;
-    overflow: hidden;
-  }
-  .icon img, .icon svg {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-  }
   .card-title {
     font-family: var(--serif);
-    font-size: 1.5rem;
+    font-size: 1.4rem;
     font-weight: 400;
     margin: 0;
     line-height: 1.1;
+    color: var(--fg);
   }
-  .card-count {
+  .card-desc {
     color: var(--fg-muted);
-    font-size: 0.95rem;
+    font-size: 0.92rem;
     margin: 0;
     flex-grow: 1;
   }
@@ -178,7 +178,7 @@ const HTML = `<!doctype html>
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: 0.25rem;
+    margin-top: 0.5rem;
     font-size: 0.8rem;
     color: var(--fg-dim);
   }
@@ -186,14 +186,14 @@ const HTML = `<!doctype html>
     font-family: ui-monospace, 'SF Mono', Monaco, monospace;
     color: var(--fg-muted);
   }
-  .manage {
+  .arrow {
     color: var(--accent);
     font-weight: 500;
   }
   .empty, .error {
     text-align: center;
     color: var(--fg-muted);
-    padding: 3rem 1rem;
+    padding: 1.5rem 1rem;
     border: 1px dashed var(--border);
     border-radius: 12px;
   }
@@ -225,7 +225,7 @@ const HTML = `<!doctype html>
   }
   @media (max-width: 640px) {
     main { padding: 2.5rem 1rem 4rem; }
-    .card { padding: 1.5rem; }
+    .card { padding: 1.25rem; }
   }
 </style>
 </head>
@@ -235,144 +235,140 @@ const HTML = `<!doctype html>
     <h1>Parachute</h1>
     <p class="tagline">Your personal-computing modules.</p>
   </header>
-  <section id="modules" class="grid" aria-live="polite">
-    <div class="empty" id="loading">Loading modules\u2026</div>
+
+  <section class="section" id="use-section">
+    <h2>Use</h2>
+    <p class="section-sub">Browse, transcribe, and run — the everyday surfaces.</p>
+    <div class="grid" id="use-grid" aria-live="polite">
+      <div class="empty" id="use-loading">Loading…</div>
+    </div>
   </section>
+
+  <section class="section" id="admin-section">
+    <h2>Admin</h2>
+    <p class="section-sub">Manage this hub — vaults, permissions, tokens.</p>
+    <div class="grid" id="admin-grid"></div>
+  </section>
+
   <footer>
     <a href="/.well-known/parachute.json">discovery</a>
   </footer>
 </main>
 <script>
 (async () => {
-  const root = document.getElementById('modules');
-  const fallbackIcon = \`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/></svg>\`;
+  const useGrid = document.getElementById('use-grid');
+  const adminGrid = document.getElementById('admin-grid');
 
-  // Display order for known module types. Unknown short-names append after,
-  // so a third-party module mounted at /foo still gets a tile.
-  const MODULE_ORDER = ['vault', 'scribe', 'notes', 'agent'];
-  const MODULE_LABELS = {
-    vault: 'Vault',
-    scribe: 'Scribe',
-    notes: 'Notes',
-    agent: 'Agent',
+  // Use entries: per-service primary affordances. Hardcoded short→label map;
+  // path is derived from services.json so custom mounts still work.
+  // Vault deliberately omitted — its content is browsed via Notes (which
+  // is its own entry below). Operators provision/admin vaults from the
+  // /admin/vaults card in the Admin section.
+  const USE_LABELS = {
+    notes:  { title: 'Browse notes', desc: 'Open the Notes PWA over your vault.' },
+    scribe: { title: 'Transcribe audio', desc: 'Send audio to Scribe.' },
+    agent:  { title: 'Run agents', desc: 'Open the Agent runtime.' },
   };
+  const USE_ORDER = ['notes', 'scribe', 'agent'];
 
-  function isVaultName(name) {
-    return name === 'parachute-vault' || name.startsWith('parachute-vault-');
-  }
+  // Admin entries: always visible. Even a fresh hub with zero vaults wants
+  // the operator to find /admin/vaults. Hardcoded — they live in the
+  // hub-served SPA, not in services.json.
+  const ADMIN_ENTRIES = [
+    { title: 'Vaults', desc: 'Create and manage vaults on this hub.', href: '/admin/vaults' },
+    { title: 'Permissions', desc: 'OAuth consent grants per app.', href: '/admin/permissions' },
+    { title: 'Tokens', desc: 'Mint and revoke access tokens.', href: '/admin/tokens' },
+  ];
 
   function shortName(manifestName) {
     return manifestName.replace(/^parachute-/, '');
   }
 
-  function labelFor(type) {
-    if (MODULE_LABELS[type]) return MODULE_LABELS[type];
-    return type.charAt(0).toUpperCase() + type.slice(1);
+  function isVaultName(name) {
+    return name === 'parachute-vault' || name.startsWith('parachute-vault-');
   }
 
-  // Aggregate services + vaults into one entry per module type. Vault is
-  // special-cased because its count comes from doc.vaults[] (one entry per
-  // vault instance / mount path) and its manage link goes to the hub's
-  // per-vault SPA at /vault — not to any single vault backend.
-  function aggregate(services, vaults) {
-    const groups = new Map();
-    if (vaults.length > 0) {
-      groups.set('vault', {
-        type: 'vault',
-        label: 'Vault',
-        count: vaults.length,
-        manageUrl: '/vault',
-      });
-    }
-    for (const svc of services) {
-      if (isVaultName(svc.name)) continue;
-      const t = shortName(svc.name);
-      const existing = groups.get(t);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        groups.set(t, {
-          type: t,
-          label: labelFor(t),
-          count: 1,
-          manageUrl: svc.path,
-        });
-      }
-    }
-    return groups;
-  }
-
-  function tilesInOrder(groups) {
-    const out = [];
-    for (const t of MODULE_ORDER) {
-      const g = groups.get(t);
-      if (g) out.push(g);
-    }
-    const known = new Set(MODULE_ORDER);
-    const extras = [...groups.values()]
-      .filter((g) => !known.has(g.type))
-      .sort((a, b) => a.type.localeCompare(b.type));
-    return out.concat(extras);
-  }
-
-  function renderTile(group) {
+  function renderTile({ title, desc, href }) {
     const a = document.createElement('a');
     a.className = 'card';
-    a.href = group.manageUrl;
+    a.href = href;
 
-    const head = document.createElement('div');
-    head.className = 'card-head';
+    const t = document.createElement('h3');
+    t.className = 'card-title';
+    t.textContent = title;
+    a.appendChild(t);
 
-    const icon = document.createElement('div');
-    icon.className = 'icon';
-    icon.innerHTML = fallbackIcon;
-
-    const title = document.createElement('h2');
-    title.className = 'card-title';
-    title.textContent = group.label;
-
-    head.appendChild(icon);
-    head.appendChild(title);
-    a.appendChild(head);
-
-    const count = document.createElement('p');
-    count.className = 'card-count';
-    count.textContent = group.count === 1 ? '1 registered' : group.count + ' registered';
-    a.appendChild(count);
+    const d = document.createElement('p');
+    d.className = 'card-desc';
+    d.textContent = desc;
+    a.appendChild(d);
 
     const meta = document.createElement('div');
     meta.className = 'card-meta';
     const path = document.createElement('span');
     path.className = 'path';
-    path.textContent = group.manageUrl;
-    const manage = document.createElement('span');
-    manage.className = 'manage';
-    manage.textContent = 'Manage \u2192';
+    path.textContent = href;
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    arrow.textContent = '→';
     meta.appendChild(path);
-    meta.appendChild(manage);
+    meta.appendChild(arrow);
     a.appendChild(meta);
 
     return a;
   }
+
+  function renderAdmin() {
+    adminGrid.innerHTML = '';
+    for (const entry of ADMIN_ENTRIES) {
+      adminGrid.appendChild(renderTile(entry));
+    }
+  }
+
+  function renderUse(services) {
+    // Group services by short type. Multiple instances of the same type
+    // (e.g. two scribes) collapse into one Use entry pointing at the first
+    // — operators with that posture will know which one they meant.
+    // Vault entries are skipped per the comment above.
+    const byType = new Map();
+    for (const svc of services) {
+      if (isVaultName(svc.name)) continue;
+      const t = shortName(svc.name);
+      if (!byType.has(t)) byType.set(t, svc.path);
+    }
+
+    const tiles = [];
+    for (const t of USE_ORDER) {
+      const path = byType.get(t);
+      if (!path) continue;
+      const labels = USE_LABELS[t];
+      tiles.push({ title: labels.title, desc: labels.desc, href: path });
+    }
+
+    useGrid.innerHTML = '';
+    if (tiles.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.innerHTML = 'No services installed yet. Try <code>parachute install vault</code>.';
+      useGrid.appendChild(empty);
+      return;
+    }
+    for (const tile of tiles) useGrid.appendChild(renderTile(tile));
+  }
+
+  // Admin section is static — render synchronously so the operator sees it
+  // even if the well-known fetch is slow or fails.
+  renderAdmin();
 
   try {
     const wk = await fetch('/.well-known/parachute.json', { credentials: 'omit' });
     if (!wk.ok) throw new Error('well-known fetch failed: ' + wk.status);
     const doc = await wk.json();
     const services = Array.isArray(doc.services) ? doc.services : [];
-    const vaults = Array.isArray(doc.vaults) ? doc.vaults : [];
-
-    const groups = aggregate(services, vaults);
-    const tiles = tilesInOrder(groups);
-
-    if (tiles.length === 0) {
-      root.innerHTML = '<div class="empty">No modules installed yet. Try <code>parachute install vault</code>.</div>';
-      return;
-    }
-    root.innerHTML = '';
-    for (const g of tiles) root.appendChild(renderTile(g));
+    renderUse(services);
   } catch (err) {
-    root.innerHTML = '<div class="error">Could not load modules: ' + (err && err.message ? err.message : String(err)) + '</div>';
+    useGrid.innerHTML = '<div class="error">Could not load services: ' +
+      (err && err.message ? err.message : String(err)) + '</div>';
   }
 })();
 </script>

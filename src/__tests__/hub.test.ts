@@ -13,10 +13,9 @@ describe("renderHub", () => {
     expect(html).toContain("<script>");
   });
 
-  test("fetches /.well-known/parachute.json and reads services[] + vaults[]", () => {
+  test("fetches /.well-known/parachute.json for the Use section", () => {
     expect(html).toContain("/.well-known/parachute.json");
     expect(html).toContain("doc.services");
-    expect(html).toContain("doc.vaults");
   });
 
   test("uses parachute.computer sage palette and serif/sans fonts", () => {
@@ -30,79 +29,70 @@ describe("renderHub", () => {
     expect(html).toContain("prefers-color-scheme: dark");
   });
 
-  test("falls back to a generic icon for module tiles", () => {
-    expect(html).toContain("fallbackIcon");
+  test("renders two sections: Use and Admin, each with its own heading + grid", () => {
+    expect(html).toContain('id="use-section"');
+    expect(html).toContain('id="admin-section"');
+    expect(html).toContain('id="use-grid"');
+    expect(html).toContain('id="admin-grid"');
+    expect(html).toContain("<h2>Use</h2>");
+    expect(html).toContain("<h2>Admin</h2>");
   });
 
-  test("renders one tile per module type, not per service instance", () => {
-    expect(html).toContain("aggregate(services, vaults)");
-    expect(html).toContain("renderTile");
-    expect(html).toContain("MODULE_ORDER");
+  test("Use section labels: Browse notes / Transcribe audio / Run agents", () => {
+    expect(html).toContain("'Browse notes'");
+    expect(html).toContain("'Transcribe audio'");
+    expect(html).toContain("'Run agents'");
   });
 
-  test("known module display order is vault → scribe → notes → agent", () => {
-    expect(html).toContain("['vault', 'scribe', 'notes', 'agent']");
+  test("Use entries use the path declared in services.json (custom mounts work)", () => {
+    // Operators may mount a service at a non-default path; the Use tile
+    // surfaces that path verbatim rather than hardcoding `/notes`/etc.
+    expect(html).toContain("svc.path");
   });
 
-  test("vault tile counts vaults[] (per instance) and links to /vault", () => {
-    // Vault count is the length of doc.vaults — one entry per /vault/<name>
-    // mount, so a single ServiceEntry with paths=[a,b,c] still shows "3
-    // registered". The manage link is the hub's vault SPA at /vault
-    // (renamed from /hub/vaults in the realignment), never an individual
-    // vault backend.
-    expect(html).toContain("vaults.length");
-    expect(html).toContain("'/vault'");
-  });
-
-  test("non-vault tiles take their manageUrl from the service's path", () => {
-    // shortName('parachute-scribe') = 'scribe' → tile links to svc.path,
-    // which is whatever the module declared (e.g. /scribe, /notes, /agent).
-    // Hardcoding the link would silently break on a custom mount.
-    expect(html).toContain("manageUrl: svc.path");
-  });
-
-  test("tiles for module types with zero instances are hidden", () => {
-    // Aggregate only inserts a group when the type has at least one entry;
-    // tilesInOrder iterates the map. No "0 registered" surface.
-    expect(html).not.toContain("0 registered");
-    expect(html).toContain("count === 1 ? '1 registered'");
-  });
-
-  test("module labels are humanized (Vault / Scribe / Notes / Agent)", () => {
-    expect(html).toContain("vault: 'Vault'");
-    expect(html).toContain("scribe: 'Scribe'");
-    expect(html).toContain("notes: 'Notes'");
-    expect(html).toContain("agent: 'Agent'");
-  });
-
-  test("vault-name detection covers parachute-vault and parachute-vault-<name>", () => {
-    // Phase-1 multi-vault keeps a single ServiceEntry with multiple paths
-    // (parachute-vault), but the door is open for per-instance entries
-    // (parachute-vault-techne). isVaultName has to accept both.
+  test("Vault is intentionally excluded from the Use section", () => {
+    // Aaron's friction: clicking 'Vault' on discovery took him to hub
+    // management, not to vault content. Resolution: Vault has no Use
+    // entry — its content is browsed via Notes (which has its own
+    // entry). Vault provisioning lives under Admin.
+    expect(html).toContain("Vault deliberately omitted");
     expect(html).toContain("isVaultName");
-    expect(html).toContain("'parachute-vault'");
-    expect(html).toContain("'parachute-vault-'");
   });
 
-  test("empty state when no modules are registered", () => {
-    expect(html).toContain("No modules installed yet");
+  test("Use section ordering is notes → scribe → agent", () => {
+    expect(html).toContain("['notes', 'scribe', 'agent']");
+  });
+
+  test("Admin section is hardcoded (always visible) with three entries", () => {
+    expect(html).toContain("ADMIN_ENTRIES");
+    expect(html).toContain("/admin/vaults");
+    expect(html).toContain("/admin/permissions");
+    expect(html).toContain("/admin/tokens");
+  });
+
+  test("Admin section renders synchronously (does not depend on the well-known fetch)", () => {
+    // Even if the fetch is slow or fails, the operator should see Admin
+    // surfaces — they may be the reason the operator landed on /.
+    expect(html).toContain("renderAdmin();");
+    expect(html).toContain("Admin section is static");
+  });
+
+  test("Use section empty state hints at install", () => {
+    expect(html).toContain("No services installed yet");
     expect(html).toContain("parachute install vault");
   });
 
-  test("error state surfaces the underlying message", () => {
-    expect(html).toContain("Could not load modules");
+  test("Use section error state surfaces the underlying message", () => {
+    expect(html).toContain("Could not load services");
   });
 
-  test("does not retain the per-service interactive-card / config-form code", () => {
-    // The home page is now a directory of modules — per-instance config
-    // forms and detail panels live behind the Manage links (vault SPA at
-    // /vault, the running module's own UI elsewhere). Keeping the
-    // dead code around is a maintenance trap.
+  test("does not retain the old aggregate-by-module-type code", () => {
+    // The Vault collapse + per-module aggregation pattern is gone — Use
+    // entries are direct service-path → label lookups; Admin is hardcoded.
+    expect(html).not.toContain("aggregate(services, vaults)");
+    expect(html).not.toContain("MODULE_LABELS");
     expect(html).not.toContain("renderConfigField");
-    expect(html).not.toContain("fetchConfig");
     expect(html).not.toContain("kind-badge");
-    expect(html).not.toContain("info.mcpUrl");
-    expect(html).not.toContain("info.openInNotesUrl");
   });
 });
 
