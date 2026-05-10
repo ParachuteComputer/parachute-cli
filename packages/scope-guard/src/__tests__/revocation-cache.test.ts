@@ -5,8 +5,8 @@
  * server. The integration with `validateHubJwt` is covered separately in
  * validate.test.ts (the "revocation enforcement" describe block).
  */
-import { describe, expect, test } from "bun:test";
-import { createRevocationCache } from "../revocation-cache";
+import { afterEach, describe, expect, test } from "bun:test";
+import { createRevocationCache, defaultRevocationFetcher } from "../revocation-cache";
 
 interface FakeFetcher {
   fetcher: (origin: string) => Promise<{ generated_at: string; jtis: string[] }>;
@@ -209,11 +209,49 @@ describe("RevocationCache — single-flight", () => {
   });
 });
 
-describe("RevocationCache — list shape", () => {
-  test("malformed body (default fetcher path) — covered indirectly via integration", () => {
-    // The default fetcher rejects malformed bodies; that's exercised through
-    // the validate.test.ts revocation suite where the fake server returns
-    // bad JSON. Direct unit test would just re-test fetch+JSON shape.
-    expect(true).toBe(true);
+describe("defaultRevocationFetcher — body-shape validation", () => {
+  // These tests stub `globalThis.fetch` directly to drive response shapes
+  // the cache's other tests can't exercise (those use injected fetchers
+  // that bypass `defaultRevocationFetcher` entirely). Restore fetch after
+  // each test so cross-test pollution doesn't matter.
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function stubFetch(response: Response | (() => Response)): void {
+    globalThis.fetch = (async () =>
+      typeof response === "function" ? response() : response) as typeof fetch;
+  }
+
+  test("happy path: 2xx with well-formed body resolves", async () => {
+    stubFetch(Response.json({ generated_at: "2026-05-10T00:00:00Z", jtis: ["a", "b"] }));
+    const body = await defaultRevocationFetcher("http://hub.invalid");
+    expect(body.jtis).toEqual(["a", "b"]);
+  });
+
+  test("non-2xx response throws with status in message", async () => {
+    stubFetch(new Response("upstream down", { status: 503, statusText: "Service Unavailable" }));
+    await expect(defaultRevocationFetcher("http://hub.invalid")).rejects.toThrow(/503/);
+  });
+
+  test("body missing `jtis` array throws", async () => {
+    stubFetch(Response.json({ generated_at: "2026-05-10T00:00:00Z" }));
+    await expect(defaultRevocationFetcher("http://hub.invalid")).rejects.toThrow(/malformed/);
+  });
+
+  test("`jtis` not an array throws", async () => {
+    stubFetch(Response.json({ generated_at: "2026-05-10T00:00:00Z", jtis: "not-an-array" }));
+    await expect(defaultRevocationFetcher("http://hub.invalid")).rejects.toThrow(/malformed/);
+  });
+
+  test("`jtis` array with non-string element throws", async () => {
+    stubFetch(Response.json({ generated_at: "2026-05-10T00:00:00Z", jtis: ["a", 42, "c"] }));
+    await expect(defaultRevocationFetcher("http://hub.invalid")).rejects.toThrow(/malformed/);
+  });
+
+  test("body is not an object (null) throws", async () => {
+    stubFetch(Response.json(null));
+    await expect(defaultRevocationFetcher("http://hub.invalid")).rejects.toThrow(/malformed/);
   });
 });

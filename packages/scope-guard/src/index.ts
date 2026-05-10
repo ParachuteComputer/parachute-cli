@@ -11,10 +11,15 @@
 export { extractBearer, looksLikeJwt, parseScopes } from "./parse";
 export { hasScope } from "./scope";
 export type { JwksGetter, JwksOptions } from "./jwks";
+// Revocation-cache surface: the cache itself is internal — `ScopeGuard` owns
+// the lifecycle so downstream RSes don't accidentally instantiate parallel
+// caches with diverging policies. The seam exposed here is `RevocationFetcher`
+// (a custom fetch shape, e.g. a logged or auth-headered alternative to
+// `defaultRevocationFetcher`); callers wire it via `createScopeGuard`'s
+// `revocationFetcher` option.
 export {
   REVOCATION_CACHE_TTL_MS,
   defaultRevocationFetcher,
-  type RevocationCheckOutcome,
   type RevocationFetcher,
   type RevocationListBody,
 } from "./revocation-cache";

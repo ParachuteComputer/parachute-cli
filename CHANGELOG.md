@@ -8,8 +8,8 @@ Foundation work for [hub#212](https://github.com/ParachuteComputer/parachute-hub
 
 ### Changed
 
-- **`@openparachute/scope-guard` 0.1.0 → 0.2.0** — adds `RevocationCache`, splits new `HubJwtErrorCode` values (`"revoked"`, `"revocation_unavailable"`), and integrates revocation enforcement as the last step of `validateHubJwt`. See `packages/scope-guard/CHANGELOG.md` for the full surface change.
-- The workspace-vendored scope-guard is consumed at runtime only by tests in this repo (hub's own auth paths use the local `validateAccessToken`). Hub tests pass unchanged: 1157/1157.
+- **`@openparachute/scope-guard` 0.1.0 → 0.2.0** — adds revocation-list enforcement to `validateHubJwt`, splits new `HubJwtErrorCode` values (`"revoked"`, `"revocation_unavailable"`). See `packages/scope-guard/CHANGELOG.md` for the full surface change.
+- The workspace-vendored scope-guard is consumed at runtime only by tests in this repo (hub's own auth paths use the local `validateAccessToken`). Hub tests pass unchanged — zero new failures.
 
 ### Out of scope (this PR)
 
