@@ -135,8 +135,8 @@ describe("Tokens — list rendering", () => {
   });
 });
 
-describe("Tokens — filter pills", () => {
-  it("clicking a filter pill calls listTokens with the right ?revoked= value", async () => {
+describe("Tokens — filter pills (status + source, hub#212 Phase F)", () => {
+  it("clicking a status pill calls listTokens with the right ?revoked= value", async () => {
     vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
     renderRoute();
     // Initial call with default `all`.
@@ -147,6 +147,127 @@ describe("Tokens — filter pills", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^revoked only$/i, pressed: false }));
     await waitFor(() => expect(api.listTokens).toHaveBeenCalledWith({ revoked: "true" }));
+  });
+
+  it("clicking a source pill calls listTokens with the right createdVia value", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
+    renderRoute();
+    await waitFor(() => expect(api.listTokens).toHaveBeenCalledWith({ revoked: "all" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /^oauth$/i, pressed: false }));
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "all",
+        createdVia: "oauth_refresh",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^operator$/i, pressed: false }));
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "all",
+        createdVia: "operator_mint",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^cli mint$/i, pressed: false }));
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "all",
+        createdVia: "cli_mint",
+      }),
+    );
+  });
+
+  it("status + source filters compose: live + OAuth", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
+    renderRoute();
+    await waitFor(() => expect(api.listTokens).toHaveBeenCalledWith({ revoked: "all" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /^live only$/i, pressed: false }));
+    fireEvent.click(screen.getByRole("button", { name: /^oauth$/i, pressed: false }));
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "false",
+        createdVia: "oauth_refresh",
+      }),
+    );
+  });
+
+  it("clicking 'All sources' clears the source filter", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
+    renderRoute();
+    await waitFor(() => expect(api.listTokens).toHaveBeenCalledWith({ revoked: "all" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /^operator$/i, pressed: false }));
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "all",
+        createdVia: "operator_mint",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^all sources$/i, pressed: false }));
+    // Back to default — no createdVia in the call.
+    await waitFor(() => expect(api.listTokens).toHaveBeenLastCalledWith({ revoked: "all" }));
+  });
+});
+
+describe("Tokens — source chip per row (hub#212 Phase F)", () => {
+  // Note: the filter pills also use the labels "OAuth" / "Operator" / "CLI mint",
+  // so a bare `getByText` would multi-match. Each test waits for the row to
+  // render then picks the chip via its `tag` class — the filter pills are
+  // <button> with `secondary`, the chips are <span> with `tag source-…`.
+  function findRowChip(label: string): HTMLElement | null {
+    const matches = screen.getAllByText(label);
+    return matches.find((el) => el.classList.contains("tag")) ?? null;
+  }
+
+  it("OAuth row shows 'OAuth' chip with source-oauth class", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({
+      tokens: [tokenRow("oauthrowAAAAAAAAAXXXX", { created_via: "oauth_refresh" })],
+      next_cursor: null,
+    });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText(/oauthrow…XXXX/)).toBeInTheDocument());
+    const chip = findRowChip("OAuth");
+    expect(chip).not.toBeNull();
+    expect(chip?.className).toContain("source-oauth");
+  });
+
+  it("Operator row shows 'Operator' chip with source-operator class", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({
+      tokens: [tokenRow("oprowAAAAAAAAAXXXX", { created_via: "operator_mint" })],
+      next_cursor: null,
+    });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText(/oprowAAA…XXXX/)).toBeInTheDocument());
+    const chip = findRowChip("Operator");
+    expect(chip).not.toBeNull();
+    expect(chip?.className).toContain("source-operator");
+  });
+
+  it("CLI mint row shows 'CLI' chip with source-cli class", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({
+      tokens: [tokenRow("clirowAAAAAAAAAXXXX", { created_via: "cli_mint" })],
+      next_cursor: null,
+    });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText(/clirowAA…XXXX/)).toBeInTheDocument());
+    const chip = findRowChip("CLI");
+    expect(chip).not.toBeNull();
+    expect(chip?.className).toContain("source-cli");
+  });
+
+  it("renders 'No tokens match the current filter' empty state when filters are active", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText(/no tokens\./i)).toBeInTheDocument());
+
+    // Activate a filter; the empty state should switch wording.
+    fireEvent.click(screen.getByRole("button", { name: /^operator$/i, pressed: false }));
+    await waitFor(() =>
+      expect(screen.getByText(/no tokens match the current filter/i)).toBeInTheDocument(),
+    );
   });
 });
 

@@ -44,6 +44,8 @@ interface SeedOpts {
   revokedAt?: Date | null;
   /** Override created_at — drives ORDER BY. Tests use ascending real timestamps. */
   createdAt?: Date;
+  /** Mint provenance for the registry row. Defaults to `cli_mint`. */
+  createdVia?: "cli_mint" | "operator_mint";
 }
 
 async function seed(
@@ -54,6 +56,7 @@ async function seed(
   const scopes = opts.scopes ?? ["scribe:transcribe"];
   const subject = opts.subject ?? userId;
   const createdAt = opts.createdAt ?? new Date();
+  const createdVia = opts.createdVia ?? "cli_mint";
   const signed = await signAccessToken(db, {
     sub: subject,
     scopes,
@@ -65,7 +68,7 @@ async function seed(
   });
   recordTokenMint(db, {
     jti: signed.jti,
-    createdVia: "cli_mint",
+    createdVia,
     subject,
     clientId: "parachute-hub",
     scopes,
@@ -409,6 +412,118 @@ describe("GET /api/auth/tokens (admin token list — Phase 2 backend)", () => {
         const jtisTheirs = bodyTheirs.tokens.map((t) => t.jti);
         expect(jtisTheirs).toContain(theirs);
         expect(jtisTheirs).not.toContain(mine);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("?created_via=cli_mint narrows to CLI-minted rows", async () => {
+    const h = makeHarness();
+    try {
+      const { db, userId } = await bootstrap(h.dir);
+      try {
+        const op = await mintOperatorToken(db, userId, { issuer: ISSUER });
+        // mintOperatorToken seeds an operator_mint row already.
+        const cliJti = await seed(db, userId, { createdVia: "cli_mint" });
+        const opJti = await seed(db, userId, { createdVia: "operator_mint" });
+
+        const resp = await handleApiTokens(
+          getRequest("?created_via=cli_mint", { authorization: `Bearer ${op.token}` }),
+          { db, issuer: ISSUER },
+        );
+        expect(resp.status).toBe(200);
+        const body = (await resp.json()) as {
+          tokens: Array<{ jti: string; created_via: string }>;
+        };
+        const jtis = body.tokens.map((t) => t.jti);
+        expect(jtis).toContain(cliJti);
+        expect(jtis).not.toContain(opJti);
+        // Every returned row reports created_via=cli_mint (sanity).
+        expect(body.tokens.every((t) => t.created_via === "cli_mint")).toBe(true);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("?created_via=operator_mint narrows to operator-token rows", async () => {
+    const h = makeHarness();
+    try {
+      const { db, userId } = await bootstrap(h.dir);
+      try {
+        const op = await mintOperatorToken(db, userId, { issuer: ISSUER });
+        const cliJti = await seed(db, userId, { createdVia: "cli_mint" });
+        const opJti = await seed(db, userId, { createdVia: "operator_mint" });
+
+        const resp = await handleApiTokens(
+          getRequest("?created_via=operator_mint", { authorization: `Bearer ${op.token}` }),
+          { db, issuer: ISSUER },
+        );
+        expect(resp.status).toBe(200);
+        const body = (await resp.json()) as {
+          tokens: Array<{ jti: string; created_via: string }>;
+        };
+        const jtis = body.tokens.map((t) => t.jti);
+        expect(jtis).toContain(opJti);
+        expect(jtis).not.toContain(cliJti);
+        expect(body.tokens.every((t) => t.created_via === "operator_mint")).toBe(true);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("?created_via composes with ?revoked", async () => {
+    const h = makeHarness();
+    try {
+      const { db, userId } = await bootstrap(h.dir);
+      try {
+        const op = await mintOperatorToken(db, userId, { issuer: ISSUER });
+        const liveCli = await seed(db, userId, { createdVia: "cli_mint" });
+        const deadCli = await seed(db, userId, {
+          createdVia: "cli_mint",
+          revokedAt: new Date(),
+        });
+        const liveOp = await seed(db, userId, { createdVia: "operator_mint" });
+
+        const resp = await handleApiTokens(
+          getRequest("?revoked=false&created_via=cli_mint", {
+            authorization: `Bearer ${op.token}`,
+          }),
+          { db, issuer: ISSUER },
+        );
+        expect(resp.status).toBe(200);
+        const body = (await resp.json()) as { tokens: Array<{ jti: string }> };
+        const jtis = body.tokens.map((t) => t.jti);
+        expect(jtis).toContain(liveCli);
+        expect(jtis).not.toContain(deadCli); // wrong revoked status
+        expect(jtis).not.toContain(liveOp); // wrong created_via
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("?created_via=invalid → 400", async () => {
+    const h = makeHarness();
+    try {
+      const { db, userId } = await bootstrap(h.dir);
+      try {
+        const op = await mintOperatorToken(db, userId, { issuer: ISSUER });
+        const resp = await handleApiTokens(
+          getRequest("?created_via=bogus", { authorization: `Bearer ${op.token}` }),
+          { db, issuer: ISSUER },
+        );
+        expect(resp.status).toBe(400);
       } finally {
         db.close();
       }

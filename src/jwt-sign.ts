@@ -271,11 +271,13 @@ export function listActiveRevocations(db: Database, now: Date): string[] {
  * Filter for `listTokens`. `revoked` defaults to "all"; `subject` matches
  * either the OAuth `user_id` or the non-OAuth `subject` column (so the
  * caller doesn't need to know which mint path created the row to filter
- * by identity).
+ * by identity); `createdVia` narrows by mint provenance (OAuth refresh,
+ * operator-token mint, CLI / api-mint-token).
  */
 export interface ListTokensFilter {
   revoked?: "true" | "false" | "all";
   subject?: string;
+  createdVia?: TokenCreatedVia;
 }
 
 /**
@@ -344,6 +346,10 @@ export function listTokens(
   if (typeof filter.subject === "string" && filter.subject.length > 0) {
     wheres.push("(user_id = ? OR subject = ?)");
     params.push(filter.subject, filter.subject);
+  }
+  if (filter.createdVia) {
+    wheres.push("created_via = ?");
+    params.push(filter.createdVia);
   }
   if (cursorCreatedAt !== undefined && cursorJti !== undefined) {
     // "strictly older than (cursor.created_at, cursor.jti)" under the

@@ -42,6 +42,11 @@
  *     rows) or `subject` (CLI / operator / service mint rows). The
  *     consumer doesn't need to know which column to query; the helper
  *     handles both.
+ *   - `created_via=<value>` — narrow by mint provenance. One of
+ *     `oauth_refresh` (OAuth refresh-token rotation), `operator_mint`
+ *     (operator-token rotation via `parachute auth rotate-operator`),
+ *     or `cli_mint` (CLI / `POST /api/auth/mint-token`). Powers the
+ *     admin UI's "by source" filter pills (hub#212 Phase F).
  *
  * Why bearer-gated rather than session-cookie-gated: matches the rest
  * of `/api/auth/*` (mint-token, revoke-token), so an automation client
@@ -51,7 +56,7 @@
  * `/vaults` and `/api/grants` calls.
  */
 import type { Database } from "bun:sqlite";
-import { listTokens, validateAccessToken } from "./jwt-sign.ts";
+import { type TokenCreatedVia, listTokens, validateAccessToken } from "./jwt-sign.ts";
 
 /** Scope required on the bearer token to call this endpoint. */
 export const API_TOKENS_REQUIRED_SCOPE = "parachute:host:auth";
@@ -139,11 +144,30 @@ export async function handleApiTokens(req: Request, deps: ApiTokensDeps): Promis
   const subjectParam = url.searchParams.get("subject");
   const subject =
     typeof subjectParam === "string" && subjectParam.length > 0 ? subjectParam : undefined;
+  const createdViaParam = url.searchParams.get("created_via");
+  let createdVia: TokenCreatedVia | undefined;
+  if (
+    createdViaParam === "oauth_refresh" ||
+    createdViaParam === "operator_mint" ||
+    createdViaParam === "cli_mint"
+  ) {
+    createdVia = createdViaParam;
+  } else if (createdViaParam !== null) {
+    return jsonError(
+      400,
+      "invalid_request",
+      "created_via must be one of: oauth_refresh | operator_mint | cli_mint",
+    );
+  }
   const cursor = url.searchParams.get("cursor");
 
   // 5. Query.
   const page = listTokens(deps.db, {
-    filter: { ...(revoked ? { revoked } : {}), ...(subject ? { subject } : {}) },
+    filter: {
+      ...(revoked ? { revoked } : {}),
+      ...(subject ? { subject } : {}),
+      ...(createdVia ? { createdVia } : {}),
+    },
     cursor,
   });
 

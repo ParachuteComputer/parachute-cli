@@ -19,7 +19,9 @@
  * before posting.
  */
 import { type FormEvent, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
+  type AdminTokenCreatedVia,
   type AdminTokenListing,
   HttpError,
   type ListTokensOpts,
@@ -30,6 +32,10 @@ import {
 } from "../lib/api.ts";
 
 type FilterValue = "all" | "live" | "revoked";
+
+/** Source filter values. `all` is the default; the other three map 1:1 to
+ * `created_via` on the wire. */
+type SourceFilter = "all" | AdminTokenCreatedVia;
 
 type ListState =
   | { kind: "loading" }
@@ -65,7 +71,14 @@ const EMPTY_FORM: MintFormFields = {
 };
 
 export function Tokens() {
-  const [filter, setFilter] = useState<FilterValue>("all");
+  // Filter state lives in the URL via react-router's `useSearchParams` so
+  // refresh + share preserve the operator's view. Default value when the
+  // param is absent (or unrecognized) is `all` for both dimensions —
+  // matches the "show everything" UX from before this filter pair existed.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filter = readStatusFilter(searchParams.get("status"));
+  const sourceFilter = readSourceFilter(searchParams.get("source"));
+
   const [list, setList] = useState<ListState>({ kind: "loading" });
   const [reload, setReload] = useState(0);
   const [mint, setMint] = useState<MintState>({ kind: "idle" });
@@ -74,15 +87,28 @@ export function Tokens() {
   const [showForm, setShowForm] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  /**
+   * Update one filter dimension while preserving the other (and any
+   * unrelated query params). Strips the param entirely when set to the
+   * default `all` value — keeps the URL minimal in the common case.
+   */
+  function setFilterParam(key: "status" | "source", value: string): void {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === "all") next.delete(key);
+        else next.set(key, value);
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
   useEffect(() => {
     void reload;
     let cancelled = false;
     setList({ kind: "loading" });
-    const opts: ListTokensOpts = {};
-    if (filter === "live") opts.revoked = "false";
-    else if (filter === "revoked") opts.revoked = "true";
-    else opts.revoked = "all";
-    listTokens(opts)
+    listTokens(buildListOpts(filter, sourceFilter))
       .then((page) => {
         if (cancelled) return;
         setList({ kind: "ok", tokens: page.tokens, nextCursor: page.next_cursor });
@@ -95,7 +121,7 @@ export function Tokens() {
     return () => {
       cancelled = true;
     };
-  }, [reload, filter]);
+  }, [reload, filter, sourceFilter]);
 
   async function loadMore(): Promise<void> {
     if (list.kind !== "ok" || !list.nextCursor) return;
@@ -105,10 +131,10 @@ export function Tokens() {
     // attribute on the button is the primary defense; this state guard is
     // belt-and-suspenders for fast-finger keyboard activation.
     if (loadingMore) return;
-    const opts: ListTokensOpts = { cursor: list.nextCursor };
-    if (filter === "live") opts.revoked = "false";
-    else if (filter === "revoked") opts.revoked = "true";
-    else opts.revoked = "all";
+    const opts: ListTokensOpts = {
+      ...buildListOpts(filter, sourceFilter),
+      cursor: list.nextCursor,
+    };
     setLoadingMore(true);
     try {
       const page = await listTokens(opts);
@@ -342,9 +368,9 @@ export function Tokens() {
         </div>
       ) : null}
 
-      <div style={{ marginTop: "1rem", marginBottom: "1rem", display: "flex", gap: "0.5rem" }}>
-        <span className="muted" style={{ marginRight: "0.5rem" }}>
-          Filter:
+      <div style={{ marginTop: "1rem", marginBottom: "0.5rem", display: "flex", gap: "0.5rem" }}>
+        <span className="muted" style={{ marginRight: "0.5rem", minWidth: "4rem" }}>
+          Status:
         </span>
         {(
           [
@@ -356,9 +382,32 @@ export function Tokens() {
           <button
             key={opt.value}
             type="button"
-            onClick={() => setFilter(opt.value)}
+            onClick={() => setFilterParam("status", opt.value)}
             className={filter === opt.value ? undefined : "secondary"}
             aria-pressed={filter === opt.value}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ marginBottom: "1rem", display: "flex", gap: "0.5rem" }}>
+        <span className="muted" style={{ marginRight: "0.5rem", minWidth: "4rem" }}>
+          Source:
+        </span>
+        {(
+          [
+            { value: "all", label: "All sources" },
+            { value: "oauth_refresh", label: "OAuth" },
+            { value: "operator_mint", label: "Operator" },
+            { value: "cli_mint", label: "CLI mint" },
+          ] as const
+        ).map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => setFilterParam("source", opt.value)}
+            className={sourceFilter === opt.value ? undefined : "secondary"}
+            aria-pressed={sourceFilter === opt.value}
           >
             {opt.label}
           </button>
@@ -373,6 +422,7 @@ export function Tokens() {
         onLoadMore: loadMore,
         onRetry: () => setReload((n) => n + 1),
         loadingMore,
+        filtersActive: filter !== "all" || sourceFilter !== "all",
       })}
     </div>
   );
@@ -386,6 +436,8 @@ interface RenderListProps {
   onLoadMore: () => Promise<void>;
   onRetry: () => void;
   loadingMore: boolean;
+  /** True when either filter dimension is narrowed; drives empty-state copy. */
+  filtersActive: boolean;
 }
 
 function renderList({
@@ -396,6 +448,7 @@ function renderList({
   onLoadMore,
   onRetry,
   loadingMore,
+  filtersActive,
 }: RenderListProps) {
   if (list.kind === "loading") {
     return <p className="muted">Loading…</p>;
@@ -413,6 +466,17 @@ function renderList({
     );
   }
   if (list.tokens.length === 0) {
+    if (filtersActive) {
+      return (
+        <div className="empty empty-rich">
+          <p className="empty-headline">No tokens match the current filter.</p>
+          <p className="muted">
+            Try widening the Status or Source pills above. The default "Show all / All sources" view
+            shows every registry row.
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="empty empty-rich">
         <p className="empty-headline">No tokens.</p>
@@ -438,8 +502,11 @@ function renderList({
               <div className="name">
                 <code title={t.jti}>{truncateJti(t.jti)}</code>
                 <span className={`tag${status === "live" ? "" : " muted"}`}>{status}</span>
-                <span className="muted" style={{ fontSize: "0.85rem" }}>
-                  {t.created_via}
+                <span
+                  className={`tag source-${sourceClassFor(t.created_via)}`}
+                  title={`created_via: ${t.created_via}`}
+                >
+                  {sourceLabelFor(t.created_via)}
                 </span>
               </div>
               <div className="dim" style={{ marginTop: "0.25rem" }}>
@@ -558,6 +625,60 @@ function tokenStatus(t: AdminTokenListing): "live" | "expired" | "revoked" {
   const exp = new Date(t.expires_at).getTime();
   if (!Number.isNaN(exp) && exp < Date.now()) return "expired";
   return "live";
+}
+
+/** Status filter parser. Unknown / missing → `all`. */
+function readStatusFilter(raw: string | null): FilterValue {
+  if (raw === "live" || raw === "revoked" || raw === "all") return raw;
+  return "all";
+}
+
+/** Source filter parser. Unknown / missing → `all`. */
+function readSourceFilter(raw: string | null): SourceFilter {
+  if (raw === "oauth_refresh" || raw === "operator_mint" || raw === "cli_mint" || raw === "all") {
+    return raw;
+  }
+  return "all";
+}
+
+/** Translate the two filter dimensions into the wire-shape opts for `listTokens`. */
+function buildListOpts(filter: FilterValue, sourceFilter: SourceFilter): ListTokensOpts {
+  const opts: ListTokensOpts = {};
+  if (filter === "live") opts.revoked = "false";
+  else if (filter === "revoked") opts.revoked = "true";
+  else opts.revoked = "all";
+  if (sourceFilter !== "all") opts.createdVia = sourceFilter;
+  return opts;
+}
+
+/** Short label for the per-row source chip. Falls back to the raw value
+ * for any future created_via values not yet known here. */
+function sourceLabelFor(createdVia: string): string {
+  switch (createdVia) {
+    case "oauth_refresh":
+      return "OAuth";
+    case "operator_mint":
+      return "Operator";
+    case "cli_mint":
+      return "CLI";
+    default:
+      return createdVia;
+  }
+}
+
+/** CSS class suffix for the per-row source chip — drives the colored
+ * variant. Unknown values fall back to muted styling. */
+function sourceClassFor(createdVia: string): string {
+  switch (createdVia) {
+    case "oauth_refresh":
+      return "oauth";
+    case "operator_mint":
+      return "operator";
+    case "cli_mint":
+      return "cli";
+    default:
+      return "unknown";
+  }
 }
 
 function truncateJti(jti: string): string {
