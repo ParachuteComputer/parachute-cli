@@ -2,6 +2,21 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.7] - 2026-05-10
+
+Two new HTTP endpoints — backend foundation for hub#212 Phase 2 (admin UI for token management). Closes hub#220. The admin UI itself ships in a follow-up rc.8 PR; these endpoints have standalone value for any operator-tooling that wants programmatic registry access.
+
+### Added
+
+- **`POST /api/auth/revoke-token`** (closes #220). HTTP companion to `parachute auth revoke-token <jti>` from hub#221. Body: `{ jti }`. Auth: bearer with `parachute:host:auth` scope (admin scope-set carries it as a superset; narrow `--scope-set auth` operator tokens carry it directly — same gate as `POST /api/auth/mint-token`). Idempotent: re-revoking an already-revoked jti returns 200 with the original `revoked_at` (matches CLI semantics from #221). Returns 200 `{ jti, revoked_at }` on success; OAuth-spec error shapes (`invalid_request`/`invalid_token`/`insufficient_scope`/`not_found`/`method_not_allowed`) on failure.
+- **`GET /api/auth/tokens`** (admin token list endpoint). Cursor-paginated list of registry rows, newest-first. Default page size 50, capped at 200. Supports `?revoked=true|false|all` and `?subject=<value>` filters; the subject filter matches against either `user_id` (OAuth rows) or `subject` (CLI/operator/service mints) so callers don't need to know which mint path created the row. Cursor is opaque base64; malformed cursors silently reset to page 1. Same `parachute:host:auth` gate.
+- **`listTokens(db, opts)` helper in `src/jwt-sign.ts`** — the SQL + cursor logic backing the new list endpoint. Surface mirrors what `findTokenRowByJti` and friends already export from this module; reusable for any future programmatic registry-walking needs (admin UI, audit tools, CLI list command).
+
+### Out of scope (Phase 2 follow-up: rc.8)
+
+- The admin UI itself (`/hub/tokens` route — list view, mint form, revoke flow). UI builds atop these merged endpoints in the next PR.
+- Bulk revoke / revoke-by-subject HTTP endpoints — file as separate enhancements if the UI surfaces a need.
+
 ## [0.5.8-rc.6] - 2026-05-10
 
 Workspace consumes `@openparachute/scope-guard@0.2.1` — a packaging fix for NodeNext-strict consumers (agent's tsc + vitest). Hub itself is unaffected at runtime: hub's auth paths never go through scope-guard (they use the local `validateAccessToken` against the on-box DB), and the workspace consumes scope-guard via Bun's bundler resolution, which already resolved 0.2.0's extensionless imports correctly. Test gate unchanged.

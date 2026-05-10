@@ -53,6 +53,8 @@ import { handleVaultAdminToken } from "./admin-vault-admin-token.ts";
 import { handleCreateVault } from "./admin-vaults.ts";
 import { handleApiMintToken } from "./api-mint-token.ts";
 import { REVOCATION_LIST_MOUNT, handleRevocationList } from "./api-revocation-list.ts";
+import { handleApiRevokeToken } from "./api-revoke-token.ts";
+import { handleApiTokens } from "./api-tokens.ts";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
 import { HUB_SVC, clearHubPort, writeHubPort } from "./hub-control.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
@@ -872,6 +874,32 @@ export function hubFetch(
         );
       }
       return handleApiMintToken(req, {
+        db: getDb(),
+        issuer: oauthDeps(req).issuer,
+      });
+    }
+
+    if (pathname === "/api/auth/revoke-token") {
+      if (!getDb) {
+        return Response.json(
+          { error: "service_unavailable", error_description: "hub db not configured" },
+          { status: 503 },
+        );
+      }
+      return handleApiRevokeToken(req, {
+        db: getDb(),
+        issuer: oauthDeps(req).issuer,
+      });
+    }
+
+    if (pathname === "/api/auth/tokens") {
+      if (!getDb) {
+        return Response.json(
+          { error: "service_unavailable", error_description: "hub db not configured" },
+          { status: 503 },
+        );
+      }
+      return handleApiTokens(req, {
         db: getDb(),
         issuer: oauthDeps(req).issuer,
       });

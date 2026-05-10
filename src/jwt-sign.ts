@@ -267,6 +267,112 @@ export function listActiveRevocations(db: Database, now: Date): string[] {
   return rows.map((r) => r.jti);
 }
 
+/**
+ * Filter for `listTokens`. `revoked` defaults to "all"; `subject` matches
+ * either the OAuth `user_id` or the non-OAuth `subject` column (so the
+ * caller doesn't need to know which mint path created the row to filter
+ * by identity).
+ */
+export interface ListTokensFilter {
+  revoked?: "true" | "false" | "all";
+  subject?: string;
+}
+
+/**
+ * Cursor-paginated list of `tokens` rows. Powers `GET /api/auth/tokens` and
+ * the future admin UI's list view.
+ *
+ * Order is `created_at DESC, jti DESC` (newest-first; jti tiebreaks for
+ * the rare case where two rows share a created_at, which can happen in
+ * tests or under burst issuance). The cursor is an opaque base64 of the
+ * `(created_at, jti)` composite from the previous page's last row;
+ * pagination resumes "strictly older than that pair." Page size is a
+ * hardcoded 50 — see in-function comment on the `limit` constant.
+ *
+ * Returns the page rows plus a `nextCursor` if more rows exist (we
+ * fetch `limit + 1` and detect the trailing row, avoiding a second
+ * round-trip just to ask "is there more?").
+ */
+export interface ListTokensPage {
+  rows: RefreshTokenRow[];
+  nextCursor: string | null;
+}
+
+/** Page size. Hardcoded for now — see comment in `listTokens`. */
+const LIST_TOKENS_PAGE_SIZE = 50;
+
+export function listTokens(
+  db: Database,
+  opts: { filter?: ListTokensFilter; cursor?: string | null } = {},
+): ListTokensPage {
+  // Page size is intentionally a hardcoded constant rather than an opt. The
+  // sole consumer (admin UI list view) doesn't need configurable pagination,
+  // and adding the seam invites consumers to pass arbitrary values that we'd
+  // then have to clamp + validate. When a real second consumer surfaces
+  // (e.g. a CLI `auth list-tokens` command), wire `?limit=N` then.
+  const limit = LIST_TOKENS_PAGE_SIZE;
+  const filter = opts.filter ?? {};
+
+  // Cursor decode. Malformed cursors are treated as "no cursor" rather
+  // than 400ing — the SPA may pass a stale cursor across reloads, and a
+  // silent reset to page 1 is the friendliest fallback. (If we ever need
+  // strict cursor validation for security reasons, this is the seam.)
+  let cursorCreatedAt: string | undefined;
+  let cursorJti: string | undefined;
+  if (opts.cursor) {
+    try {
+      const decoded = JSON.parse(Buffer.from(opts.cursor, "base64").toString("utf8")) as {
+        created_at?: unknown;
+        jti?: unknown;
+      };
+      if (typeof decoded.created_at === "string" && typeof decoded.jti === "string") {
+        cursorCreatedAt = decoded.created_at;
+        cursorJti = decoded.jti;
+      }
+    } catch {
+      // ignore — silent reset to page 1
+    }
+  }
+
+  const wheres: string[] = [];
+  const params: (string | number)[] = [];
+  if (filter.revoked === "true") {
+    wheres.push("revoked_at IS NOT NULL");
+  } else if (filter.revoked === "false") {
+    wheres.push("revoked_at IS NULL");
+  }
+  if (typeof filter.subject === "string" && filter.subject.length > 0) {
+    wheres.push("(user_id = ? OR subject = ?)");
+    params.push(filter.subject, filter.subject);
+  }
+  if (cursorCreatedAt !== undefined && cursorJti !== undefined) {
+    // "strictly older than (cursor.created_at, cursor.jti)" under the
+    // composite ORDER BY created_at DESC, jti DESC. SQLite supports
+    // tuple comparison via parens.
+    wheres.push("(created_at, jti) < (?, ?)");
+    params.push(cursorCreatedAt, cursorJti);
+  }
+
+  const whereSql = wheres.length > 0 ? `WHERE ${wheres.join(" AND ")}` : "";
+  const sql = `SELECT * FROM tokens ${whereSql} ORDER BY created_at DESC, jti DESC LIMIT ?`;
+  params.push(limit + 1); // fetch one extra to detect "more pages"
+
+  const rows = db.query<TokenRowDb, (string | number)[]>(sql).all(...params);
+  const hasMore = rows.length > limit;
+  const pageRows = (hasMore ? rows.slice(0, limit) : rows).map(rowToRefreshToken);
+
+  let nextCursor: string | null = null;
+  if (hasMore && pageRows.length > 0) {
+    const last = pageRows[pageRows.length - 1]!;
+    nextCursor = Buffer.from(
+      JSON.stringify({ created_at: last.createdAt, jti: last.jti }),
+      "utf8",
+    ).toString("base64");
+  }
+
+  return { rows: pageRows, nextCursor };
+}
+
 export interface ValidatedAccessToken {
   payload: JWTPayload;
   kid: string;
