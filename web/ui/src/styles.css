@@ -143,6 +143,39 @@ code {
   align-self: center;
 }
 
+/* SPA auth indicator — "Signed in as <name> · Sign out" or "Sign in".
+   Sits in the nav, after brand's margin-right:auto pushes everything
+   right. The brand keeps the layout balance; auth lands in the
+   right-aligned cluster with Vaults/Permissions/Tokens/Discovery.
+   Sign-out button is styled as an inline text link so the visual
+   weight matches the surrounding muted "Signed in as <name>" text. */
+.nav .auth-spa {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.nav .auth-spa strong {
+  font-weight: 600;
+  color: var(--fg);
+}
+.nav .auth-spa-signout {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.nav .auth-spa-signout:hover:not(:disabled) {
+  color: var(--accent-hover);
+}
+.nav .auth-spa-signout:disabled {
+  color: var(--fg-dim);
+  cursor: not-allowed;
+}
+
 h2 {
   margin: 0 0 1rem;
   font-size: 1.4rem;

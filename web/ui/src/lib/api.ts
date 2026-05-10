@@ -237,6 +237,74 @@ export async function revokeGrant(clientId: string): Promise<void> {
 }
 
 /**
+ * `/api/me` wire shape. Matches `src/api-me.ts` verbatim — snake-case-free
+ * because the field names are short and the JS consumers benefit more from
+ * camelCase here than from a literal mirror.
+ */
+export interface MeSignedIn {
+  hasSession: true;
+  user: { id: string; displayName: string };
+  /** Per-session CSRF token; submit as `__csrf` against /logout etc. */
+  csrf: string;
+}
+export interface MeSignedOut {
+  hasSession: false;
+}
+export type MeResponse = MeSignedIn | MeSignedOut;
+
+/**
+ * GET /api/me — public who-am-I. No Bearer needed (session-cookie aware
+ * directly on the hub). Returns minimal `{ hasSession: false }` when no
+ * session, full `{ hasSession: true, user, csrf }` when signed in.
+ *
+ * Used by App.tsx on mount to render the "Signed in as <name> · Sign out"
+ * affordance in the nav, and by the sign-out flow to source the CSRF
+ * token for the POST to /logout.
+ */
+export async function getMe(): Promise<MeResponse> {
+  const res = await fetch("/api/me", {
+    method: "GET",
+    headers: { accept: "application/json" },
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    throw new HttpError(res.status, await readError(res));
+  }
+  return (await res.json()) as MeResponse;
+}
+
+/**
+ * POST /logout — sign out the current session. Submits the CSRF token
+ * as form-encoded `__csrf` (matches the existing logout handler's
+ * `req.formData()` parser; sending JSON would require a handler change).
+ *
+ * On success, the browser is left without a session cookie; callers
+ * typically navigate to / (discovery) to land on the signed-out
+ * affordance immediately.
+ */
+export async function signOut(csrfToken: string): Promise<void> {
+  const body = new URLSearchParams({ __csrf: csrfToken });
+  const res = await fetch("/logout", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      // Don't follow the 302 the handler returns — the SPA navigates
+      // itself after success so the post-logout target is in our hands,
+      // not the server's.
+      accept: "text/html, application/json",
+    },
+    credentials: "same-origin",
+    body,
+    redirect: "manual",
+  });
+  // The handler returns 302 → /login on success. `redirect: "manual"`
+  // surfaces that as a network-level "opaqueredirect" with status 0;
+  // any 2xx or 302 is a success signal here. 4xx is a real error.
+  if (res.status === 0 || res.ok || res.status === 302) return;
+  throw new HttpError(res.status, await readError(res));
+}
+
+/**
  * Resolve a vault's `managementUrl` against the vault's mounted URL.
  * Absolute URL → returned verbatim. Path → joined onto `vaultUrl` after
  * stripping the trailing slash so we don't double-slash.

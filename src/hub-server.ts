@@ -40,6 +40,7 @@
  *   /vaults                       (POST)       → create vault
  *   /admin/host-admin-token       (GET)        → SPA bearer mint (cookie-gated)
  *   /admin/vault-admin-token/<n>  (GET)        → per-vault bearer mint (cookie-gated)
+ *   /api/me                       (GET)        → who-am-I (session+CSRF or hasSession:false)
  *   /api/auth/mint-token          (POST)       → CLI/automation token mint (bearer)
  *   /api/auth/revoke-token        (POST)       → revoke registry-row token by jti
  *   /api/auth/tokens              (GET)        → paginated registry list
@@ -93,13 +94,16 @@ import {
 import { handleHostAdminToken } from "./admin-host-admin-token.ts";
 import { handleVaultAdminToken } from "./admin-vault-admin-token.ts";
 import { handleCreateVault } from "./admin-vaults.ts";
+import { handleApiMe } from "./api-me.ts";
 import { handleApiMintToken } from "./api-mint-token.ts";
 import { REVOCATION_LIST_MOUNT, handleRevocationList } from "./api-revocation-list.ts";
 import { handleApiRevokeToken } from "./api-revoke-token.ts";
 import { handleApiTokens } from "./api-tokens.ts";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
+import { ensureCsrfToken } from "./csrf.ts";
 import { HUB_SVC, clearHubPort, writeHubPort } from "./hub-control.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
+import { type RenderHubOpts, renderHub } from "./hub.ts";
 import { pemToJwk } from "./jwks.ts";
 import {
   type ModuleManifest,
@@ -121,7 +125,9 @@ import {
   shortNameForManifest,
 } from "./service-spec.ts";
 import { type ServiceEntry, readManifest } from "./services-manifest.ts";
+import { findActiveSession } from "./sessions.ts";
 import { getAllPublicKeys } from "./signing-keys.ts";
+import { getUserById } from "./users.ts";
 import { buildWellKnown, isVaultEntry, vaultInstanceNameFor } from "./well-known.ts";
 
 interface Args {
@@ -744,6 +750,31 @@ export function hubFetch(
     }
 
     if (pathname === "/" || pathname === "/hub.html") {
+      // When a DB is configured, render the discovery page dynamically so
+      // the header carries a "Signed in as <name>" affordance for the
+      // active session. Without a DB, fall back to the static disk file
+      // (signed-out shape) — the disk file is what `parachute expose`
+      // wrote out, used when the hub-server is running without state.
+      if (getDb) {
+        const db = getDb();
+        const session = findActiveSession(db, req);
+        let renderOpts: RenderHubOpts = {};
+        const headers: Record<string, string> = {
+          "content-type": "text/html; charset=utf-8",
+        };
+        if (session) {
+          const user = getUserById(db, session.userId);
+          if (user) {
+            const csrf = ensureCsrfToken(req);
+            renderOpts = {
+              session: { displayName: user.username, csrfToken: csrf.token },
+            };
+            if (csrf.setCookie) headers["set-cookie"] = csrf.setCookie;
+          }
+        }
+        return new Response(renderHub(renderOpts), { headers });
+      }
+      // No DB configured → fall back to static file (signed-out only).
       if (!existsSync(hubHtmlPath)) {
         return new Response("hub.html not found", { status: 404 });
       }
@@ -957,6 +988,16 @@ export function hubFetch(
         issuer: oauthDeps(req).issuer,
         knownVaultNames,
       });
+    }
+
+    if (pathname === "/api/me") {
+      if (!getDb) {
+        return Response.json(
+          { error: "service_unavailable", error_description: "hub db not configured" },
+          { status: 503 },
+        );
+      }
+      return handleApiMe(req, { db: getDb() });
     }
 
     if (pathname === "/api/auth/mint-token") {

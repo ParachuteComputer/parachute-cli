@@ -103,6 +103,52 @@ describe("renderHub", () => {
     expect(html).not.toContain("renderConfigField");
     expect(html).not.toContain("kind-badge");
   });
+
+  test("default render (no session) emits the 'Sign in' affordance", () => {
+    expect(html).toContain('class="auth-indicator"');
+    expect(html).toContain("Sign in");
+    expect(html).toContain('href="/login?next=/"');
+    // No POST form, no CSRF input — those only appear when signed in.
+    expect(html).not.toContain('action="/logout"');
+    expect(html).not.toContain("__csrf");
+  });
+});
+
+describe("renderHub — signed-in indicator (rc.13)", () => {
+  test("session user → 'Signed in as <name>' + inline POST form with CSRF", () => {
+    const html = renderHub({
+      session: { displayName: "aaron", csrfToken: "csrf-token-xyz" },
+    });
+    expect(html).toContain('class="auth-indicator"');
+    expect(html).toContain("Signed in as");
+    expect(html).toContain("aaron");
+    // Inline POST form for sign-out — CSRF token embedded as the
+    // existing `__csrf` field name (matches /logout's expectations).
+    expect(html).toContain('method="POST" action="/logout"');
+    expect(html).toContain('name="__csrf"');
+    expect(html).toContain('value="csrf-token-xyz"');
+    expect(html).toContain("Sign out");
+    // No "Sign in" affordance when signed in.
+    expect(html).not.toContain('href="/login?next=/"');
+  });
+
+  test("displayName with HTML special chars is escaped", () => {
+    // Username field allows alphanumerics historically, but the
+    // displayName field on the wire is forward-compatible with profile
+    // names that may contain &, <, >. Escape at render time.
+    const html = renderHub({
+      session: { displayName: "<aaron>&friends", csrfToken: "tok" },
+    });
+    expect(html).toContain("&lt;aaron&gt;&amp;friends");
+    expect(html).not.toContain("<aaron>&friends");
+  });
+
+  test("CSRF token with HTML special chars is escaped in the value attribute", () => {
+    const html = renderHub({
+      session: { displayName: "aaron", csrfToken: 'token"with"quotes' },
+    });
+    expect(html).toContain('value="token&quot;with&quot;quotes"');
+  });
 });
 
 describe("writeHubFile", () => {

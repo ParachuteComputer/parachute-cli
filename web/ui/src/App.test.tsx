@@ -6,12 +6,16 @@
  * so tests drive route changes via `MemoryRouter`'s `initialEntries` —
  * no `window.location` munging needed.
  */
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.tsx";
-import type * as api from "./lib/api.ts";
+// Runtime import (not `import type`) because the auth-indicator tests
+// call `vi.mocked(api.getMe).mockResolvedValue(...)` at runtime to drive
+// per-test fixtures. The mock above replaces the live module's exports
+// with vi.fn()s — `api.getMe` resolves to that vi.fn at call time.
+import * as api from "./lib/api.ts";
 
 // Stub all API helpers — App pulls in VaultsList / Permissions / Tokens
 // at module-load time, and each of those calls into lib/api.ts on mount.
@@ -24,6 +28,11 @@ vi.mock("./lib/api.ts", async (orig) => {
     listVaults: vi.fn().mockResolvedValue([]),
     listGrants: vi.fn().mockResolvedValue([]),
     listTokens: vi.fn().mockResolvedValue({ tokens: [], next_cursor: null }),
+    // App's useEffect hits getMe() on mount. Default mock = signed-out so
+    // the AuthIndicator renders the deterministic "Sign in" link rather
+    // than racing on a real fetch. Per-test overrides via mockResolvedValue.
+    getMe: vi.fn().mockResolvedValue({ hasSession: false }),
+    signOut: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -67,13 +76,19 @@ describe("App — brand subtitle (route-derived)", () => {
 });
 
 describe("App — nav structure", () => {
-  it("renders all nav links in order: brand, Vaults, Permissions, Tokens, Discovery", () => {
+  it("renders all nav links in order: brand, Vaults, Permissions, Tokens, Discovery (signed-out)", async () => {
     renderAt("/vaults");
+    // Wait for /api/me to resolve so AuthIndicator's "Sign in" link
+    // appears in the nav before we snapshot the link order.
     const nav = screen.getByRole("navigation");
+    await waitFor(() =>
+      expect(within(nav).getByRole("link", { name: /^sign in$/i })).toBeInTheDocument(),
+    );
     const links = within(nav).getAllByRole("link");
     const labels = links.map((a) => a.textContent?.trim());
     expect(labels).toEqual([
       expect.stringMatching(/parachute admin/i),
+      "Sign in", // AuthIndicator slot, sits between brand and Vaults
       "Vaults",
       "Permissions",
       "Tokens",
@@ -97,6 +112,92 @@ describe("App — nav structure", () => {
     renderAt("/vaults");
     expect(screen.getByText(/parachute admin/i)).toBeInTheDocument();
     expect(screen.queryByText(/^parachute hub/i)).toBeNull();
+  });
+});
+
+describe("App — auth indicator (rc.13)", () => {
+  it("renders nothing on first paint, then 'Sign in' once /api/me resolves to signed-out", async () => {
+    vi.mocked(api.getMe).mockResolvedValue({ hasSession: false });
+    renderAt("/vaults");
+    // First paint shouldn't have the link yet (`me === null` until effect resolves).
+    // The `await waitFor` proves the link appears asynchronously.
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: /^sign in$/i })).toBeInTheDocument(),
+    );
+  });
+
+  it("Sign in link points at /login?next=<current path>", async () => {
+    vi.mocked(api.getMe).mockResolvedValue({ hasSession: false });
+    renderAt("/permissions");
+    const link = await screen.findByRole("link", { name: /^sign in$/i });
+    // jsdom's window.location.pathname is "/" by default since MemoryRouter
+    // doesn't touch real window.location. So the next= encodes "/" not
+    // /permissions. Pinning the actual encoded value here.
+    expect(link.getAttribute("href")).toBe(`/login?next=${encodeURIComponent("/")}`);
+  });
+
+  it("renders 'Signed in as <displayName>' + Sign out button when /api/me has a session", async () => {
+    vi.mocked(api.getMe).mockResolvedValue({
+      hasSession: true,
+      user: { id: "u1", displayName: "aaron" },
+      csrf: "csrf-token-abc",
+    });
+    renderAt("/vaults");
+    await waitFor(() => expect(screen.getByText(/signed in as/i)).toBeInTheDocument());
+    expect(screen.getByText("aaron")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^sign out$/i })).toBeInTheDocument();
+    // The "Sign in" link must NOT also appear when signed in.
+    expect(screen.queryByRole("link", { name: /^sign in$/i })).toBeNull();
+  });
+
+  it("clicking Sign out POSTs the CSRF token via signOut() and navigates to /", async () => {
+    vi.mocked(api.getMe).mockResolvedValue({
+      hasSession: true,
+      user: { id: "u1", displayName: "aaron" },
+      csrf: "csrf-token-abc",
+    });
+    vi.mocked(api.signOut).mockResolvedValue();
+    // Stub window.location so we can observe the navigation without
+    // actually navigating jsdom away from the test page.
+    const original = window.location;
+    Object.defineProperty(window, "location", {
+      value: { ...original, href: original.href },
+      writable: true,
+    });
+
+    try {
+      renderAt("/vaults");
+      const signOutBtn = await screen.findByRole("button", { name: /^sign out$/i });
+      fireEvent.click(signOutBtn);
+      await waitFor(() => expect(api.signOut).toHaveBeenCalledWith("csrf-token-abc"));
+      // Navigation target is `/` (discovery) so the operator sees the
+      // signed-out affordance immediately on the freshly-rebuilt header.
+      await waitFor(() => expect(window.location.href).toBe("/"));
+    } finally {
+      Object.defineProperty(window, "location", { value: original, writable: true });
+    }
+  });
+
+  it("Sign out button shows 'Signing out…' and disables during the in-flight POST", async () => {
+    vi.mocked(api.getMe).mockResolvedValue({
+      hasSession: true,
+      user: { id: "u1", displayName: "aaron" },
+      csrf: "csrf-token-abc",
+    });
+    let resolveSignOut: () => void = () => {};
+    vi.mocked(api.signOut).mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveSignOut = resolve;
+      }),
+    );
+    renderAt("/vaults");
+    const signOutBtn = await screen.findByRole("button", { name: /^sign out$/i });
+    fireEvent.click(signOutBtn);
+    // While the POST is pending, the button is disabled with "Signing out…".
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^signing out…$/i })).toBeDisabled(),
+    );
+    resolveSignOut();
   });
 });
 

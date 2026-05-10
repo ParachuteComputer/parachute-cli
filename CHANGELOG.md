@@ -2,6 +2,39 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.13] - 2026-05-10
+
+Auth-UX cleanup, C of the A+B+C bundle (A+B shipped as rc.12). Adds the signed-in indicator to hub-served surfaces — discovery page (server-rendered) and the admin SPA. Both consume a single new endpoint (`GET /api/me`) that returns session identity + a per-session CSRF token, so the sign-out form can be rendered without a separate token-fetch step.
+
+### Added
+
+- **`GET /api/me`** (`src/api-me.ts`). Public, session-cookie-aware. Returns:
+  - `{ hasSession: false }` when no active session.
+  - `{ hasSession: true, user: { id, displayName }, csrf }` when signed in. The `csrf` token is reused from the existing `parachute_hub_csrf` cookie if present, or freshly minted (with Set-Cookie attached). Same value the existing login form embeds — submit it back as `__csrf` against `/logout` (or any future state-changing endpoint).
+  - `cache-control: no-store` (response varies per session).
+  - No CORS — same-origin only; hub-served UIs are same-origin.
+- **Discovery page server-rendered indicator** (`src/hub.ts`). `renderHub({ session })` accepts an optional session (displayName + csrfToken). When present, the header carries "Signed in as &lt;name&gt;" plus an inline `<form method="POST" action="/logout">` with the CSRF token embedded — works without JS. When absent, renders a "Sign in" link to `/login?next=/`. The `/` handler in `hub-server.ts` reads the cookie + user via `findActiveSession` + `getUserById` and passes through; without a configured DB, falls back to the static disk-file (signed-out shape).
+- **SPA indicator** (`web/ui/src/App.tsx`). `useEffect` fetches `/api/me` on mount; renders an `AuthIndicator` in the nav (after the brand). Sign-out button POSTs to `/logout` via `signOut(csrf)` in `lib/api.ts` — form-encoded body so the existing logout handler's `req.formData()` parse works without a handler change. On success, navigates to `/` so the operator immediately sees the freshly-rendered signed-out header.
+- **Two new SPA helpers in `web/ui/src/lib/api.ts`**: `getMe()` returning `MeResponse` (discriminated union: `MeSignedIn | MeSignedOut`); `signOut(csrf)` returning `Promise<void>`.
+
+### Changed
+
+- `src/hub.ts` `renderHub()` signature: now accepts optional `RenderHubOpts { session? }`. Existing call site (`writeHubFile`) emits the signed-out shape — that disk file is the static fallback for the no-DB case.
+- `src/hub-server.ts` `/` and `/hub.html` handler: prefers the dynamic render path when a DB is configured; falls back to the static disk file otherwise. Adds `<header>` CSS for the `.auth-indicator` block (absolute-positioned top-right; falls below title on narrow viewports).
+
+### Test gate
+
+All test suites pass. New coverage in this PR:
+
+- `api-me.test.ts` — 7 tests: 405 on non-GET, no-session minimal payload, deleted-session-row treated as not-signed-in, full payload with user + CSRF, cookie minted + Set-Cookie when absent, cookie reused when present, distinct tokens across requests with no cookie.
+- `hub.test.ts` — 4 new tests for the indicator (default-no-session emits "Sign in" affordance, session arg emits "Signed in as ..." + inline POST form, displayName escaping, CSRF token escaping in the value attribute).
+- `hub-server.test.ts` — 2 new tests for the dynamic `/` handler (no-session-cookie renders the "Sign in" affordance via the dynamic path; active session renders "Signed in as &lt;name&gt;" + sign-out form + Set-Cookie for the freshly-minted CSRF token).
+- `App.test.tsx` — 5 new auth-indicator tests (renders nothing on first paint then "Sign in" once `/api/me` resolves; sign-in link points at `/login?next=...`; signed-in payload renders "Signed in as ..." + sign-out button; sign-out POST + navigate-to-`/`; "Signing out…" disabled state during in-flight POST). Plus updated nav-structure test for the new "Sign in" slot in the link order.
+
+Typecheck (both packages): clean. biome: clean. UI build + verify-base: clean.
+
+(Test-count numbers omitted per the hub#219 canonical-vs-combined ambiguity convention.)
+
 ## [0.5.8-rc.12] - 2026-05-10
 
 Auth-UX cleanup, A/B of an A+B+C bundle (C — signed-in indicator via `/api/me` — lands separately as rc.13). Two changes addressing surface-naming friction Aaron raised after rc.11:

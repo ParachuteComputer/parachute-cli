@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR } from "./config.ts";
+import { CSRF_FIELD_NAME } from "./csrf.ts";
 
 /**
  * Hub page served at `/` when the node is exposed.
@@ -36,21 +37,85 @@ import { CONFIG_DIR } from "./config.ts";
 export const HUB_PATH = join(CONFIG_DIR, "well-known", "hub.html");
 export const HUB_MOUNT = "/";
 
-export function renderHub(): string {
-  return HTML;
+export interface RenderHubSession {
+  /** displayName from /api/me semantics — username today, profile field later. */
+  displayName: string;
+  /** Per-session CSRF token; embedded in the inline sign-out form. */
+  csrfToken: string;
 }
 
+export interface RenderHubOpts {
+  /**
+   * When set, renders "Signed in as <displayName>" + an inline sign-out
+   * form. When omitted (or null), renders a "Sign in" link. Pass through
+   * from `findActiveSession` + `ensureCsrfToken` in the hub-server `/`
+   * handler — the static-disk write path (`writeHubFile`) emits the
+   * signed-out shape, since that file gets served only when the
+   * dynamic path can't (`!getDb`).
+   */
+  session?: RenderHubSession | null;
+}
+
+export function renderHub(opts: RenderHubOpts = {}): string {
+  return buildHtml(opts);
+}
+
+/**
+ * Write the static signed-out HTML to disk. Used by `parachute expose` so
+ * `tailscale serve --set-path=/` has a file to back. The dynamic
+ * session-aware path runs through `hub-server.ts`'s `/` handler whenever
+ * a DB is configured; this disk file is the fallback when it isn't.
+ */
 export function writeHubFile(path: string = HUB_PATH): string {
   if (!existsSync(dirname(path))) {
     mkdirSync(dirname(path), { recursive: true });
   }
+  const html = renderHub();
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, HTML);
+  writeFileSync(tmp, html);
   renameSync(tmp, path);
   return path;
 }
 
-const HTML = `<!doctype html>
+function buildHtml({ session }: RenderHubOpts): string {
+  const authBlock = session
+    ? renderSignedIn(session.displayName, session.csrfToken)
+    : renderSignedOut();
+  return HTML_TEMPLATE.replace("<!--AUTH-INDICATOR-->", authBlock);
+}
+
+function renderSignedIn(displayName: string, csrfToken: string): string {
+  // Inline POST form so sign-out works without JS. Submit button is
+  // styled as a text link via `.auth-signout` so the visual weight
+  // matches the surrounding "Signed in as <name>" text.
+  return `<div class="auth-indicator">
+      <span class="muted">Signed in as <strong>${escapeHtml(displayName)}</strong></span>
+      <form method="POST" action="/logout" class="auth-signout-form">
+        <input type="hidden" name="${CSRF_FIELD_NAME}" value="${escapeAttr(csrfToken)}" />
+        <button type="submit" class="auth-signout">Sign out</button>
+      </form>
+    </div>`;
+}
+
+function renderSignedOut(): string {
+  return `<div class="auth-indicator">
+      <a href="/login?next=/" class="auth-signin">Sign in</a>
+    </div>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+const HTML_TEMPLATE = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -109,6 +174,50 @@ const HTML = `<!doctype html>
   header {
     text-align: center;
     margin-bottom: 3.5rem;
+    position: relative;
+  }
+  /* Auth indicator: small text + sign-in/out affordance, top-right of the
+     header. Doesn't crowd the centered title; falls below the title on
+     narrow viewports via the media query at the bottom of this stylesheet. */
+  .auth-indicator {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+  }
+  .auth-indicator .muted {
+    color: var(--fg-muted);
+  }
+  .auth-indicator strong {
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .auth-signout-form {
+    margin: 0;
+    display: inline;
+  }
+  .auth-signout, .auth-signin {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  .auth-signout:hover, .auth-signin:hover {
+    color: var(--accent-hover);
+  }
+  a.auth-signin {
+    /* Anchor needs explicit reset since the a element has its own
+       color/decoration. */
+    border-bottom: none;
   }
   h1 {
     font-family: var(--serif);
@@ -233,12 +342,17 @@ const HTML = `<!doctype html>
   @media (max-width: 640px) {
     main { padding: 2.5rem 1rem 4rem; }
     .card { padding: 1.25rem; }
+    /* Auth indicator drops below the title on narrow viewports so the
+       header doesn't crowd. */
+    header { padding-top: 1.75rem; }
+    .auth-indicator { font-size: 0.8rem; }
   }
 </style>
 </head>
 <body>
 <main>
   <header>
+    <!--AUTH-INDICATOR-->
     <h1>Parachute</h1>
     <p class="tagline">Your personal-computing modules.</p>
   </header>
