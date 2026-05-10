@@ -1006,45 +1006,132 @@ describe("parachute auth mint-token", () => {
     }
   });
 
-  test("operator token without hub:admin scope is rejected (no token emitted)", async () => {
+  // Helper: stash a token with the chosen scopes at operator.token, returning
+  // the deps bag so the caller can immediately invoke mint-token. Used by
+  // every gating-scope test below to exercise the gate against a known
+  // narrow / wide token without going through `rotate-operator` (which would
+  // always mint admin-set).
+  //
+  // TTL is 30d (well beyond the 7d auto-rotation window) so the token
+  // survives the next mint-token call without being silently swapped for a
+  // fresh admin-set token by the auto-rotation path. Without this, narrow
+  // tokens would auto-rotate to admin and our gate tests would all see the
+  // post-rotation token, defeating the test entirely.
+  async function bootstrapWithOperatorScopes(
+    tmp: { dir: string; dbPath: string; cleanup: () => void },
+    scopes: readonly string[],
+  ): Promise<AuthDeps> {
+    const deps: AuthDeps = {
+      dbPath: tmp.dbPath,
+      configDir: tmp.dir,
+      isInteractive: () => false,
+    };
+    await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
+    const db = openHubDb(tmp.dbPath);
+    let token: string;
+    try {
+      const owner = listUsers(db)[0]!;
+      const signed = await signAccessToken(db, {
+        sub: owner.id,
+        scopes: [...scopes],
+        audience: "operator",
+        clientId: OPERATOR_TOKEN_CLIENT_ID,
+        issuer: "http://127.0.0.1:1939",
+        ttlSeconds: 30 * 24 * 60 * 60,
+      });
+      token = signed.token;
+    } finally {
+      db.close();
+    }
+    await writeOperatorTokenFile(token, tmp.dir);
+    return deps;
+  }
+
+  // hub#222: gate widened from `hub:admin` to `parachute:host:auth`. The
+  // following tests pin the new behaviour:
+  //   - admin scope-set (which carries both) still succeeds (regression);
+  //   - `auth` scope-set (carries only `:host:auth`) NOW succeeds (gain);
+  //   - other narrow scope-sets (vault/install/etc.) still rejected;
+  //   - error message updated to name the new gate.
+
+  test("operator token with `auth` scope-set (parachute:host:auth only) mints successfully (hub#222)", async () => {
     const tmp = makeTmp();
     try {
-      const deps: AuthDeps = {
-        dbPath: tmp.dbPath,
-        configDir: tmp.dir,
-        isInteractive: () => false,
-      };
-      // Bootstrap: set-password to seed the user + signing key.
-      await captureOutput(() => auth(["set-password", "--password", "pw"], deps));
-      // Now overwrite operator.token with a valid-signature, valid-expiry
-      // JWT that lacks hub:admin — simulating someone stashing a narrow
-      // token at the operator path.
-      const db = openHubDb(tmp.dbPath);
-      let narrow: string;
-      try {
-        const owner = listUsers(db)[0]!;
-        const signed = await signAccessToken(db, {
-          sub: owner.id,
-          scopes: ["scribe:transcribe"],
-          audience: "scribe",
-          clientId: OPERATOR_TOKEN_CLIENT_ID,
-          issuer: "http://127.0.0.1:1939",
-          ttlSeconds: 3600,
-        });
-        narrow = signed.token;
-      } finally {
-        db.close();
-      }
-      await writeOperatorTokenFile(narrow, tmp.dir);
+      const deps = await bootstrapWithOperatorScopes(tmp, ["parachute:host:auth"]);
+      const { code, stdout, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], deps),
+      );
+      expect(code).toBe(0);
+      // Pipe purity: stdout is the JWT, stderr empty.
+      const token = stdout.trim();
+      expect(token.split(".").length).toBe(3);
+      expect(stdout).toBe(`${token}\n`);
+      expect(stderr).toBe("");
+    } finally {
+      tmp.cleanup();
+    }
+  });
 
+  test("operator token with admin scope-set still mints (regression — admin includes :host:auth as superset)", async () => {
+    const tmp = makeTmp();
+    try {
+      // The full admin scope-set carries both `hub:admin` and `parachute:host:auth`.
+      const deps = await bootstrapWithOperatorScopes(tmp, [
+        "hub:admin",
+        "parachute:host:auth",
+        "vault:admin",
+      ]);
+      const { code, stdout } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], deps),
+      );
+      expect(code).toBe(0);
+      expect(stdout.trim().split(".").length).toBe(3);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("operator token without parachute:host:auth is rejected (no token emitted)", async () => {
+    const tmp = makeTmp();
+    try {
+      // Narrow non-auth token (resembles what someone might stash by mistake,
+      // or a `--scope-set vault` operator token from rotate-operator).
+      const deps = await bootstrapWithOperatorScopes(tmp, ["scribe:transcribe"]);
       const { code, stdout, stderr } = await captureOutput(() =>
         auth(["mint-token", "--scope", "scribe:transcribe"], deps),
       );
       expect(code).toBe(1);
-      expect(stderr).toContain("lacks hub:admin scope");
+      expect(stderr).toContain("lacks parachute:host:auth scope");
       expect(stderr).toContain("rotate-operator");
-      // Purity: no token written to stdout.
       expect(stdout).toBe("");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("`vault` scope-set is rejected (regression — narrow scope-sets still can't mint)", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps = await bootstrapWithOperatorScopes(tmp, ["parachute:host:vault"]);
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], deps),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("lacks parachute:host:auth scope");
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  test("`install` scope-set is rejected (regression — narrow scope-sets still can't mint)", async () => {
+    const tmp = makeTmp();
+    try {
+      const deps = await bootstrapWithOperatorScopes(tmp, ["parachute:host:install", "vault:read"]);
+      const { code, stderr } = await captureOutput(() =>
+        auth(["mint-token", "--scope", "scribe:transcribe"], deps),
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain("lacks parachute:host:auth scope");
     } finally {
       tmp.cleanup();
     }
