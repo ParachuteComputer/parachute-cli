@@ -126,6 +126,32 @@ describe("validateModuleManifest", () => {
     ).toThrow(/http:.*https:/);
   });
 
+  test("uiUrl accepts a leading-slash path (Phase D)", () => {
+    const m = validateModuleManifest({ ...VALID, uiUrl: "/notes" }, "x");
+    expect(m.uiUrl).toBe("/notes");
+  });
+
+  test("uiUrl accepts an absolute https URL", () => {
+    const m = validateModuleManifest({ ...VALID, uiUrl: "https://app.example.com/" }, "x");
+    expect(m.uiUrl).toBe("https://app.example.com/");
+  });
+
+  test("uiUrl rejects empty / non-string / non-url-or-path (mirrors managementUrl)", () => {
+    expect(() => validateModuleManifest({ ...VALID, uiUrl: "" }, "x")).toThrow(/uiUrl/);
+    expect(() => validateModuleManifest({ ...VALID, uiUrl: 7 }, "x")).toThrow(/uiUrl/);
+    expect(() => validateModuleManifest({ ...VALID, uiUrl: "no-slash" }, "x")).toThrow(
+      /path starting with "\/" or a full http\(s\) URL/,
+    );
+    expect(() => validateModuleManifest({ ...VALID, uiUrl: "ftp://example.com" }, "x")).toThrow(
+      /http:.*https:/,
+    );
+  });
+
+  test("uiUrl absent stays absent", () => {
+    const m = validateModuleManifest(VALID, "x");
+    expect(m.uiUrl).toBeUndefined();
+  });
+
   test("managementUrl absent stays absent", () => {
     const m = validateModuleManifest(VALID, "x");
     expect(m.managementUrl).toBeUndefined();
