@@ -55,6 +55,15 @@ describe("App — brand subtitle", () => {
     expect(screen.getByText(/host admin/i)).toBeInTheDocument();
   });
 
+  // Bare `/hub` path — `isHubMount` explicitly handles this case alongside
+  // `pathname.startsWith("/hub/")`. Pinning here so a future change to the
+  // detection that breaks the bare-prefix path can't slip through.
+  it("/hub (bare path, no trailing route) also renders 'host admin'", async () => {
+    await renderAtPath("/hub");
+    expect(screen.getByText(/host admin/i)).toBeInTheDocument();
+    expect(screen.queryByText(/vault provisioning/i)).toBeNull();
+  });
+
   it("origin root falls back to vault-provisioning subtitle", async () => {
     await renderAtPath("/");
     expect(screen.getByText(/vault provisioning/i)).toBeInTheDocument();

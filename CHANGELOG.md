@@ -25,7 +25,7 @@ UX polish on the admin SPA — addresses the "/hub/tokens feels inside of the /v
 
 ### Added
 
-- **`web/ui/src/App.test.tsx`** — first test file for `App`. Five subtitle cases (every mount path) + two nav-structure assertions (link order + divider presence + `aria-hidden`).
+- **`web/ui/src/App.test.tsx`** — first test file for `App`. Eight new tests: six subtitle cases (covering `/vault`, `/vault/new`, `/hub/tokens`, `/hub/permissions`, bare `/hub`, and origin root) plus two nav-structure assertions (link order + divider presence with `aria-hidden`).
 
 ### Out of scope (deferred — separate issues)
 
@@ -34,7 +34,7 @@ UX polish on the admin SPA — addresses the "/hub/tokens feels inside of the /v
 
 ### Test gate
 
-- web/ui: 76 pass / 0 fail (was 69; +7 across the App test file).
+- web/ui: 77 pass / 0 fail (was 69; +8 across the App test file).
 - hub: 1194 pass / 0 fail (unchanged — no backend touched).
 - typecheck (both packages): clean. biome: clean. UI build + verify-base: clean.
 
