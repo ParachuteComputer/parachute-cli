@@ -100,6 +100,9 @@ export function Tokens() {
         else next.set(key, value);
         return next;
       },
+      // `replace`, not push: filter changes shouldn't flood browser history.
+      // Back-button from the table goes to the previous app route, not back
+      // through every filter state the operator clicked through.
       { replace: true },
     );
   }

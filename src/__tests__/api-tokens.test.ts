@@ -420,6 +420,12 @@ describe("GET /api/auth/tokens (admin token list — Phase 2 backend)", () => {
     }
   });
 
+  // No dedicated `?created_via=oauth_refresh` filter test — the WHERE clause
+  // is identical for all three created_via values (parameterized SQL), and
+  // seeding an `oauth_refresh` row requires calling `signRefreshToken` (the
+  // OAuth grant path) rather than the test helper's `cli_mint`/`operator_mint`
+  // arms. The two value-specific tests below pin the filter logic;
+  // `oauth_refresh` would add no new coverage.
   test("?created_via=cli_mint narrows to CLI-minted rows", async () => {
     const h = makeHarness();
     try {

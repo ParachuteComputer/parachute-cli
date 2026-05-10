@@ -30,9 +30,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderRoute() {
+function renderRoute(initialEntry = "/") {
+  // initialEntry lets the URL param tests (Phase F) drive
+  // `useSearchParams` from a deep-link state without going through a click.
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Tokens />
     </MemoryRouter>,
   );
@@ -192,6 +194,38 @@ describe("Tokens — filter pills (status + source, hub#212 Phase F)", () => {
         createdVia: "oauth_refresh",
       }),
     );
+  });
+
+  it("URL deep-link: /admin/tokens?source=operator_mint loads with Operator pill active", async () => {
+    // Operator visits the page with a pre-set filter (bookmark, share link,
+    // post-refresh restore). useSearchParams reads the initial URL; the
+    // pill state + initial listTokens call both reflect it.
+    vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
+    renderRoute("/?source=operator_mint");
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "all",
+        createdVia: "operator_mint",
+      }),
+    );
+    // The Operator pill carries aria-pressed=true, the others don't.
+    expect(screen.getByRole("button", { name: /^operator$/i, pressed: true })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^all sources$/i, pressed: false }),
+    ).toBeInTheDocument();
+  });
+
+  it("URL deep-link: status + source compose on initial load", async () => {
+    vi.mocked(api.listTokens).mockResolvedValue({ tokens: [], next_cursor: null });
+    renderRoute("/?status=live&source=cli_mint");
+    await waitFor(() =>
+      expect(api.listTokens).toHaveBeenCalledWith({
+        revoked: "false",
+        createdVia: "cli_mint",
+      }),
+    );
+    expect(screen.getByRole("button", { name: /^live only$/i, pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^cli mint$/i, pressed: true })).toBeInTheDocument();
   });
 
   it("clicking 'All sources' clears the source filter", async () => {

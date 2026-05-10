@@ -288,6 +288,13 @@ h2 {
     background: rgba(122, 176, 138, 0.14);
     color: #8fc49e;
   }
+  .tag.source-unknown {
+    /* Future-proof fallback for any created_via value the SPA's switch
+       doesn't yet know. Mirrors `.tag.muted` in dark mode — same
+       relationship to the page background as the light-mode rule above. */
+    background: rgba(232, 228, 220, 0.06);
+    color: #a8a49a;
+  }
 }
 
 .vault-row {
