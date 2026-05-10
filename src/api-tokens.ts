@@ -31,8 +31,8 @@
  *   }
  *
  * Pagination is opaque cursor (newest-first; cursor encodes the previous
- * page's last `(created_at, jti)` composite). Default page size 50,
- * cap 200 — see `listTokens` in `jwt-sign.ts`.
+ * page's last `(created_at, jti)` composite). Page size is a hardcoded
+ * 50 — see `listTokens` in `jwt-sign.ts`.
  *
  * Filter semantics:
  *   - `revoked=true`  — only revoked rows.
@@ -72,7 +72,17 @@ interface TokenWireShape {
   revoked_at: string | null;
   created_at: string;
   created_via: string;
-  permissions: string | null;
+  /**
+   * Parsed `permissions` claim — JSON object as the UI consumer expects.
+   * `scopes` is similarly parsed from its space-separated wire form to an
+   * array at this boundary; folding `permissions` parsing here keeps the
+   * contract uniform (consumers receive native objects, not raw strings).
+   * Stored as a JSON string in the DB; if the row's permissions value is
+   * malformed (shouldn't happen — `recordTokenMint` validates on write,
+   * but defense-in-depth), surface as `null` rather than crashing the
+   * list response.
+   */
+  permissions: Record<string, unknown> | null;
 }
 
 interface TokensListResponse {
@@ -148,7 +158,7 @@ export async function handleApiTokens(req: Request, deps: ApiTokensDeps): Promis
       revoked_at: r.revokedAt,
       created_at: r.createdAt,
       created_via: r.createdVia,
-      permissions: r.permissions,
+      permissions: parsePermissions(r.permissions),
     })),
     next_cursor: page.nextCursor,
   };
@@ -160,6 +170,23 @@ export async function handleApiTokens(req: Request, deps: ApiTokensDeps): Promis
       "cache-control": "no-store",
     },
   });
+}
+
+/**
+ * Parse a row's `permissions` JSON-string column into the wire shape's
+ * native object. `null`/empty stays `null`. Malformed JSON (defense-in-depth;
+ * `recordTokenMint` validates on the write side) also surfaces as `null`
+ * rather than crashing the list response.
+ */
+function parsePermissions(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function jsonError(status: number, error: string, description: string): Response {

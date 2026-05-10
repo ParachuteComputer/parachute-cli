@@ -286,28 +286,31 @@ export interface ListTokensFilter {
  * the rare case where two rows share a created_at, which can happen in
  * tests or under burst issuance). The cursor is an opaque base64 of the
  * `(created_at, jti)` composite from the previous page's last row;
- * pagination resumes "strictly older than that pair." Default page size
- * is 50, capped at 200 — admin lists are operator-driven, so we don't
- * need to defend against pathological client requests, but we cap to
- * keep payloads sane.
+ * pagination resumes "strictly older than that pair." Page size is a
+ * hardcoded 50 — see in-function comment on the `limit` constant.
  *
- * Returns the page rows plus a `nextCursor` if more rows exist (i.e.
- * the query returned `limit` rows; we never inspect "is there a row
- * after this" separately to avoid the extra round-trip).
+ * Returns the page rows plus a `nextCursor` if more rows exist (we
+ * fetch `limit + 1` and detect the trailing row, avoiding a second
+ * round-trip just to ask "is there more?").
  */
 export interface ListTokensPage {
   rows: RefreshTokenRow[];
   nextCursor: string | null;
 }
 
-const LIST_TOKENS_DEFAULT_LIMIT = 50;
-const LIST_TOKENS_MAX_LIMIT = 200;
+/** Page size. Hardcoded for now — see comment in `listTokens`. */
+const LIST_TOKENS_PAGE_SIZE = 50;
 
 export function listTokens(
   db: Database,
-  opts: { filter?: ListTokensFilter; cursor?: string | null; limit?: number } = {},
+  opts: { filter?: ListTokensFilter; cursor?: string | null } = {},
 ): ListTokensPage {
-  const limit = Math.min(opts.limit ?? LIST_TOKENS_DEFAULT_LIMIT, LIST_TOKENS_MAX_LIMIT);
+  // Page size is intentionally a hardcoded constant rather than an opt. The
+  // sole consumer (admin UI list view) doesn't need configurable pagination,
+  // and adding the seam invites consumers to pass arbitrary values that we'd
+  // then have to clamp + validate. When a real second consumer surfaces
+  // (e.g. a CLI `auth list-tokens` command), wire `?limit=N` then.
+  const limit = LIST_TOKENS_PAGE_SIZE;
   const filter = opts.filter ?? {};
 
   // Cursor decode. Malformed cursors are treated as "no cursor" rather

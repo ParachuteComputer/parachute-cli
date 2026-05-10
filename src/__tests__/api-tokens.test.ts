@@ -201,7 +201,7 @@ describe("GET /api/auth/tokens (admin token list — Phase 2 backend)", () => {
             revoked_at: string | null;
             created_at: string;
             created_via: string;
-            permissions: string | null;
+            permissions: Record<string, unknown> | null;
           }>;
         };
         // Newest-first: c, b, a, then op (which was minted before via mintOperatorToken).
@@ -272,6 +272,87 @@ describe("GET /api/auth/tokens (admin token list — Phase 2 backend)", () => {
         const jtis = body.tokens.map((t) => t.jti);
         expect(jtis).toContain(live);
         expect(jtis).not.toContain(dead);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("?revoked=all returns both revoked and un-revoked rows (explicit, mirrors omit-default)", async () => {
+    const h = makeHarness();
+    try {
+      const { db, userId } = await bootstrap(h.dir);
+      try {
+        const op = await mintOperatorToken(db, userId, { issuer: ISSUER });
+        const live = await seed(db, userId, { scopes: ["live:r"] });
+        const dead = await seed(db, userId, {
+          scopes: ["dead:r"],
+          revokedAt: new Date(),
+        });
+
+        const resp = await handleApiTokens(
+          getRequest("?revoked=all", { authorization: `Bearer ${op.token}` }),
+          { db, issuer: ISSUER },
+        );
+        expect(resp.status).toBe(200);
+        const body = (await resp.json()) as { tokens: Array<{ jti: string }> };
+        const jtis = body.tokens.map((t) => t.jti);
+        expect(jtis).toContain(live);
+        expect(jtis).toContain(dead);
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("permissions field is parsed to native object (not raw JSON string)", async () => {
+    const h = makeHarness();
+    try {
+      const { db, userId } = await bootstrap(h.dir);
+      try {
+        const op = await mintOperatorToken(db, userId, { issuer: ISSUER });
+        // Mint a row WITH a permissions claim. The CLI / api-mint-token
+        // path stores it as JSON-string in the registry; the wire shape
+        // surfaces it parsed so the UI doesn't need a JSON.parse step.
+        const permissions = { vault: { default: { write_tags: ["health"] } } };
+        const signed = await signAccessToken(db, {
+          sub: userId,
+          scopes: ["vault:default:write"],
+          audience: "vault.default",
+          clientId: "parachute-hub",
+          issuer: ISSUER,
+          ttlSeconds: 3600,
+          extraClaims: { permissions },
+        });
+        recordTokenMint(db, {
+          jti: signed.jti,
+          createdVia: "cli_mint",
+          subject: userId,
+          clientId: "parachute-hub",
+          scopes: ["vault:default:write"],
+          expiresAt: signed.expiresAt,
+          permissions: JSON.stringify(permissions),
+        });
+
+        const resp = await handleApiTokens(
+          getRequest(`?subject=${encodeURIComponent(userId)}`, {
+            authorization: `Bearer ${op.token}`,
+          }),
+          { db, issuer: ISSUER },
+        );
+        expect(resp.status).toBe(200);
+        const body = (await resp.json()) as {
+          tokens: Array<{ jti: string; permissions: Record<string, unknown> | null }>;
+        };
+        const row = body.tokens.find((t) => t.jti === signed.jti);
+        expect(row).toBeDefined();
+        // Wire shape returns native object (deep equality), NOT a string.
+        expect(row?.permissions).toEqual(permissions);
+        expect(typeof row?.permissions).toBe("object");
       } finally {
         db.close();
       }
