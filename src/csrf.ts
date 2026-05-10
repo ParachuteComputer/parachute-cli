@@ -19,9 +19,12 @@
  * pre-login and post-login forms, and it works no matter how many tabs the
  * operator has open.
  *
- * The cookie is HttpOnly (the form doesn't need JS to read it; the server
- * embeds the value at render time), SameSite=Lax (matches the session
- * cookie), Secure, and Path=/ (covers every admin form, OAuth or otherwise).
+ * The cookie is HttpOnly: consumers receive the token value via either the
+ * server-rendered HTML form (cookie + embedded value, classic double-submit)
+ * or via the JSON body of `/api/me` (cookie alongside body — same pattern,
+ * just JSON instead of HTML). Neither path needs JS to read the cookie
+ * directly. SameSite=Lax (matches the session cookie), Secure, and Path=/
+ * (covers every admin form, OAuth flow, and `/api/me` consumer).
  *
  * Token entropy: 32 random bytes, base64url-encoded — same shape as session
  * IDs. No HMAC needed: the value is opaque to the client and only ever

@@ -51,11 +51,16 @@ interface SignedInUser {
   displayName: string;
 }
 
-interface ApiMeResponse {
-  hasSession: boolean;
-  user?: SignedInUser;
-  csrf?: string;
-}
+/**
+ * Discriminated union mirroring the client-side `MeResponse` shape in
+ * `web/ui/src/lib/api.ts`. The two early returns below (no-session,
+ * deleted-user) construct the `false` arm; the success path constructs
+ * the `true` arm. Typing it as a union (rather than an interface with
+ * optional fields) means the compiler refuses any future construction
+ * that mixes states — e.g. `{ hasSession: false, user: staleUser }`
+ * fails at the type-check, not just at code-review.
+ */
+type ApiMeResponse = { hasSession: false } | { hasSession: true; user: SignedInUser; csrf: string };
 
 export function handleApiMe(req: Request, deps: ApiMeDeps): Response {
   if (req.method !== "GET") {
