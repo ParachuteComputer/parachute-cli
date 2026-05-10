@@ -1019,6 +1019,18 @@ async function handleTokenRefresh(
   if (row.clientId !== clientId) {
     return jsonResponse({ error: "invalid_grant", error_description: "client_id mismatch" }, 400);
   }
+  // Refresh-token rows always have a non-null user_id (the caller's hub
+  // user). Post-v6 the column is nullable to accommodate non-OAuth mints
+  // (operator/cli mints), but those rows have no `refresh_token_hash` so
+  // `findRefreshToken` can't return them. Defensive: surface a clean
+  // invalid_grant if a hand-crafted row shows up here without a user.
+  if (!row.userId) {
+    return jsonResponse(
+      { error: "invalid_grant", error_description: "refresh_token has no associated user" },
+      400,
+    );
+  }
+  const refreshUserId: string = row.userId;
   const now = deps.now?.() ?? new Date();
   if (row.revokedAt) {
     // Replay of an already-rotated refresh token. Per RFC 6819 §5.2.2.3 the
@@ -1053,7 +1065,7 @@ async function handleTokenRefresh(
   // (#107).
   const audience = inferAudience(row.scopes);
   const access = await signAccessToken(db, {
-    sub: row.userId,
+    sub: refreshUserId,
     scopes: row.scopes,
     audience,
     clientId: row.clientId,
@@ -1066,7 +1078,7 @@ async function handleTokenRefresh(
       db.prepare("UPDATE tokens SET revoked_at = ? WHERE jti = ?").run(now.toISOString(), row.jti);
       return signRefreshToken(db, {
         jti: access.jti,
-        userId: row.userId,
+        userId: refreshUserId,
         clientId: row.clientId,
         scopes: row.scopes,
         familyId: row.familyId,
