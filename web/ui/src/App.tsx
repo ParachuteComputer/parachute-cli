@@ -21,7 +21,9 @@
  * entry point — its Use section links to per-service surfaces; its
  * Admin section links here.
  */
+import { type ReactNode, useEffect, useState } from "react";
 import { Link, Route, Routes, useLocation } from "react-router-dom";
+import { type MeResponse, getMe, signOut } from "./lib/api.ts";
 import { NewVault } from "./routes/NewVault.tsx";
 import { Permissions } from "./routes/Permissions.tsx";
 import { Tokens } from "./routes/Tokens.tsx";
@@ -45,6 +47,45 @@ function subtitleFor(pathname: string): string {
 export function App() {
   const { pathname } = useLocation();
   const subtitle = subtitleFor(pathname);
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMe()
+      .then((res) => {
+        if (cancelled) return;
+        setMe(res);
+      })
+      .catch(() => {
+        // Network failure — leave `me` null. Nav indicator stays in
+        // the loading-collapsed state (renders nothing); the rest of
+        // the SPA still works since the per-page admin Bearer mint
+        // does its own redirect-to-login on 401.
+        if (cancelled) return;
+        setMe({ hasSession: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function onSignOut(csrf: string): Promise<void> {
+    setSigningOut(true);
+    try {
+      await signOut(csrf);
+      // Land on discovery so the operator immediately sees the
+      // signed-out affordance (and the freshly-rebuilt session-less
+      // header). Full navigation, not Link — we're leaving the SPA.
+      window.location.href = "/";
+    } catch {
+      // Logout failed — stay put and clear the spinner; the operator
+      // can retry. Realistically the only failure surface is CSRF
+      // mismatch (cookie cleared in another tab) or the server being
+      // down, both of which a reload will resolve.
+      setSigningOut(false);
+    }
+  }
 
   return (
     <div className="page">
@@ -52,6 +93,7 @@ export function App() {
         <Link to="/vaults" className="brand">
           Parachute Admin <span className="sub">{subtitle}</span>
         </Link>
+        <AuthIndicator me={me} signingOut={signingOut} onSignOut={onSignOut} />
         <Link to="/vaults">Vaults</Link>
         <Link to="/permissions">Permissions</Link>
         <Link to="/tokens">Tokens</Link>
@@ -77,5 +119,45 @@ export function App() {
         />
       </Routes>
     </div>
+  );
+}
+
+interface AuthIndicatorProps {
+  me: MeResponse | null;
+  signingOut: boolean;
+  onSignOut: (csrf: string) => Promise<void>;
+}
+
+/**
+ * Nav-mounted "Signed in as <name> · Sign out" affordance. Renders nothing
+ * until /api/me resolves (avoids flicker between an empty state and the
+ * filled one). When signed out, renders a "Sign in" link.
+ */
+function AuthIndicator({ me, signingOut, onSignOut }: AuthIndicatorProps): ReactNode {
+  if (me === null) return null; // first-paint, before /api/me resolves
+  if (!me.hasSession) {
+    return (
+      <a href={`/login?next=${encodeURIComponent(window.location.pathname)}`} className="auth-spa">
+        Sign in
+      </a>
+    );
+  }
+  return (
+    <span className="auth-spa">
+      <span className="muted">
+        Signed in as <strong>{me.user.displayName}</strong>
+      </span>{" "}
+      ·{" "}
+      <button
+        type="button"
+        className="auth-spa-signout"
+        disabled={signingOut}
+        onClick={() => {
+          void onSignOut(me.csrf);
+        }}
+      >
+        {signingOut ? "Signing out…" : "Sign out"}
+      </button>
+    </span>
   );
 }

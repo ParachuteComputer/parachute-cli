@@ -57,13 +57,65 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/hub.html serves the same file as /", async () => {
+  test("/hub.html serves the same file as / (no DB → static fallback)", async () => {
     const h = makeHarness();
     try {
       writeFileSync(join(h.dir, "hub.html"), "<html>x</html>");
       const res = await hubFetch(h.dir)(req("/hub.html"));
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("<html>x</html>");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/ renders the signed-out indicator dynamically when DB is configured but no session cookie (rc.13)", async () => {
+    // The dynamic path takes over from the static disk file the moment a
+    // DB is configured. With no session cookie, we still render — just
+    // with the "Sign in" affordance.
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        const res = await hubFetch(h.dir, { getDb: () => db })(req("/"));
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+        const body = await res.text();
+        expect(body).toContain('class="auth-indicator"');
+        expect(body).toContain("Sign in");
+        expect(body).not.toContain("Signed in as");
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("/ renders 'Signed in as <name>' + sign-out form when session cookie is active (rc.13)", async () => {
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        const { createUser } = await import("../users.ts");
+        const { createSession, buildSessionCookie, SESSION_TTL_MS } = await import(
+          "../sessions.ts"
+        );
+        const user = await createUser(db, "aaron", "pw");
+        const session = createSession(db, { userId: user.id });
+        const cookie = buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000));
+        const res = await hubFetch(h.dir, { getDb: () => db })(req("/", { headers: { cookie } }));
+        expect(res.status).toBe(200);
+        const body = await res.text();
+        expect(body).toContain("Signed in as");
+        expect(body).toContain("aaron");
+        expect(body).toContain('action="/logout"');
+        expect(body).toContain('name="__csrf"');
+        // CSRF cookie was minted on the response (no prior cookie present).
+        expect(res.headers.get("set-cookie") ?? "").toContain("parachute_hub_csrf=");
+      } finally {
+        db.close();
+      }
     } finally {
       h.cleanup();
     }
