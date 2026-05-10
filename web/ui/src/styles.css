@@ -132,6 +132,16 @@ code {
   text-decoration: none;
   color: var(--fg);
 }
+/* Visual grouping between nav sections — vault provisioning, host admin,
+   top-level discovery. Subtle 1px vertical line; flex layout takes care
+   of spacing via the parent `.nav { gap: 1rem }`. */
+.nav .nav-divider {
+  display: inline-block;
+  width: 1px;
+  height: 1.1em;
+  background: var(--border);
+  align-self: center;
+}
 
 h2 {
   margin: 0 0 1rem;
