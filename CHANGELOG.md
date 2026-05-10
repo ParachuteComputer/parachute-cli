@@ -2,6 +2,22 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.5] - 2026-05-10
+
+Aligns the `parachute auth mint-token` CLI gate with the HTTP companion (`POST /api/auth/mint-token`) and the new `revoke-token` CLI: all three now gate on `parachute:host:auth` rather than the historically-narrower `hub:admin`. Closes hub#222. Backwards-compatible widening — operators with `admin` scope-set tokens (the default) are unaffected; operators with the narrow `--scope-set auth` operator token gain the ability the scope-set was always meant to grant per the #214 design.
+
+### Changed
+
+- **`parachute auth mint-token` CLI** now requires `parachute:host:auth` scope on the operator token instead of `hub:admin`. Previously, the CLI's gate was tighter than the HTTP endpoint's gate (which already used `:host:auth`), making the `auth` scope-set silently insufficient for CLI mints — the very operation it's named for. The asymmetry was identified during hub#221 review (the new `revoke-token` CLI's gate); this PR closes it.
+- Error message updated: `lacks hub:admin scope` → `lacks parachute:host:auth scope`. Hint text updated to reflect that `--scope-set auth` is now sufficient (was: only `admin`).
+
+### Compatibility
+
+- **Operators with `admin` scope-set tokens** (the default from `parachute auth rotate-operator` with no `--scope-set` flag): no change. The `admin` scope-set is a superset that includes `parachute:host:auth`, so the gate still passes.
+- **Operators with `--scope-set auth` tokens**: gain CLI mint-token access (intended design, finally honoured).
+- **Operators with `--scope-set install/start/expose/vault` tokens**: still rejected. None of those carry `:host:auth`, by design.
+- **No migration needed.** Anyone whose previous workflow worked still works.
+
 ## [0.5.8-rc.4] - 2026-05-10
 
 Adds the operator-facing `parachute auth revoke-token <jti>` CLI — the missing companion to Phase 1's `revoked_at` column and revocation-list endpoint. Without this, end-to-end Phase 4 testing required reaching into `~/.parachute/hub/hub.db` with `sqlite3` and flipping the bit by hand. Distinct from the existing `revoke-grant` (retires OAuth *consent grants*) and `/oauth/revoke` (RFC 7009 refresh-token revocation): this revokes any *registry-row token* (CLI mints, operator mints, OAuth-issued access tokens) by jti.

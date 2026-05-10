@@ -936,22 +936,26 @@ async function runMintToken(args: readonly string[], deps: AuthDeps): Promise<nu
       return 1;
     }
     // Scope gate: a valid signature + non-expired JWT at this path is not
-    // sufficient — the token must carry operator-equivalent scope. Without
-    // this, a narrowly-scoped JWT stashed at ~/.parachute/operator.token
-    // would be treated as operator-bearer and mint arbitrary tokens
-    // (privilege escalation: narrow → arbitrary). Only set-password and
-    // rotate-operator legitimately write to this path; the `admin` scope-set
-    // is the only one that carries `hub:admin`, so this gate also enforces
-    // that scope-set narrowed tokens (install/start/expose/auth/vault) cannot
-    // mint arbitrary follow-on JWTs via this path.
+    // sufficient — the token must carry mint-token authority. Without this,
+    // a narrowly-scoped JWT stashed at ~/.parachute/operator.token would be
+    // treated as operator-bearer and mint arbitrary tokens (privilege
+    // escalation: narrow → arbitrary). Only set-password and rotate-operator
+    // legitimately write to this path.
+    //
+    // Gate is `parachute:host:auth` (was `hub:admin` through 0.5.8-rc.4 — see
+    // hub#222). Both the `admin` scope-set (which includes `:host:auth` as a
+    // superset) and the `auth` scope-set (which IS `:host:auth`) qualify; the
+    // `auth` scope-set was always meant to gate auth surfaces per the #214
+    // design, but the CLI mint-token gate was historically narrower than the
+    // HTTP equivalent. This brings the two surfaces into alignment.
     const tokenScope =
       typeof used.payload.scope === "string"
         ? used.payload.scope.split(/\s+/).filter((s) => s.length > 0)
         : [];
-    if (!tokenScope.includes("hub:admin")) {
-      console.error("parachute auth mint-token: operator token lacks hub:admin scope");
+    if (!tokenScope.includes("parachute:host:auth")) {
+      console.error("parachute auth mint-token: operator token lacks parachute:host:auth scope");
       console.error(
-        "narrowed scope-sets (install/start/expose/auth/vault) can't mint follow-on tokens — run `parachute auth rotate-operator` to mint a fresh admin-set token",
+        "narrowed scope-sets without `auth` (install/start/expose/vault) can't mint follow-on tokens — run `parachute auth rotate-operator --scope-set auth` (or `admin`) for a token that can",
       );
       return 1;
     }

@@ -52,13 +52,15 @@ export const OPERATOR_TOKEN_CLIENT_ID = "parachute-hub";
  * operator-flow's API surface; `admin` is the back-compat superset and
  * stays the default.
  *
- * Phase 1 (hub#213): the vocabulary + flag exist; CLI commands do NOT yet
- * gate on the narrower scopes. Operators can mint a `--scope-set=start`
- * token and use it as their operator.token, but commands like `install`
- * still accept it (they only check `hub:admin` today). Phase 2 (separate
- * follow-up) wires per-command enforcement so a `start` token can only
- * lifecycle-manage, not install. Until then, `--scope-set` is a tool the
- * cautious operator can opt into without breaking anyone.
+ * Per-command gating rolls out incrementally:
+ *   - Auth surfaces (hub#221 `revoke-token`, hub#222 `mint-token`) gate on
+ *     `parachute:host:auth` — both `admin` and `auth` scope-sets carry it.
+ *   - Other CLI commands (`install`, `start`, `expose`, etc.) still accept
+ *     any token with `hub:admin` and don't yet check the narrower scopes;
+ *     a future follow-up wires per-command enforcement so a `start`-set
+ *     token can only lifecycle-manage, not install. Until then,
+ *     `--scope-set` is a tool the cautious operator can opt into without
+ *     breaking anyone.
  *
  * The fine-grained `parachute:host:install/start/expose/auth/vault` scopes
  * are operator-only (non-requestable via public OAuth), like
