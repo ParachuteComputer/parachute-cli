@@ -2,6 +2,32 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.14] - 2026-05-10
+
+Token list grouping by source — F of the auth UX pathway. The `/admin/tokens` page now distinguishes OAuth refresh tokens, operator-token mints, and CLI mints at a glance via per-row chips and a second filter dimension.
+
+### Added
+
+- **`?created_via=` query param on `GET /api/auth/tokens`.** Accepts `oauth_refresh | operator_mint | cli_mint`; composes with the existing `?revoked=` and `?subject=` filters. Invalid value → 400. `ListTokensFilter` gains a typed `createdVia?: TokenCreatedVia` field; `listTokens` translates it into a `WHERE created_via = ?` clause.
+- **Source filter pills on `/admin/tokens`.** Second filter row alongside the existing Status pills: "All sources / OAuth / Operator / CLI mint". Both dimensions compose. Filter state lives in the URL via `useSearchParams` (`?status=live&source=oauth_refresh`) so refresh + share preserve the operator's view; the default `all` value strips the param to keep the URL minimal.
+- **Per-row source chip.** Each token row shows a small colored tag — OAuth (subtle blue), Operator (subtle gold), CLI (subtle sage, palette-aligned with the existing `.tag` accent base). Tooltip exposes the raw `created_via` value for operators who care about the canonical name.
+- **Filter-aware empty state.** When no rows match the active filter, the empty message switches to "No tokens match the current filter" with a hint to widen via the pills. The original "No tokens." copy stays for the truly-empty registry case.
+
+### Changed
+
+- `web/ui/src/lib/api.ts`: `ListTokensOpts` gains `createdVia?: AdminTokenCreatedVia` (new exported type mirroring `TokenCreatedVia`); `listTokens()` serializes it to `created_via=…`.
+
+### Test gate
+
+All test suites pass. New coverage in this PR:
+
+- `api-tokens.test.ts` — 4 new tests: `?created_via=cli_mint` narrows correctly, `?created_via=operator_mint` narrows correctly, `?created_via=cli_mint` composes with `?revoked=false`, `?created_via=invalid` → 400.
+- `Tokens.test.tsx` — 7 new tests across 2 describes: source pill clicks call `listTokens` with the right `createdVia`; status + source compose; "All sources" clears the source filter; OAuth/Operator/CLI rows render the correct chip with the matching `source-…` class; filter-aware empty state appears when filters are active.
+
+Typecheck (both packages): clean. biome: clean. UI build + verify-base: clean.
+
+(Test-count numbers omitted per the hub#219 canonical-vs-combined ambiguity convention.)
+
 ## [0.5.8-rc.13] - 2026-05-10
 
 Auth-UX cleanup, C of the A+B+C bundle (A+B shipped as rc.12). Adds the signed-in indicator to hub-served surfaces — discovery page (server-rendered) and the admin SPA. Both consume a single new endpoint (`GET /api/me`) that returns session identity + a per-session CSRF token, so the sign-out form can be rendered without a separate token-fetch step.

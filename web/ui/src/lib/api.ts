@@ -342,12 +342,17 @@ export interface AdminTokensPage {
   next_cursor: string | null;
 }
 
+/** Mint-provenance values surfaced by the registry. Mirrors `TokenCreatedVia` server-side. */
+export type AdminTokenCreatedVia = "oauth_refresh" | "operator_mint" | "cli_mint";
+
 /** Filter knobs for `listTokens`. */
 export interface ListTokensOpts {
   /** "true" → only revoked; "false" → only un-revoked; "all" or omit → both. */
   revoked?: "true" | "false" | "all";
   /** Exact match against either `user_id` (OAuth rows) or `subject` (mint rows). */
   subject?: string;
+  /** Narrow by mint provenance (oauth_refresh / operator_mint / cli_mint). */
+  createdVia?: AdminTokenCreatedVia;
   /** Cursor from a previous page's `next_cursor`. */
   cursor?: string;
 }
@@ -360,6 +365,7 @@ export async function listTokens(opts: ListTokensOpts = {}): Promise<AdminTokens
   const params = new URLSearchParams();
   if (opts.revoked) params.set("revoked", opts.revoked);
   if (opts.subject) params.set("subject", opts.subject);
+  if (opts.createdVia) params.set("created_via", opts.createdVia);
   if (opts.cursor) params.set("cursor", opts.cursor);
   const query = params.toString();
   const url = query ? `/api/auth/tokens?${query}` : "/api/auth/tokens";

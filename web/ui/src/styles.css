@@ -255,6 +255,48 @@ h2 {
   color: var(--fg-muted);
 }
 
+/* Source chips on the /admin/tokens row — distinguish OAuth refresh
+   tokens from operator mints from CLI mints at a glance. Subtle,
+   palette-aligned; the chip is for orientation, not visual weight.
+   Built on the existing `.tag` base via a `source-<kind>` modifier. */
+.tag.source-oauth {
+  background: rgba(74, 124, 198, 0.12); /* subtle blue */
+  color: #3b6aa6;
+}
+.tag.source-operator {
+  background: rgba(198, 152, 74, 0.14); /* subtle gold */
+  color: #8a5e1f;
+}
+.tag.source-cli {
+  background: rgba(74, 124, 89, 0.14); /* sage — close to .tag accent base */
+  color: #2f5a3f;
+}
+.tag.source-unknown {
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+}
+@media (prefers-color-scheme: dark) {
+  .tag.source-oauth {
+    background: rgba(122, 156, 220, 0.14);
+    color: #9bb6d8;
+  }
+  .tag.source-operator {
+    background: rgba(220, 180, 110, 0.14);
+    color: #d4b27a;
+  }
+  .tag.source-cli {
+    background: rgba(122, 176, 138, 0.14);
+    color: #8fc49e;
+  }
+  .tag.source-unknown {
+    /* Future-proof fallback for any created_via value the SPA's switch
+       doesn't yet know. Mirrors `.tag.muted` in dark mode — same
+       relationship to the page background as the light-mode rule above. */
+    background: rgba(232, 228, 220, 0.06);
+    color: #a8a49a;
+  }
+}
+
 .vault-row {
   display: flex;
   align-items: center;
