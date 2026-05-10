@@ -8,8 +8,10 @@
  *   1. SPA bootstrap calls `getHostAdminToken()`.
  *   2. That hits `GET /admin/host-admin-token`. The endpoint:
  *      - reads `parachute_hub_session` cookie (set by /admin/login)
- *      - mints a short-lived (~10 min) JWT carrying `parachute:host:admin`
- *        and returns it as JSON.
+ *      - mints a short-lived (~10 min) JWT carrying both
+ *        `parachute:host:admin` (vault provisioning, OAuth grant management)
+ *        AND `parachute:host:auth` (the hub#212 Phase 2 token-registry
+ *        endpoints at /api/auth/*) and returns it as JSON.
  *   3. Token is held in module-scoped state — NOT localStorage. Page
  *      snapshots can't carry it past a refresh, and XSS surface is the
  *      narrowest possible.
@@ -17,8 +19,8 @@
  *      The hub's standard login form then cookie-signs the operator and
  *      bounces back here.
  *
- * The narrow `parachute:host:admin` scope is in `NON_REQUESTABLE_SCOPES`
- * server-side, so the public `/oauth/authorize` flow refuses to mint it.
+ * Both `:host:admin` and `:host:auth` are in `NON_REQUESTABLE_SCOPES`
+ * server-side, so the public `/oauth/authorize` flow refuses to mint either.
  * Only this session-cookie path can — see hub#scope-explanations.ts.
  */
 
