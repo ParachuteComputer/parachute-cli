@@ -1,11 +1,11 @@
 import { type JWTPayload, jwtVerify } from "jose";
-import { type JwksGetter, type JwksOptions, getOrCreateJwksGetter, resetCache } from "./jwks";
-import { parseScopes } from "./parse";
+import { type JwksGetter, type JwksOptions, getOrCreateJwksGetter, resetCache } from "./jwks.js";
+import { parseScopes } from "./parse.js";
 import {
   type RevocationCache,
   type RevocationFetcher,
   createRevocationCache,
-} from "./revocation-cache";
+} from "./revocation-cache.js";
 
 /**
  * Hub-issued JWT validation, factored out of vault/scribe/parachute-agent's

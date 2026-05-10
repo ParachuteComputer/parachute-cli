@@ -2,6 +2,14 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.6] - 2026-05-10
+
+Workspace consumes `@openparachute/scope-guard@0.2.1` — a packaging fix for NodeNext-strict consumers (agent's tsc + vitest). Hub itself is unaffected at runtime: hub's auth paths never go through scope-guard (they use the local `validateAccessToken` against the on-box DB), and the workspace consumes scope-guard via Bun's bundler resolution, which already resolved 0.2.0's extensionless imports correctly. Test gate unchanged.
+
+### Changed
+
+- **`@openparachute/scope-guard` 0.2.0 → 0.2.1** — adds explicit `.js` extensions to relative imports in published `dist/`. See `packages/scope-guard/CHANGELOG.md` for the full surface change. **Vault and scribe auto-pick the new patch on next `bun install` (their pin is `^0.2.0`); no downstream PR needed.** Agent updates its exact-pin separately.
+
 ## [0.5.8-rc.5] - 2026-05-10
 
 Aligns the `parachute auth mint-token` CLI gate with the HTTP companion (`POST /api/auth/mint-token`) and the new `revoke-token` CLI: all three now gate on `parachute:host:auth` rather than the historically-narrower `hub:admin`. Closes hub#222. Backwards-compatible widening — operators with `admin` scope-set tokens (the default) are unaffected; operators with the narrow `--scope-set auth` operator token gain the ability the scope-set was always meant to grant per the #214 design.

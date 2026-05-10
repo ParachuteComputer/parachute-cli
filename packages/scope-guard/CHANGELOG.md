@@ -4,6 +4,26 @@ All notable changes to `@openparachute/scope-guard` are documented here. The for
 
 The library's RC cadence is independent of `@openparachute/hub`'s — they ship from the same repo but aren't coupled in version.
 
+## 0.2.1 — 2026-05-10
+
+Packaging fix. **0.2.0 is non-functional under NodeNext-strict consumers** — every non-bun adopter on `tsc + Node ESM + "moduleResolution": "nodenext"` should upgrade to 0.2.1 immediately.
+
+### Fixed
+
+- **Relative imports in published `dist/` now carry explicit `.js` extensions.** Source imports like `from "./validate"` were emitted into dist verbatim by tsc, which works for bun + `"moduleResolution": "bundler"` (vault, scribe, hub workspace) but breaks NodeNext: `Cannot find module ".../dist/parse"`. Type information collapses to `any`/`unknown` at the consumer; downstream paths that touch `HubJwtError.code` then fail TS18046 ("'err' is of type 'unknown'"). Added `.js` to every relative import in `src/index.ts` and `src/validate.ts` (the only non-test source files with relative imports); tsc now emits the extensions verbatim and NodeNext resolution succeeds.
+
+### Compatibility
+
+- **No behaviour change.** Every API surface is identical to 0.2.0. This is a pure packaging fix.
+- **bundler-resolution consumers (vault, scribe, hub workspace):** unaffected. Bun resolves `.js` back to `.ts` transparently; the explicit extension is a no-op for them.
+- **NodeNext-strict consumers (agent's tsc + vitest):** 0.2.0 was unusable; 0.2.1 works.
+- **Vault and scribe** (currently on `^0.2.0`) auto-pick 0.2.1 on next `bun install` — no PR needed downstream.
+- **Agent** updates its `minimumReleaseAgeExclude` pin from `0.2.0` to `0.2.1` (still exact-version-pinned per their governance).
+
+### Forward-looking note
+
+The internal convention going forward: relative imports in scope-guard source MUST carry `.js` extensions. The `index.ts` header comment now spells this out so the next contributor doesn't re-introduce the bug. Long-term, we'd add an `eslint-plugin-import` `extensions` rule (or biome equivalent if/when one ships) to mechanically enforce — out of scope for 0.2.1.
+
 ## 0.2.0 — 2026-05-10
 
 Adds enforcement of the hub's revocation list (hub#212 Phase 4 RS-side foundation). **This is a behaviour-breaking minor for adopters**: any vault / scribe / parachute-agent / third-party RS that bumps from `0.1.x` will start rejecting JWTs whose `jti` appears in `<hub-origin>/.well-known/parachute-revocation.json`. Adopt only after testing against a revoked-token fixture (or equivalent integration test).
