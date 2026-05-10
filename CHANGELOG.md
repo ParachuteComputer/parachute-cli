@@ -2,6 +2,33 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.8] - 2026-05-10
+
+Phase 2 of hub#212: admin UI for token management at `/hub/tokens`. Operators get a browser surface for the registry that backed `parachute auth mint-token`, `parachute auth revoke-token`, and the new HTTP endpoints from rc.7. Refs hub#212 (umbrella stays open through Phase 6).
+
+### Added
+
+- **`/hub/tokens` route** in the SPA. Three actions:
+  - **List** — paginated, status-filtered (Show all / Live only / Revoked only) view of every registry row. Each row surfaces jti (truncated, full on hover), identity (`user_id ?? subject`), scope, status pill (live / expired / revoked), `created_via` provenance, dates, and an expandable `<details>` for the `permissions` JSON.
+  - **Mint** — inline form (toggle from page header). Fields: scope (required), audience (optional, inferred from scope on the hub side), expires_in (seconds), subject (defaults to operator's sub), permissions (JSON object, validated client-side). On success, the JWT is shown ONCE in a `mint-banner` with copy-to-clipboard and a clear "this is the only time" warning — no DB-side recovery.
+  - **Revoke** — per-row button (live tokens only) → confirm dialog → `POST /api/auth/revoke-token`. Mirrors the Permissions page's revoke flow exactly.
+- **Three new API helpers in `web/ui/src/lib/api.ts`** — `listTokens(opts)`, `mintToken(input)`, `revokeToken(jti)`. All follow the established Bearer + clearCachedToken-on-401/403 pattern from `createVault` / `listGrants`. Types match the rc.7 wire shape verbatim (snake_case, parsed `permissions`).
+- **Cursor pagination via "Load more" button** at the bottom of the list. Appends the next page in place; clears the button when `next_cursor` goes null.
+
+### Changed
+
+- **`web/ui/src/App.tsx`** — added `/hub/tokens` route alongside `/hub/permissions`. Renamed the local `isPermissionsMount` constant to `isHubMount` (now the mount hosts more than one route). Nav adds a "Tokens" link.
+
+### Visual posture
+
+- Reused every existing CSS class — `.vault-row`, `.tag` / `.tag.muted`, `.list-header`, `.empty-rich`, `.error-banner`, `.section`, `.mint-banner`, `.field-error`. Zero new CSS, zero new design system.
+
+### Test gate
+
+- hub: 1193 pass / 0 fail (unchanged from rc.7 — purely additive UI work).
+- web UI: 66 pass / 0 fail (was 47 pre-existing; +19 across list rendering, status pills, filter pills, mint form validation + happy path, revoke confirm flow, "Load more" pagination, and one end-to-end integration that walks mint → see in list → revoke → see status update).
+- typecheck (both): clean. biome: clean. UI build verified — `dist/index.html` carries `/vault/`-prefixed asset URLs per the post-build regression check.
+
 ## [0.5.8-rc.7] - 2026-05-10
 
 Two new HTTP endpoints — backend foundation for hub#212 Phase 2 (admin UI for token management). Closes hub#220. The admin UI itself ships in a follow-up rc.8 PR; these endpoints have standalone value for any operator-tooling that wants programmatic registry access.
