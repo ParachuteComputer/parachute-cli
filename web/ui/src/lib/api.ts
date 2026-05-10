@@ -250,6 +250,140 @@ export function resolveManagementUrl(vaultUrl: string, managementUrl: string): s
   return `${base}${tail}`;
 }
 
+/**
+ * One row from `GET /api/auth/tokens`. Matches the wire shape from
+ * `src/api-tokens.ts` exactly — snake_case fields, parsed `permissions`
+ * (object, not raw JSON string — hub layer parses).
+ */
+export interface AdminTokenListing {
+  jti: string;
+  user_id: string | null;
+  subject: string | null;
+  client_id: string;
+  scopes: string[];
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+  created_via: string;
+  permissions: Record<string, unknown> | null;
+}
+
+/** One page of tokens. `next_cursor` is null when we've walked to the end. */
+export interface AdminTokensPage {
+  tokens: AdminTokenListing[];
+  next_cursor: string | null;
+}
+
+/** Filter knobs for `listTokens`. */
+export interface ListTokensOpts {
+  /** "true" → only revoked; "false" → only un-revoked; "all" or omit → both. */
+  revoked?: "true" | "false" | "all";
+  /** Exact match against either `user_id` (OAuth rows) or `subject` (mint rows). */
+  subject?: string;
+  /** Cursor from a previous page's `next_cursor`. */
+  cursor?: string;
+}
+
+/**
+ * GET /api/auth/tokens — paginated list of registry rows. Same Bearer
+ * pattern as `createVault` / `listGrants`.
+ */
+export async function listTokens(opts: ListTokensOpts = {}): Promise<AdminTokensPage> {
+  const params = new URLSearchParams();
+  if (opts.revoked) params.set("revoked", opts.revoked);
+  if (opts.subject) params.set("subject", opts.subject);
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const query = params.toString();
+  const url = query ? `/api/auth/tokens?${query}` : "/api/auth/tokens";
+
+  const bearer = await getHostAdminToken();
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${bearer}`,
+    },
+  });
+  if (res.status === 401 || res.status === 403) {
+    clearCachedToken();
+    throw new HttpError(res.status, await readError(res));
+  }
+  if (!res.ok) {
+    throw new HttpError(res.status, await readError(res));
+  }
+  return (await res.json()) as AdminTokensPage;
+}
+
+/** Body shape for `POST /api/auth/mint-token`. Matches the hub-side handler. */
+export interface MintTokenInput {
+  scope: string;
+  audience?: string;
+  expires_in?: number;
+  subject?: string;
+  permissions?: Record<string, unknown>;
+}
+
+/** Successful mint response. The `token` is shown ONCE in the UI; never persisted. */
+export interface MintedToken {
+  jti: string;
+  token: string;
+  expires_at: string;
+  scope: string;
+  permissions?: Record<string, unknown>;
+}
+
+/**
+ * POST /api/auth/mint-token — mint a scope-narrow access token. Same
+ * Bearer pattern; the minted JWT comes back in the response body and
+ * is the operator's only chance to copy it (no DB-side recovery).
+ */
+export async function mintToken(input: MintTokenInput): Promise<MintedToken> {
+  const bearer = await getHostAdminToken();
+  const res = await fetch("/api/auth/mint-token", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (res.status === 401 || res.status === 403) {
+    clearCachedToken();
+    throw new HttpError(res.status, await readError(res));
+  }
+  if (!res.ok) {
+    throw new HttpError(res.status, await readError(res));
+  }
+  return (await res.json()) as MintedToken;
+}
+
+/**
+ * POST /api/auth/revoke-token — flip `revoked_at` on the registry row
+ * keyed by jti. Idempotent: re-revoking returns the original
+ * `revoked_at`. UI surfaces this as a confirm-then-POST flow per row.
+ */
+export async function revokeToken(jti: string): Promise<{ jti: string; revoked_at: string }> {
+  const bearer = await getHostAdminToken();
+  const res = await fetch("/api/auth/revoke-token", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ jti }),
+  });
+  if (res.status === 401 || res.status === 403) {
+    clearCachedToken();
+    throw new HttpError(res.status, await readError(res));
+  }
+  if (!res.ok) {
+    throw new HttpError(res.status, await readError(res));
+  }
+  return (await res.json()) as { jti: string; revoked_at: string };
+}
+
 async function readError(res: Response): Promise<string> {
   try {
     const text = await res.text();
