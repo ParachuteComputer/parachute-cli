@@ -2,6 +2,42 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.10] - 2026-05-10
+
+UX polish on the admin SPA — addresses the "/hub/tokens feels inside of the /vault UI" concern Aaron raised after rc.9. Three small changes; no API surface change, no behavior change beyond labels and visual grouping.
+
+### Changed
+
+- **Brand subtitle is now context-aware.** "Parachute Hub <span>vault management</span>" was a misnomer — the SPA is cross-vault provisioning under `/vault/*`, not per-vault management. Subtitle now derives from the active mount:
+  - `/vault/*` → "vault provisioning"
+  - `/hub/*` → "host admin"
+  - origin root → falls back to "vault provisioning"
+- **Nav links are visually grouped.** Three logical clusters separated by thin vertical dividers (decorative, `aria-hidden="true"`):
+  - **Vaults** (vault provisioning)
+  - **Permissions, Tokens** (host admin)
+  - **Discovery** (top-level)
+  
+  No new entries; just hierarchy. New `.nav-divider` CSS class — single rule, mirrors the existing `--border` token.
+- **Header doc-comment in `App.tsx`** explaining what this SPA is and isn't:
+  - It IS hub admin: cross-vault provisioning + cross-cutting host concerns.
+  - It is NOT a vault-internal admin UI — vault has its own MCP endpoint for AI clients and the Notes PWA for human content browsing.
+  - Per-instance vault admin (config / schemas) doesn't have a UI today; if/when it does, it'll be vault-served (analogous to agent's own admin).
+
+### Added
+
+- **`web/ui/src/App.test.tsx`** — first test file for `App`. Five subtitle cases (every mount path) + two nav-structure assertions (link order + divider presence + `aria-hidden`).
+
+### Out of scope (deferred — separate issues)
+
+- URL renames (`/vault` → `/admin/vaults`, `/hub/permissions` → `/admin/permissions`).
+- Vault-side per-instance admin UI.
+
+### Test gate
+
+- web/ui: 76 pass / 0 fail (was 69; +7 across the App test file).
+- hub: 1194 pass / 0 fail (unchanged — no backend touched).
+- typecheck (both packages): clean. biome: clean. UI build + verify-base: clean.
+
 ## [0.5.8-rc.9] - 2026-05-10
 
 End-to-end bugfix surfaced from manual testing of `/hub/tokens` (Phase 2 admin UI from rc.8): the SPA's session-bearer (minted by `GET /admin/host-admin-token`) carried only `parachute:host:admin`, but the new admin endpoints (`/api/auth/mint-token`, `/api/auth/revoke-token`, `/api/auth/tokens`) gate on `parachute:host:auth`. SPA failed with `Couldn't load tokens: bearer token lacks parachute:host:auth` on first load.
