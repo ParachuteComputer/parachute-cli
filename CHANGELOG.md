@@ -2,7 +2,7 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
-## [0.5.8-rc.1] - 2026-05-10
+## [0.5.8-rc.1] - 2026-05-09
 
 Operator-token hardening — first slice of the hub-as-sole-AS migration arc tracked in #212. This PR is scoped to #213's three pieces; the broader registry + revocation infrastructure lands in 0.5.8-rc.2 (#212 Phase 1).
 
