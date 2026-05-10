@@ -2,6 +2,27 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.8-rc.9] - 2026-05-10
+
+End-to-end bugfix surfaced from manual testing of `/hub/tokens` (Phase 2 admin UI from rc.8): the SPA's session-bearer (minted by `GET /admin/host-admin-token`) carried only `parachute:host:admin`, but the new admin endpoints (`/api/auth/mint-token`, `/api/auth/revoke-token`, `/api/auth/tokens`) gate on `parachute:host:auth`. SPA failed with `Couldn't load tokens: bearer token lacks parachute:host:auth` on first load.
+
+### Fixed
+
+- **`HOST_ADMIN_SCOPES`** in `src/admin-host-admin-token.ts` now includes both `parachute:host:admin` AND `parachute:host:auth`. Brings the SPA's session-bearer in line with the `--scope-set admin` operator-token semantics from hub#214 / #222 (admin = superset of all narrower scope-sets, including `auth`). Both scopes are already in `NON_REQUESTABLE_SCOPES`, so the security envelope is unchanged — the SPA bearer is still mintable only via the local cookie path.
+
+### Added
+
+- **End-to-end regression test** in `src/__tests__/admin-host-admin-token.test.ts`: mints a JWT through the SPA cookie flow, then exercises `GET /api/auth/tokens` with that bearer and asserts 200 (was 403 pre-fix). The Phase 2 backend tests minted operator-style tokens with `:host:auth` directly — they didn't exercise the full SPA session flow, leaving this gap. New test pins it.
+
+### Why this slipped past Phase 2 reviews
+
+The new admin endpoints' tests minted bearer tokens with the right scope directly via `mintOperatorToken({ scopeSet: "admin" })`. None walked the path the SPA actually takes — cookie → host-admin-token → `:host:admin`-only JWT → admin endpoint. The dual-scope semantics that the operator-side already had via the `admin` scope-set wasn't mirrored to the SPA-side mint until manual end-to-end testing surfaced the mismatch. Regression test now covers the full flow so a future shape divergence here can't reach production.
+
+### Test gate
+
+- hub: 1194 pass / 0 fail (was 1193; +1 for the new regression test).
+- typecheck + biome: clean.
+
 ## [0.5.8-rc.8] - 2026-05-10
 
 Phase 2 of hub#212: admin UI for token management at `/hub/tokens`. Operators get a browser surface for the registry that backed `parachute auth mint-token`, `parachute auth revoke-token`, and the new HTTP endpoints from rc.7. Refs hub#212 (umbrella stays open through Phase 6).
