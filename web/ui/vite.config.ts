@@ -1,13 +1,12 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// The hub mounts this SPA at `/vault/` (primary, since hub#168-realignment) and
-// keeps `/hub/` mounted for back-compat (`/hub/permissions` lives there). Asset
-// URLs are origin-absolute and resolve under `/vault/assets/...` regardless of
-// which mount served the HTML — the same drift paraclaw#25 hit when its base
-// was `/`. Override with `VITE_BASE_PATH=/` for stand-alone dev served at the
-// origin root.
-const basePath = normalizeBase(process.env.VITE_BASE_PATH ?? "/vault/");
+// As of hub#231 the hub mounts this SPA at `/admin/` exclusively. Asset URLs
+// are origin-absolute and resolve under `/admin/assets/...`; pre-rename
+// `/vault` and `/hub/*` paths are 301-redirected by `hub-server.ts` so cached
+// operator URLs keep working. Override with `VITE_BASE_PATH=/` for stand-alone
+// dev served at the origin root.
+const basePath = normalizeBase(process.env.VITE_BASE_PATH ?? "/admin/");
 
 function normalizeBase(input: string): string {
   let b = input.startsWith("/") ? input : `/${input}`;
@@ -21,11 +20,35 @@ export default defineConfig({
   server: {
     port: 5174,
     proxy: {
-      // Dev server runs under /vault/ to mirror the production mount. The hub's
-      // admin + vault API lives at the origin root (/admin/*, /vaults,
-      // /.well-known/*) so we only proxy those exact prefixes — everything
-      // else falls through to the SPA's static assets.
-      "/admin": {
+      // Dev server runs under /admin/ to mirror the production mount. The hub
+      // serves a few non-SPA paths under the same prefix (`/admin/login`,
+      // `/admin/host-admin-token`, etc.) and the vault APIs at the origin root
+      // (`/vaults`, `/.well-known/*`). Proxy those to the running hub so the
+      // dev SPA hits real auth + data instead of 404ing on every fetch.
+      //
+      // Exact-prefix proxying for /admin/login and friends — but NOT a blanket
+      // /admin proxy, which would steal the SPA's own /admin/vaults route.
+      "/admin/login": {
+        target: process.env.HUB_ORIGIN ?? "http://127.0.0.1:1939",
+        changeOrigin: true,
+      },
+      "/admin/logout": {
+        target: process.env.HUB_ORIGIN ?? "http://127.0.0.1:1939",
+        changeOrigin: true,
+      },
+      "/admin/host-admin-token": {
+        target: process.env.HUB_ORIGIN ?? "http://127.0.0.1:1939",
+        changeOrigin: true,
+      },
+      "/admin/vault-admin-token": {
+        target: process.env.HUB_ORIGIN ?? "http://127.0.0.1:1939",
+        changeOrigin: true,
+      },
+      "/admin/config": {
+        target: process.env.HUB_ORIGIN ?? "http://127.0.0.1:1939",
+        changeOrigin: true,
+      },
+      "/api": {
         target: process.env.HUB_ORIGIN ?? "http://127.0.0.1:1939",
         changeOrigin: true,
       },
