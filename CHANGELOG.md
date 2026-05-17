@@ -2,6 +2,45 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.9] - 2026-05-17
+
+Stable release. Promotes from `0.5.9-rc.9` after pre-stable polish + auth-hygiene
+pass. Same code as rc.9; only the version suffix drops. Headline arc since
+`0.5.7`:
+
+- **Hub self-upgrade** (#251) — `parachute upgrade hub` now works. Operators on
+  pre-0.5 installs (and anyone going forward) can keep current via the same
+  dispatcher they already have, no manual `bun add -g @openparachute/hub` step.
+- **Response shape consistency** (#227) — all 503 `!getDb` guards now return
+  JSON `{error, error_description}` instead of the historical split between
+  plain text and JSON. Client-side error parsers handle one shape.
+- **Admin pagination canonical pattern** (#229) — `loadingMore` + `disabled`
+  shape pinned in `web/ui/CLAUDE.md` as the convention for paginated admin
+  views; new views adopt it directly.
+- **Operator-token rotation telemetry** (#216) — `UsedOperatorToken.refreshed:
+  boolean` replaced with a tagged `status: RotationStatus` discriminated union
+  surfacing the three operationally distinct skip cases (`fresh` / `rotated` /
+  `skipped: { aud-mismatch | no-sub | no-scope-set }`). No production caller
+  read `.refreshed`; the `.rotated` companion field is unchanged.
+- **Auto-rotation defense-in-depth** (#224) — refuses to rotate tokens lacking
+  a recognized `pa_scope_set` claim instead of silently widening to admin
+  scope. Closes a test-author footgun and a hypothetical scope-widening surface.
+- **OAuth silent-approve regression pin** (#236) — end-to-end test walks the
+  full "first-use consent → silent-approve → novel-scope re-prompts" state
+  machine. JSDoc on `handleAuthorizeGet` documents the five-step flow and the
+  two gate constraints.
+
+**Coming from `@openparachute/cli@0.2.4`?** That package was renamed to
+`@openparachute/hub` on 2026-04-26. Operators on the legacy package name should
+`bun remove -g @openparachute/cli` then `bun add -g @openparachute/hub` to land
+on this release. From 0.5.9 onward, `parachute upgrade hub` self-upgrades.
+
+**Migration risk (rc.9 carrying over)**: operators holding operator-tokens
+minted before hub#213 (~2026-05-09) may hit `skipped: no-scope-set` on the
+rotation path. Recovery is the one-command `parachute auth rotate-operator`.
+Risk surface bounded — pre-#213 tokens age out by ~2026-08-07 via the 90-day
+default TTL.
+
 ## [0.5.9-rc.9] - 2026-05-16
 
 Pre-stable auth hygiene bundle (closes #216, #224, #236).
