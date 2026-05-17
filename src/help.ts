@@ -348,8 +348,9 @@ What it does:
   Re-running on an up-to-date install is a fast no-op.
 
 Examples:
-  parachute upgrade                 sweep every installed service
+  parachute upgrade                 sweep hub + every installed service
   parachute upgrade vault           just vault
+  parachute upgrade hub             upgrade the dispatcher itself (closes #251)
   parachute upgrade vault --tag rc  pin the rc dist-tag (npm path only)
 `;
 }

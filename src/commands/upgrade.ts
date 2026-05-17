@@ -38,6 +38,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR, SERVICES_MANIFEST_PATH } from "../config.ts";
+import { HUB_PACKAGE, HUB_SVC } from "../hub-control.ts";
 import { ModuleManifestError } from "../module-manifest.ts";
 import {
   type ServiceSpec,
@@ -149,16 +150,38 @@ function resolve(opts: UpgradeOpts): Resolved {
   };
 }
 
+/**
+ * Synthetic services.json row for the hub. The hub isn't in services.json
+ * (it's an implementation detail of `parachute expose`, not a user-facing
+ * service), so callers passing `hub` as the upgrade target need a fabricated
+ * `ResolvedTarget`. Only `installDir` is read downstream — left undefined so
+ * `findGlobalInstall("@openparachute/hub")` is the sole locate path, which
+ * works the same for npm installs and `bun link` checkouts.
+ */
+function hubTarget(): ResolvedTarget {
+  const entry: ServiceEntry = {
+    name: HUB_PACKAGE,
+    port: 0,
+    paths: [],
+    health: "",
+    version: "",
+  };
+  return { short: HUB_SVC, entry, spec: undefined, packageName: HUB_PACKAGE };
+}
+
 async function resolveTargets(
   svc: string | undefined,
   manifestPath: string,
 ): Promise<{ targets: ResolvedTarget[] } | { error: string }> {
   const manifest = readManifest(manifestPath);
-  if (manifest.services.length === 0) {
-    return { error: "No services installed yet. Try: parachute install <service>" };
-  }
 
   if (svc !== undefined) {
+    if (svc === HUB_SVC) return { targets: [hubTarget()] };
+
+    if (manifest.services.length === 0) {
+      return { error: "No services installed yet. Try: parachute install <service>" };
+    }
+
     const firstPartySpec = getSpec(svc);
     if (firstPartySpec) {
       const entry = manifest.services.find((s) => s.name === firstPartySpec.manifestName);
@@ -183,10 +206,15 @@ async function resolveTargets(
         throw err;
       }
     }
-    return { error: `unknown service "${svc}". known: ${knownServices().join(", ")}` };
+    return {
+      error: `unknown service "${svc}". known: ${[HUB_SVC, ...knownServices()].join(", ")}`,
+    };
   }
 
-  const targets: ResolvedTarget[] = [];
+  // Sweep mode: hub first, then everything in services.json. Hub-first means a
+  // dispatcher upgrade can't be undermined mid-sweep by a service upgrade that
+  // restarts hub for reasons unrelated to its own code change.
+  const targets: ResolvedTarget[] = [hubTarget()];
   for (const entry of manifest.services) {
     const short = shortNameForManifest(entry.name);
     if (short) {
@@ -209,7 +237,6 @@ async function resolveTargets(
       }
     }
   }
-  if (targets.length === 0) return { error: "No upgradeable services in services.json." };
   return { targets };
 }
 

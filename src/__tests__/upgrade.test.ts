@@ -85,12 +85,12 @@ function seedVault(manifestPath: string, installDir: string, version = "0.4.0"):
 }
 
 describe("parachute upgrade", () => {
-  test("errors cleanly when no services installed", async () => {
+  test("errors cleanly when targeting a service that's not installed", async () => {
     const h = makeHarness();
     try {
       const logs: string[] = [];
       const m = makeRunner();
-      const code = await upgrade(undefined, {
+      const code = await upgrade("vault", {
         manifestPath: h.manifestPath,
         configDir: h.configDir,
         runner: m.runner,
@@ -105,7 +105,7 @@ describe("parachute upgrade", () => {
     }
   });
 
-  test("errors cleanly on unknown service", async () => {
+  test("errors cleanly on unknown service, lists hub in the known set", async () => {
     const h = makeHarness();
     try {
       seedVault(h.manifestPath, join(h.installRoot, "vault"));
@@ -120,7 +120,9 @@ describe("parachute upgrade", () => {
         log: (l) => logs.push(l),
       });
       expect(code).toBe(1);
-      expect(logs.join("\n")).toMatch(/unknown service/);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/unknown service/);
+      expect(joined).toMatch(/\bhub\b/);
     } finally {
       h.cleanup();
     }
@@ -472,11 +474,249 @@ describe("parachute upgrade", () => {
     }
   });
 
+  test("hub as target: npm-installed path runs bun add -g @openparachute/hub@<tag> + restart", async () => {
+    const h = makeHarness();
+    try {
+      // Hub is not in services.json — it's an internal service. The upgrade
+      // command must still accept `hub` as a target, locate its global install,
+      // run `bun add -g @openparachute/hub@latest`, and restart.
+      const hubInstallDir = join(h.installRoot, "hub");
+      writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.8" });
+
+      const seenCmd: string[][] = [];
+      const runner: UpgradeRunner = {
+        async run(cmd) {
+          seenCmd.push([...cmd]);
+          if (cmd[0] === "bun" && cmd[1] === "add" && cmd[2] === "-g") {
+            writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.9" });
+          }
+          return 0;
+        },
+        async capture(cmd) {
+          // Not a git checkout — drives the npm-install branch.
+          if (cmd[1] === "rev-parse" && cmd[2] === "--is-inside-work-tree") {
+            return { code: 128, stdout: "fatal: not a git repository\n" };
+          }
+          return { code: 0, stdout: "" };
+        },
+      };
+
+      let restartedShort: string | undefined;
+      const logs: string[] = [];
+      const code = await upgrade("hub", {
+        manifestPath: h.manifestPath,
+        configDir: h.configDir,
+        runner,
+        findGlobalInstall: (pkg) =>
+          pkg === "@openparachute/hub" ? join(hubInstallDir, "package.json") : null,
+        restartFn: async (svc) => {
+          restartedShort = svc;
+          return 0;
+        },
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(restartedShort).toBe("hub");
+      const addCall = seenCmd.find((c) => c[0] === "bun" && c[1] === "add");
+      expect(addCall).toEqual(["bun", "add", "-g", "@openparachute/hub@latest"]);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/hub: npm-installed/);
+      expect(joined).toMatch(/0\.5\.8 → 0\.5\.9/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("hub as target works even with empty services.json (closes #251)", async () => {
+    // The dispatcher must be able to self-upgrade on a brand-new install where
+    // services.json doesn't exist yet — that's the worst-case bootstrap path
+    // and was the failure mode in #251.
+    const h = makeHarness();
+    try {
+      const hubInstallDir = join(h.installRoot, "hub");
+      writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.8" });
+
+      const runner: UpgradeRunner = {
+        async run(cmd) {
+          if (cmd[0] === "bun" && cmd[1] === "add" && cmd[2] === "-g") {
+            writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.9" });
+          }
+          return 0;
+        },
+        async capture(cmd) {
+          if (cmd[1] === "rev-parse" && cmd[2] === "--is-inside-work-tree") {
+            return { code: 128, stdout: "" };
+          }
+          return { code: 0, stdout: "" };
+        },
+      };
+
+      let restartedShort: string | undefined;
+      const code = await upgrade("hub", {
+        manifestPath: h.manifestPath, // file doesn't exist
+        configDir: h.configDir,
+        runner,
+        findGlobalInstall: (pkg) =>
+          pkg === "@openparachute/hub" ? join(hubInstallDir, "package.json") : null,
+        restartFn: async (svc) => {
+          restartedShort = svc;
+          return 0;
+        },
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      expect(restartedShort).toBe("hub");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("hub as target: bun-linked checkout follows the linked path", async () => {
+    const h = makeHarness();
+    try {
+      const checkoutDir = join(h.installRoot, "parachute-hub-checkout");
+      writePackageJson(checkoutDir, { name: "@openparachute/hub", version: "0.5.9-rc.7" });
+
+      let headCalls = 0;
+      const runner: UpgradeRunner = {
+        async run(cmd) {
+          if (cmd[0] === "git" && cmd[1] === "pull") return 0;
+          return 0;
+        },
+        async capture(cmd) {
+          if (cmd[1] === "rev-parse" && cmd[2] === "--is-inside-work-tree") {
+            return { code: 0, stdout: "true" };
+          }
+          if (cmd[1] === "status") return { code: 0, stdout: "" };
+          if (cmd[1] === "rev-parse" && cmd[2] === "HEAD") {
+            headCalls++;
+            return { code: 0, stdout: headCalls === 1 ? "old" : "new" };
+          }
+          if (cmd[1] === "diff") return { code: 0, stdout: "src/foo.ts" };
+          return { code: 0, stdout: "" };
+        },
+      };
+
+      let restartedShort: string | undefined;
+      const logs: string[] = [];
+      const code = await upgrade("hub", {
+        manifestPath: h.manifestPath,
+        configDir: h.configDir,
+        runner,
+        findGlobalInstall: (pkg) =>
+          pkg === "@openparachute/hub" ? join(checkoutDir, "package.json") : null,
+        restartFn: async (svc) => {
+          restartedShort = svc;
+          return 0;
+        },
+        log: (l) => logs.push(l),
+      });
+      expect(code).toBe(0);
+      expect(restartedShort).toBe("hub");
+      expect(logs.join("\n")).toMatch(/hub: bun-linked checkout/);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("hub as target: --tag is forwarded to bun add -g for the hub package", async () => {
+    const h = makeHarness();
+    try {
+      const hubInstallDir = join(h.installRoot, "hub");
+      writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.8" });
+
+      const seenCmd: string[][] = [];
+      const runner: UpgradeRunner = {
+        async run(cmd) {
+          seenCmd.push([...cmd]);
+          return 0;
+        },
+        async capture(cmd) {
+          if (cmd[1] === "rev-parse" && cmd[2] === "--is-inside-work-tree") {
+            return { code: 128, stdout: "" };
+          }
+          return { code: 0, stdout: "" };
+        },
+      };
+
+      await upgrade("hub", {
+        manifestPath: h.manifestPath,
+        configDir: h.configDir,
+        runner,
+        findGlobalInstall: (pkg) =>
+          pkg === "@openparachute/hub" ? join(hubInstallDir, "package.json") : null,
+        restartFn: async () => 0,
+        tag: "rc",
+        log: () => {},
+      });
+      const addCall = seenCmd.find((c) => c[0] === "bun" && c[1] === "add");
+      expect(addCall).toEqual(["bun", "add", "-g", "@openparachute/hub@rc"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("sweep includes hub: hub upgraded alongside services.json entries", async () => {
+    const h = makeHarness();
+    try {
+      const hubInstallDir = join(h.installRoot, "hub");
+      const vaultDir = join(h.installRoot, "vault");
+      writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.8" });
+      writePackageJson(vaultDir, { name: "@openparachute/vault", version: "0.4.0" });
+      seedVault(h.manifestPath, vaultDir);
+
+      const runner: UpgradeRunner = {
+        async run(cmd) {
+          if (cmd[0] === "bun" && cmd[1] === "add" && cmd[2] === "-g") {
+            const pkg = cmd[3] ?? "";
+            if (pkg.startsWith("@openparachute/hub")) {
+              writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.9" });
+            }
+            if (pkg.startsWith("@openparachute/vault")) {
+              writePackageJson(vaultDir, { name: "@openparachute/vault", version: "0.5.0" });
+            }
+          }
+          return 0;
+        },
+        async capture(cmd) {
+          if (cmd[1] === "rev-parse" && cmd[2] === "--is-inside-work-tree") {
+            return { code: 128, stdout: "" };
+          }
+          return { code: 0, stdout: "" };
+        },
+      };
+
+      const restartCalls: string[] = [];
+      const code = await upgrade(undefined, {
+        manifestPath: h.manifestPath,
+        configDir: h.configDir,
+        runner,
+        findGlobalInstall: (pkg) => {
+          if (pkg === "@openparachute/hub") return join(hubInstallDir, "package.json");
+          if (pkg === "@openparachute/vault") return join(vaultDir, "package.json");
+          return null;
+        },
+        restartFn: async (svc) => {
+          restartCalls.push(svc);
+          return 0;
+        },
+        log: () => {},
+      });
+      expect(code).toBe(0);
+      // Hub goes first so its dispatcher upgrade isn't preempted.
+      expect(restartCalls).toEqual(["hub", "vault"]);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test("sweep (no svc): partial failure — later targets still run; first failure code wins", async () => {
     const h = makeHarness();
     try {
+      const hubInstallDir = join(h.installRoot, "hub");
       const vaultDir = join(h.installRoot, "vault");
       const notesDir = join(h.installRoot, "notes");
+      writePackageJson(hubInstallDir, { name: "@openparachute/hub", version: "0.5.8" });
       writePackageJson(vaultDir, { name: "@openparachute/vault", version: "0.4.0" });
       writePackageJson(notesDir, { name: "@openparachute/notes", version: "0.0.1" });
       seedVault(h.manifestPath, vaultDir);
@@ -492,6 +732,7 @@ describe("parachute upgrade", () => {
         h.manifestPath,
       );
 
+      // hub is npm-installed and succeeds (no version bump → skip restart).
       // vault is npm-installed (no git); bun add -g fails with 7
       // notes is npm-installed and succeeds with version bump
       const runner: UpgradeRunner = {
@@ -521,6 +762,7 @@ describe("parachute upgrade", () => {
         configDir: h.configDir,
         runner,
         findGlobalInstall: (pkg) => {
+          if (pkg === "@openparachute/hub") return join(hubInstallDir, "package.json");
           if (pkg === "@openparachute/vault") return join(vaultDir, "package.json");
           if (pkg === "@openparachute/notes") return join(notesDir, "package.json");
           return null;
@@ -532,6 +774,7 @@ describe("parachute upgrade", () => {
         log: (l) => logs.push(l),
       });
       expect(code).toBe(7);
+      // Hub skipped restart (version unchanged), notes restarted after version bump.
       expect(restartCalls).toEqual(["notes"]);
       expect(logs.join("\n")).toMatch(/vault: bun add -g failed \(exit 7\)/);
     } finally {
