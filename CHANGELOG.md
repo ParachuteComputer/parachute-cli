@@ -2,6 +2,22 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.9-rc.7] - 2026-05-16
+
+`parachute upgrade hub` now works — the dispatcher can self-upgrade (closes #251). Before this PR, `parachute upgrade hub` failed with `unknown service "hub". known: vault, notes, scribe, channel` because `resolveTargets` only consulted `FIRST_PARTY_FALLBACKS`, which deliberately excludes hub itself (hub isn't a fallback-registry entry — it's the dispatcher, and `FIRST_PARTY_FALLBACKS` is a transitional vendored-manifest fallback for committed-core modules per the workspace governance note). Users on a pre-0.5 install had no path back to current via the same dispatcher they already had; they had to `bun add -g @openparachute/hub@latest` by hand.
+
+**Fix.** Special-case `hub` in `src/commands/upgrade.ts` `resolveTargets`:
+
+- `parachute upgrade hub` synthesizes a `ResolvedTarget` keyed by the new `HUB_PACKAGE` constant (`@openparachute/hub`) exported from `hub-control.ts`. No services.json row is required (hub isn't in services.json); `findGlobalInstall("@openparachute/hub")` is the sole locate path and works the same for npm-installed and `bun link` checkouts.
+- The sweep path (`parachute upgrade` with no arg) now upgrades hub first, then every services.json entry. Hub-first ordering avoids a downstream service restart racing the dispatcher swap mid-sweep. The empty-manifest path no longer errors — hub is always upgradeable, even on a fresh install where no other services exist.
+- `unknown service` error message includes `hub` in the known list so the help is consistent with `parachute logs` (which has always accepted `hub`).
+
+**Restart.** Reuses the existing `lifecycle.restart(HUB_SVC, …)` path, which routes through `startHubSvc` / `stopHubSvc` (the hub's own lifecycle seams via `ensureHubRunning` / `stopHub`). No new restart code; the CLI process running the upgrade is separate from the daemon being upgraded, so killing+respawning the daemon doesn't kill the in-flight upgrade flow.
+
+**Help text.** `parachute upgrade --help` mentions hub explicitly + notes the closed issue.
+
+Gate: `bun test ./src` 1284 pass / 1 fail (same pre-existing `status > all-healthy returns 0` env flake — reproduces on rc.6 with no diff applied) / 30302 expects across 70 files. +5 tests over rc.6 (hub-as-target npm path, empty-manifest hub upgrade, hub-as-target bun-linked path, hub --tag forwarding, sweep-includes-hub ordering; existing partial-failure sweep test updated to seed hub). typecheck clean. biome clean.
+
 ## [0.5.9-rc.6] - 2026-05-12
 
 `/oauth/authorize`'s approve-pending UI (the page operators see when a DCR-registered client lands on the authorize endpoint before being approved) now surfaces the **vault hint** from the authorize URL (closes #244). Notes' VaultPopover (notes#115) passes `vault=<name>` on `/oauth/authorize` when kicking the OAuth flow for a specific vault; before this PR hub silently ignored it in the rendered page. On a multi-vault hub (4 vaults: boulder, default, gitcoin, techne) the operator had no way to tell which vault they were approving for. Single-vault hubs unaffected — the row omits when the hint is absent.

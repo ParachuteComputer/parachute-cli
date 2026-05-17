@@ -27,6 +27,7 @@ import { WELL_KNOWN_DIR } from "./well-known.ts";
  */
 
 export const HUB_SVC = "hub";
+export const HUB_PACKAGE = "@openparachute/hub";
 export const HUB_DEFAULT_PORT = 1939;
 /**
  * Default fallback range is 1 — the hub binds 1939 or fails. Walking up would
