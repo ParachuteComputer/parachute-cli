@@ -89,4 +89,9 @@ EXPOSE 1939
 USER bun
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["bun", "src/hub-server.ts"]
+# `parachute serve` is the container-shape entrypoint: foreground hub, env-
+# driven config, env-driven first-boot admin seed. The bare
+# `bun src/hub-server.ts` path also works (and supports env via parseArgs)
+# but skips the seedInitialAdminIfNeeded step, so the container would never
+# auto-create the admin from PARACHUTE_INITIAL_ADMIN_*.
+CMD ["bun", "src/cli.ts", "serve"]

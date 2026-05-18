@@ -602,16 +602,17 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       // `serve` returns once Bun.serve is bound; the listener keeps the
-      // event loop alive until SIGINT/SIGTERM, at which point the
-      // container supervisor reaps us.
-      await serve();
-      // Park the event loop indefinitely — Bun.serve's reference keeps the
-      // process alive but the await above resolves immediately. Return
-      // wrapped in a Promise that only settles on signal.
+      // event loop alive until SIGINT/SIGTERM, at which point we stop the
+      // server cleanly and exit. Container supervisor (tini, Render, Docker)
+      // reaps us once the event loop drains.
+      const { stop: stopServer } = await serve();
       await new Promise<void>((resolve) => {
-        const stop = () => resolve();
-        process.on("SIGINT", stop);
-        process.on("SIGTERM", stop);
+        const handler = () => {
+          stopServer();
+          resolve();
+        };
+        process.on("SIGINT", handler);
+        process.on("SIGTERM", handler);
       });
       return 0;
     }
