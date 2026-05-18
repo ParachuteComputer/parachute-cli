@@ -103,7 +103,12 @@ import { handleApiTokens } from "./api-tokens.ts";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
 import { ensureCsrfToken } from "./csrf.ts";
 import { readExposeState } from "./expose-state.ts";
-import { HUB_SVC, clearHubPort, writeHubPort } from "./hub-control.ts";
+import {
+  HUB_DEFAULT_PORT,
+  HUB_SVC,
+  clearHubPort,
+  writeHubPort,
+} from "./hub-control.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
 import { type RenderHubOpts, renderHub } from "./hub.ts";
 import { pemToJwk } from "./jwks.ts";
@@ -130,18 +135,38 @@ import {
 import { type ServiceEntry, readManifest } from "./services-manifest.ts";
 import { findActiveSession } from "./sessions.ts";
 import { getAllPublicKeys } from "./signing-keys.ts";
-import { getUserById } from "./users.ts";
-import { buildWellKnown, isVaultEntry, vaultInstanceNameFor } from "./well-known.ts";
+import { getUserById, userCount } from "./users.ts";
+import pkg from "../package.json" with { type: "json" };
+import {
+  WELL_KNOWN_DIR,
+  buildWellKnown,
+  isVaultEntry,
+  vaultInstanceNameFor,
+} from "./well-known.ts";
 
 interface Args {
   port: number;
+  hostname: string;
   wellKnownDir: string;
   dbPath: string;
   issuer: string | undefined;
 }
 
-function parseArgs(argv: string[]): Args {
+/**
+ * Parse hub-server flags. Container hosts (Render, Docker) configure us
+ * entirely via env vars — no flags. The `parachute expose` spawn path passes
+ * everything as flags. Flags beat env, env beats defaults.
+ *
+ *   PORT                       — bind port (Render injects this)
+ *   PARACHUTE_BIND_HOST        — bind hostname; default 127.0.0.1 to keep
+ *                                the historical loopback posture safe.
+ *                                Containers should set 0.0.0.0.
+ *   PARACHUTE_HUB_ORIGIN       — canonical https://… origin used as the
+ *                                OAuth issuer claim.
+ */
+function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env): Args {
   let port: number | undefined;
+  let hostname: string | undefined;
   let wellKnownDir: string | undefined;
   let dbPath: string | undefined;
   let issuer: string | undefined;
@@ -150,11 +175,11 @@ function parseArgs(argv: string[]): Args {
     if (a === "--port") {
       const v = argv[++i];
       if (!v) throw new Error("--port requires a value");
-      const n = Number.parseInt(v, 10);
-      if (!Number.isInteger(n) || n <= 0 || n > 65535) {
-        throw new Error(`--port must be 1..65535, got "${v}"`);
-      }
-      port = n;
+      port = parsePort(v);
+    } else if (a === "--hostname") {
+      const v = argv[++i];
+      if (!v) throw new Error("--hostname requires a value");
+      hostname = v;
     } else if (a === "--well-known-dir") {
       const v = argv[++i];
       if (!v) throw new Error("--well-known-dir requires a value");
@@ -171,9 +196,22 @@ function parseArgs(argv: string[]): Args {
       throw new Error(`unknown argument: ${a}`);
     }
   }
-  if (port === undefined) throw new Error("--port is required");
-  if (wellKnownDir === undefined) throw new Error("--well-known-dir is required");
-  return { port, wellKnownDir, dbPath: dbPath ?? hubDbPath(), issuer };
+  if (port === undefined && env.PORT) port = parsePort(env.PORT);
+  if (port === undefined) port = HUB_DEFAULT_PORT;
+  if (hostname === undefined) hostname = env.PARACHUTE_BIND_HOST || "127.0.0.1";
+  if (wellKnownDir === undefined) wellKnownDir = WELL_KNOWN_DIR;
+  if (issuer === undefined && env.PARACHUTE_HUB_ORIGIN) {
+    issuer = env.PARACHUTE_HUB_ORIGIN.replace(/\/+$/, "");
+  }
+  return { port, hostname, wellKnownDir, dbPath: dbPath ?? hubDbPath(), issuer };
+}
+
+function parsePort(v: string): number {
+  const n = Number.parseInt(v, 10);
+  if (!Number.isInteger(n) || n <= 0 || n > 65535) {
+    throw new Error(`port must be 1..65535, got "${v}"`);
+  }
+  return n;
 }
 
 /**
@@ -780,6 +818,16 @@ export function hubFetch(
     const url = new URL(req.url);
     const pathname = url.pathname;
 
+    // Liveness probe. First so a wedged DB or busted services.json can't
+    // make Render restart the container — health is process-level, not
+    // app-state. JSON payload is small enough to keep the response cheap
+    // under k8s/Render's tight probe budgets.
+    if (pathname === "/health") {
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     // 301 back-compat for the pre-hub#231 admin-SPA mounts:
     //
     //   `/vault`            → `/admin/vaults`
@@ -1237,7 +1285,7 @@ export function hubFetch(
 }
 
 if (import.meta.main) {
-  const { port, wellKnownDir, dbPath, issuer } = parseArgs(process.argv.slice(2));
+  const { port, hostname, wellKnownDir, dbPath, issuer } = parseArgs(process.argv.slice(2));
   let cachedDb: Database | undefined;
   const getDb = () => {
     if (!cachedDb) cachedDb = openHubDb(dbPath);
@@ -1245,7 +1293,7 @@ if (import.meta.main) {
   };
   Bun.serve({
     port,
-    hostname: "127.0.0.1",
+    hostname,
     fetch: hubFetch(wellKnownDir, { getDb, issuer, loopbackPort: port }),
   });
   // Register PID + port from the running hub itself so any startup path
@@ -1269,7 +1317,7 @@ if (import.meta.main) {
   });
   process.on("exit", cleanup);
   console.log(
-    `parachute-hub listening on http://127.0.0.1:${port} (dir=${wellKnownDir}, db=${dbPath}${
+    `parachute-hub listening on http://${hostname}:${port} (dir=${wellKnownDir}, db=${dbPath}${
       issuer ? `, issuer=${issuer}` : ""
     })`,
   );
