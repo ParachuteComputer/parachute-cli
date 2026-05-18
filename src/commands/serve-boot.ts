@@ -96,7 +96,12 @@ export async function bootSupervisedModules(
     const env: Record<string, string> = { ...fileEnv };
     if (opts.hubOrigin) env[HUB_ORIGIN_ENV] = opts.hubOrigin;
 
-    const req: { short: string; cmd: readonly string[]; cwd?: string; env?: Record<string, string> } = {
+    const req: {
+      short: string;
+      cmd: readonly string[];
+      cwd?: string;
+      env?: Record<string, string>;
+    } = {
       short,
       cmd,
     };
@@ -114,10 +119,7 @@ export async function bootSupervisedModules(
   return results;
 }
 
-async function resolveSpec(
-  short: string,
-  entry: ServiceEntry,
-): Promise<ServiceSpec | undefined> {
+async function resolveSpec(short: string, entry: ServiceEntry): Promise<ServiceSpec | undefined> {
   const firstParty = getSpec(short);
   if (firstParty) return firstParty;
   if (!entry.installDir) return undefined;

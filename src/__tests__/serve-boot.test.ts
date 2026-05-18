@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootSupervisedModules } from "../commands/serve-boot.ts";
 import { type ServiceEntry, writeManifest } from "../services-manifest.ts";
-import {
-  type SpawnRequest,
-  Supervisor,
-  type SupervisedProc,
-} from "../supervisor.ts";
+import { type SpawnRequest, type SupervisedProc, Supervisor } from "../supervisor.ts";
 
 interface Harness {
   dir: string;
@@ -150,10 +146,7 @@ describe("bootSupervisedModules", () => {
   test("hubOrigin wins over a stale .env entry on collision", async () => {
     writeManifest({ services: [VAULT_ENTRY] }, h.manifestPath);
     mkdirSync(join(h.dir, "vault"), { recursive: true });
-    writeFileSync(
-      join(h.dir, "vault", ".env"),
-      "PARACHUTE_HUB_ORIGIN=http://stale.local\n",
-    );
+    writeFileSync(join(h.dir, "vault", ".env"), "PARACHUTE_HUB_ORIGIN=http://stale.local\n");
 
     const recorder = makeRecorder();
     const sup = new Supervisor({ spawnFn: recorder.spawn });
