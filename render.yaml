@@ -20,6 +20,8 @@ services:
   - type: web
     name: parachute-hub
     runtime: docker
+    # Starter plan ($7/mo) required: persistent disks are NOT available on Render's free tier.
+    # Render auto-resizes plans online if you need to upgrade later.
     plan: starter
     # Health check at /health — implemented at the very top of hub's
     # request dispatch so a wedged DB or busted services.json can't
@@ -59,6 +61,10 @@ services:
       #
       # `sync: false` because each operator's Render deploy has a
       # different hostname; the dashboard prompts on first deploy.
+      #
+      # Leave blank to derive the OAuth issuer claim from request origin on first boot.
+      # Set this to your custom domain BEFORE issuing OAuth tokens to clients — tokens minted
+      # with one issuer claim won't validate against another.
       - key: PARACHUTE_HUB_ORIGIN
         sync: false
 

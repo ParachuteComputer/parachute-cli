@@ -607,8 +607,8 @@ async function main(argv: string[]): Promise<number> {
       // reaps us once the event loop drains.
       const { stop: stopServer } = await serve();
       await new Promise<void>((resolve) => {
-        const handler = () => {
-          stopServer();
+        const handler = async () => {
+          await stopServer();
           resolve();
         };
         process.on("SIGINT", handler);

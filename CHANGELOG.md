@@ -2,6 +2,29 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.10-rc.2] - 2026-05-18
+
+Reviewer nits folded — render.yaml comments + DB close on stop + CONFIG_DIR note.
+
+- **`render.yaml`** — comment the `plan: starter` line (persistent disks
+  aren't on Render's free tier; Render auto-resizes online if you want to
+  upgrade later). Also comment the `PARACHUTE_HUB_ORIGIN` env entry with
+  the issuer-claim caveat (leave blank to derive from request origin on
+  first boot; set BEFORE issuing OAuth tokens — tokens minted with one
+  issuer claim won't validate against another).
+- **`src/commands/serve.ts`** — `stop()` now closes the hub DB handle in
+  addition to stopping the Bun server, so test harnesses don't leak the
+  underlying SQLite handle across runs. Return type widened to
+  `() => Promise<void>`; `src/cli.ts` SIGINT/SIGTERM handler awaits it.
+- **`src/commands/serve.ts`** — added a note above the `CONFIG_DIR` /
+  `WELL_KNOWN_DIR` imports documenting that they're evaluated at
+  module-load time from `process.env.PARACHUTE_HOME`; the `env` seam on
+  `serve()` cannot reroute them. Tests should set `PARACHUTE_HOME`
+  before importing for path isolation.
+
+Gate: `bun test ./src` 1307 pass / 1 fail (same pre-existing
+`status > all-healthy returns 0` env flake). typecheck clean. biome clean.
+
 ## [0.5.10-rc.1] - 2026-05-18
 
 Render self-host foundation (closes #258). Three sub-changes ship together so

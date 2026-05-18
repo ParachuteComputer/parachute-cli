@@ -26,6 +26,8 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+// NOTE: CONFIG_DIR/WELL_KNOWN_DIR are evaluated at import time from process.env.PARACHUTE_HOME.
+// The `env` parameter on `serve()` cannot reroute them — set PARACHUTE_HOME before importing for path isolation.
 import { CONFIG_DIR } from "../config.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
 import { hubFetch } from "../hub-server.ts";
@@ -100,7 +102,7 @@ export async function seedInitialAdminIfNeeded(
  */
 export async function serve(opts: ServeOpts = {}): Promise<{
   result: ServeResult;
-  stop: () => void;
+  stop: () => Promise<void>;
 }> {
   const env = opts.env ?? process.env;
   const log = opts.log ?? ((line) => console.log(line));
@@ -147,6 +149,9 @@ export async function serve(opts: ServeOpts = {}): Promise<{
 
   return {
     result: { port, ...(issuer !== undefined ? { issuer } : {}), adminBootstrap },
-    stop: () => server.stop(),
+    stop: async () => {
+      await server.stop();
+      db.close();
+    },
   };
 }
