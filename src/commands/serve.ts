@@ -28,8 +28,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../config.ts";
 import { hubDbPath, openHubDb } from "../hub-db.ts";
-import { writeHubFile } from "../hub.ts";
 import { hubFetch } from "../hub-server.ts";
+import { writeHubFile } from "../hub.ts";
 import { createUser, userCount } from "../users.ts";
 import { WELL_KNOWN_DIR } from "../well-known.ts";
 
@@ -108,6 +108,10 @@ export async function serve(opts: ServeOpts = {}): Promise<{
   const envPort = parsePort(env.PORT);
   const port = opts.port ?? envPort ?? DEFAULT_PORT;
   const issuer = (opts.issuer ?? env.PARACHUTE_HUB_ORIGIN)?.replace(/\/+$/, "") || undefined;
+  // Containers default to 0.0.0.0 so the platform's HTTP forwarder can
+  // reach us; the `--hostname` flag / PARACHUTE_BIND_HOST is the escape
+  // hatch for setups that want loopback-only inside a sidecar.
+  const hostname = env.PARACHUTE_BIND_HOST || "0.0.0.0";
 
   // Ensure the well-known dir exists, and seed a static hub.html so `/`
   // serves something coherent on a fresh disk (the dynamic path through
@@ -129,11 +133,7 @@ export async function serve(opts: ServeOpts = {}): Promise<{
 
   const server = Bun.serve({
     port,
-    // Cloud hosts (Render, Fly, anything behind a public HTTP forwarder)
-    // need the listener bound to all interfaces. The on-box `parachute
-    // expose` flow that binds 127.0.0.1 is a separate entrypoint
-    // (hub-server.ts's `import.meta.main` path) and stays loopback-only.
-    hostname: "0.0.0.0",
+    hostname,
     fetch: hubFetch(WELL_KNOWN_DIR, {
       getDb: () => db,
       issuer,
@@ -142,7 +142,7 @@ export async function serve(opts: ServeOpts = {}): Promise<{
   });
 
   log(
-    `parachute serve: listening on http://0.0.0.0:${port} (PARACHUTE_HOME=${CONFIG_DIR}, db=${dbPath}, issuer=${issuer ?? "<request-origin>"}, admin=${adminBootstrap})`,
+    `parachute serve: listening on http://${hostname}:${port} (PARACHUTE_HOME=${CONFIG_DIR}, db=${dbPath}, issuer=${issuer ?? "<request-origin>"}, admin=${adminBootstrap})`,
   );
 
   return {

@@ -42,8 +42,8 @@ describe("seedInitialAdminIfNeeded", () => {
     // The log line carries the username so operators can grep container
     // logs to verify the seed fired.
     expect(log).toHaveBeenCalledTimes(1);
-    expect((log.mock.calls[0]?.[0] ?? "")).toContain("seeded initial admin");
-    expect((log.mock.calls[0]?.[0] ?? "")).toContain("ops");
+    expect(log.mock.calls[0]?.[0] ?? "").toContain("seeded initial admin");
+    expect(log.mock.calls[0]?.[0] ?? "").toContain("ops");
   });
 
   test("returns 'exists' when an admin already exists, even with env vars set", async () => {

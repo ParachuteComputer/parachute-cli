@@ -85,6 +85,7 @@ import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import pkg from "../package.json" with { type: "json" };
 import { handleApproveClient, handleGetClient } from "./admin-clients.ts";
 import { handleListGrants, handleRevokeGrant } from "./admin-grants.ts";
 import {
@@ -103,12 +104,7 @@ import { handleApiTokens } from "./api-tokens.ts";
 import { SERVICES_MANIFEST_PATH } from "./config.ts";
 import { ensureCsrfToken } from "./csrf.ts";
 import { readExposeState } from "./expose-state.ts";
-import {
-  HUB_DEFAULT_PORT,
-  HUB_SVC,
-  clearHubPort,
-  writeHubPort,
-} from "./hub-control.ts";
+import { HUB_DEFAULT_PORT, HUB_SVC, clearHubPort, writeHubPort } from "./hub-control.ts";
 import { hubDbPath, openHubDb } from "./hub-db.ts";
 import { type RenderHubOpts, renderHub } from "./hub.ts";
 import { pemToJwk } from "./jwks.ts";
@@ -136,7 +132,6 @@ import { type ServiceEntry, readManifest } from "./services-manifest.ts";
 import { findActiveSession } from "./sessions.ts";
 import { getAllPublicKeys } from "./signing-keys.ts";
 import { getUserById, userCount } from "./users.ts";
-import pkg from "../package.json" with { type: "json" };
 import {
   WELL_KNOWN_DIR,
   buildWellKnown,
@@ -763,6 +758,93 @@ async function serveSpa(spaDistDir: string, pathname: string, mount: SpaMount): 
   });
 }
 
+/**
+ * Routes that fall through the pre-admin lockout (503 → /admin/setup).
+ *
+ * Gated (operator-facing) when no admin row exists:
+ *   - `/admin/*` (except `/admin/setup`) — vault admin, permissions, tokens
+ *   - `/api/*`                            — host-admin API surface
+ *   - `/login`, `/logout`                 — pointless without an account
+ *
+ * Open through the gate (so the container is reachable and discoverable
+ * the moment it boots, even before an admin is seeded):
+ *   - `/health`                           — platform liveness check
+ *   - `/.well-known/*`                    — public discovery + JWKS
+ *   - `/admin/setup`                      — the setup placeholder itself
+ *   - `/` and `/hub.html`                 — static discovery page
+ *   - `/oauth/*`                          — third-party OAuth surface; clients
+ *                                            can register/refresh independent
+ *                                            of admin onboarding
+ *   - `/vault/*`, `/<service>/*`          — content proxies; service-level auth
+ *                                            handles its own failure modes
+ *
+ * The function is called only when an admin row is missing; in the
+ * normal-running case (any admin row exists) this gate is a no-op and the
+ * regular dispatch continues.
+ */
+function shouldGateForSetup(pathname: string): boolean {
+  if (pathname === "/login" || pathname === "/logout") return true;
+  if (pathname === "/admin/setup") return false;
+  if (pathname === "/admin" || pathname.startsWith("/admin/")) return true;
+  if (pathname.startsWith("/api/")) return true;
+  return false;
+}
+
+/**
+ * Minimal first-boot setup page. The real wizard (form + submit + admin
+ * row create) ships in hub#259. For now this is a static, single-screen
+ * HTML doc that tells the operator how to seed an admin via env vars and
+ * restart. No external assets — the body sits inline so a fresh container
+ * with no SPA bundle still serves something coherent.
+ */
+function renderSetupPlaceholder(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Parachute Hub — first-boot setup</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           max-width: 36rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.55;
+           color: #1a1a1a; background: #fafafa; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p.lede { color: #555; margin-top: 0; }
+    code, pre { background: #f0eee7; border-radius: 4px; padding: 0.1rem 0.35rem;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.95em; }
+    pre { padding: 0.75rem 1rem; overflow-x: auto; }
+    .note { background: #fff8e1; border-left: 3px solid #d4a017; padding: 0.75rem 1rem;
+            margin: 1.5rem 0; font-size: 0.92em; }
+  </style>
+</head>
+<body>
+  <h1>Parachute Hub — first-boot setup</h1>
+  <p class="lede">No admin account exists yet on this hub. Set the seed env
+  vars below and restart the container to bootstrap the first operator.</p>
+
+  <h2>Option 1 — env-var seed (recommended for containers)</h2>
+  <p>Set these on the container and restart:</p>
+  <pre>PARACHUTE_INITIAL_ADMIN_USERNAME=ops
+PARACHUTE_INITIAL_ADMIN_PASSWORD=&lt;a strong password&gt;</pre>
+  <p>On boot the hub will create the admin row, then ignore the env vars
+  on every subsequent restart — they're a first-boot seed, not a reset
+  switch. Rotate the password later via <code>parachute auth set-password</code>
+  inside the container, or via the admin UI.</p>
+
+  <h2>Option 2 — CLI from inside the container</h2>
+  <pre>docker exec -it &lt;container&gt; parachute auth set-password \\
+  --username ops --password '&lt;…&gt;'</pre>
+
+  <div class="note">
+    The full web-based setup wizard (browser form, no env vars or shell
+    needed) is tracked in <code>hub#259</code> and will replace this
+    placeholder when it ships.
+  </div>
+</body>
+</html>
+`;
+}
+
 // Canonical 503 body for "getDb is unset, hub is unconfigured." Shape matches
 // the OAuth error vocabulary used by /api/auth/* (`service_unavailable`) so a
 // consumer never has to branch on content-type to extract a message. See
@@ -817,16 +899,6 @@ export function hubFetch(
   return async (req) => {
     const url = new URL(req.url);
     const pathname = url.pathname;
-
-    // Liveness probe. First so a wedged DB or busted services.json can't
-    // make Render restart the container — health is process-level, not
-    // app-state. JSON payload is small enough to keep the response cheap
-    // under k8s/Render's tight probe budgets.
-    if (pathname === "/health") {
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
 
     // 301 back-compat for the pre-hub#231 admin-SPA mounts:
     //
@@ -896,6 +968,73 @@ export function hubFetch(
         status: 301,
         headers: { location: `/logout${url.search}` },
       });
+    }
+
+    // Platform health check (Render, Fly, Kubernetes, etc.). Plain JSON,
+    // no DB required — the route reports liveness, not readiness. Anything
+    // more invasive (DB ping, schema check) would let a transient lock turn
+    // into a restart loop on the platform side. 200 always while the
+    // process is up.
+    if (pathname === "/health") {
+      return new Response(
+        JSON.stringify({ status: "ok", service: "parachute-hub", version: pkg.version }),
+        {
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+          },
+        },
+      );
+    }
+
+    // First-boot setup placeholder. Real wizard ships in hub#259. When no
+    // admin exists, render a minimal HTML page pointing operators at the
+    // env-var seed path. When an admin already exists, 301 to /login —
+    // the route doesn't disappear after setup so a stale bookmark still
+    // lands somewhere useful.
+    if (pathname === "/admin/setup") {
+      if (getDb) {
+        const db = getDb();
+        if (userCount(db) > 0) {
+          return new Response("", {
+            status: 301,
+            headers: { location: "/login" },
+          });
+        }
+      }
+      return new Response(renderSetupPlaceholder(), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    // Pre-admin lockout. When the hub has booted with no admin row (the
+    // fresh-container case before PARACHUTE_INITIAL_ADMIN_* is set or
+    // /admin/setup is walked), every operator-facing surface that requires
+    // identity is meaningless — auth flows can't validate, the SPA can't
+    // mint a host-admin token, OAuth can't issue codes. Route those to a
+    // 503 that points at /admin/setup. Health, well-known, /admin/setup
+    // itself, and the static discovery page (/) ran above and are
+    // unaffected; OAuth + admin + api endpoints fall here.
+    //
+    // `shouldGateForSetup` runs first so non-gated paths (well-known, /,
+    // /health, /admin/setup) never touch getDb — keeping the
+    // existing OPTIONS-preflight contract that those routes are db-free.
+    if (getDb && shouldGateForSetup(pathname) && userCount(getDb()) === 0) {
+      return new Response(
+        JSON.stringify({
+          error: "setup_required",
+          error_description:
+            "no admin configured. Visit /admin/setup, or set PARACHUTE_INITIAL_ADMIN_USERNAME + PARACHUTE_INITIAL_ADMIN_PASSWORD and restart.",
+          setup_url: "/admin/setup",
+        }),
+        {
+          status: 503,
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+          },
+        },
+      );
     }
 
     if (pathname === "/" || pathname === "/hub.html") {
