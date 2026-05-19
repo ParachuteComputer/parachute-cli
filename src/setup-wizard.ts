@@ -298,13 +298,13 @@ export function renderVaultStep(props: RenderVaultStepProps): string {
   const { csrfToken, errorMessage, operation } = props;
   if (operation) return renderVaultOpStep({ operation });
   const error = errorMessage ? `<p class="error-banner">${escapeHtml(errorMessage)}</p>` : "";
-  // hub#259 / hub#263: the first vault is hard-named "default" for now.
+  // hub#259 / hub#267: the first vault is hard-named "default" for now.
   // The CLI threads `--vault-name` through `parachute-vault init`, which
   // the wizard's container-mode `runInstall` doesn't run. Wiring the
   // operator's typed name end-to-end requires either a new `init` step
   // in `runInstall` or upstream changes in @openparachute/vault so it
   // reads `PARACHUTE_VAULT_NAME` (or services.json paths) on first
-  // boot. Both are bigger than fits in this PR — tracked in hub#263.
+  // boot. Both are bigger than fits in this PR — tracked in hub#267.
   // For now: show what's actually being created, no form field, no
   // UX lie. The operator renames via the admin UI once the wizard
   // hands them off.
@@ -338,7 +338,7 @@ export function renderVaultStep(props: RenderVaultStepProps): string {
         <p class="preview-fine">
           The vault is named <code>default</code> on first boot. Custom
           names on the wizard are tracked in
-          <a href="https://github.com/ParachuteComputer/parachute-hub/issues/263">hub#263</a> —
+          <a href="https://github.com/ParachuteComputer/parachute-hub/issues/267">hub#267</a> —
           for now, rename or add vaults from the admin UI after setup.
         </p>
       </section>
@@ -609,7 +609,7 @@ export async function handleSetupVaultPost(req: Request, deps: SetupWizardDeps):
   const state = deriveWizardState(deps);
   if (state.hasVault) return redirect("/admin/setup?just_finished=1");
 
-  // The first vault is hard-named "default" for now (hub#263). The CLI
+  // The first vault is hard-named "default" for now (hub#267). The CLI
   // threads `--vault-name` through `parachute-vault init`; the wizard's
   // container-mode `runInstall` doesn't run `init` (just `bun add` +
   // seed services.json + supervisor.start), and the upstream vault

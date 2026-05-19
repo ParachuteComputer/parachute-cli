@@ -213,12 +213,12 @@ describe("handleSetupGet", () => {
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('action="/admin/setup/vault"');
-      // The vault name is hard-bound to "default" pending hub#263 — the
+      // The vault name is hard-bound to "default" pending hub#267 — the
       // form has no name input, just a submit button + a preview card
       // showing the canonical name + the follow-up issue link.
       expect(html).toContain('id="preview-vault-name">default<');
       expect(html).not.toContain('name="vault_name"');
-      expect(html).toContain("hub#263");
+      expect(html).toContain("hub#267");
     } finally {
       db.close();
     }
