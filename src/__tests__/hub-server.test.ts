@@ -979,10 +979,12 @@ describe("hubFetch routing", () => {
     }
   });
 
-  // First-boot setup placeholder (hub#258). When no admin exists the page
-  // is the bootstrap onboarding surface; once an admin exists it 301s to
-  // /login so a stale bookmark still lands somewhere useful.
-  test("/admin/setup renders placeholder HTML when no admin exists", async () => {
+  // First-boot setup wizard (hub#259, expanding hub#258's static
+  // placeholder). When no admin exists, GET /admin/setup renders the
+  // wizard's account-step form. Once admin + vault both exist, it 301s
+  // to /login so a stale bookmark still lands somewhere useful. With
+  // admin but no vault, the wizard resumes at the vault step.
+  test("/admin/setup renders the wizard's account form when no admin exists", async () => {
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
@@ -991,7 +993,8 @@ describe("hubFetch routing", () => {
         expect(res.status).toBe(200);
         expect(res.headers.get("content-type")).toContain("text/html");
         const body = await res.text();
-        expect(body).toContain("first-boot setup");
+        expect(body).toContain('action="/admin/setup/account"');
+        // Env-var seed path is still surfaced as the alt-path disclosure.
         expect(body).toContain("PARACHUTE_INITIAL_ADMIN_USERNAME");
       } finally {
         db.close();
@@ -1001,13 +1004,35 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/admin/setup 301s to /login when an admin already exists", async () => {
+  test("/admin/setup 301s to /login once admin + vault both exist (hub#259)", async () => {
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
       try {
         await createUser(db, "owner", "pw");
-        const res = await hubFetch(h.dir, { getDb: () => db })(req("/admin/setup"));
+        // Seed the vault entry so the wizard's state derives as "done"
+        // and the GET 301s. Without this the wizard would still resume
+        // at the vault step.
+        const { writeManifest } = await import("../services-manifest.ts");
+        const { join } = await import("node:path");
+        writeManifest(
+          {
+            services: [
+              {
+                name: "parachute-vault",
+                version: "0.1.0",
+                port: 1940,
+                paths: ["/vault/default"],
+                health: "/health",
+              },
+            ],
+          },
+          join(h.dir, "services.json"),
+        );
+        const res = await hubFetch(h.dir, {
+          getDb: () => db,
+          manifestPath: join(h.dir, "services.json"),
+        })(req("/admin/setup"));
         expect(res.status).toBe(301);
         expect(res.headers.get("location")).toBe("/login");
       } finally {
