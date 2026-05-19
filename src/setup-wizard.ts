@@ -39,7 +39,7 @@
 
 import type { Database } from "bun:sqlite";
 import { type OperationsRegistry, runInstall, specFor } from "./api-modules-ops.ts";
-import { CURATED_MODULES, type CuratedModuleShort } from "./api-modules.ts";
+import type { CuratedModuleShort } from "./api-modules.ts";
 import {
   CSRF_FIELD_NAME,
   ensureCsrfToken,
@@ -554,12 +554,22 @@ export async function handleSetupAccountPost(
     const cookie = buildSessionCookie(session.id, Math.floor(SESSION_TTL_MS / 1000));
     return redirect("/admin/setup", { "set-cookie": cookie });
   } catch (err) {
+    // Log the raw error server-side for the operator's debugging, but
+    // surface a fixed string to the browser — raw SQLite / argon2
+    // messages leak schema details and aren't actionable for the
+    // person filling out the form. The likely cause for a sane input
+    // is the username-taken UNIQUE collision (createUser raises
+    // UsernameTakenError); other paths (filesystem, argon2 native)
+    // are rare and the same generic message lands the operator at the
+    // right place: retry, or `parachute auth set-password` from the
+    // shell.
     const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[setup-wizard] createUser failed for "${username}": ${msg}`);
     return htmlResponse(
       renderAccountStep({
         csrfToken,
         username,
-        errorMessage: `Could not create admin: ${msg}`,
+        errorMessage: "Failed to create account. The username may already be taken.",
       }),
       400,
     );
@@ -620,11 +630,42 @@ export async function handleSetupVaultPost(req: Request, deps: SetupWizardDeps):
   // here. Form has no name field now; the operator renames via the
   // admin UI post-setup.
   const registry = deps.registry;
+  const vaultSpec = specFor(FIRST_VAULT_SHORT);
+
+  // Idempotent short-circuit: if the supervisor is already running (or
+  // mid-spawn) for vault — i.e. a previous POST already kicked off
+  // `runInstall` and beat us to spawning — return a synthesized
+  // succeeded op instead of firing a second `bun add -g`. Mirrors the
+  // pattern in `handleInstall` (api-modules-ops.ts). Without this,
+  // two concurrent POSTs both pass `state.hasVault === false` (the
+  // services.json seed is the only signal that step exits, and it's
+  // written by `runInstall` *after* `bun add` returns), and each
+  // fires its own install — wasted work and a possible race on the
+  // seed/spawn writes. Low risk on first-boot in practice, but the
+  // fix is cheap and matches the API surface's posture.
+  const supervisorState = deps.supervisor.get(FIRST_VAULT_SHORT);
+  if (
+    supervisorState?.status === "running" ||
+    supervisorState?.status === "starting" ||
+    supervisorState?.status === "restarting"
+  ) {
+    if (registry) {
+      const op = registry.create("install", FIRST_VAULT_SHORT);
+      registry.update(
+        op.id,
+        { status: "succeeded" },
+        `${FIRST_VAULT_SHORT} already supervised (status=${supervisorState.status})`,
+      );
+      return redirect(`/admin/setup?op=${encodeURIComponent(op.id)}`);
+    }
+    return redirect("/admin/setup");
+  }
+
   const op = registry
     ? registry.create("install", FIRST_VAULT_SHORT)
     : { id: cryptoRandomId(), status: "pending" as const, log: [] as string[] };
   if (registry) {
-    void runInstall(op.id, FIRST_VAULT_SHORT, specFor(FIRST_VAULT_SHORT), {
+    void runInstall(op.id, FIRST_VAULT_SHORT, vaultSpec, {
       db: deps.db,
       issuer: deps.issuer,
       manifestPath: deps.manifestPath,
@@ -636,6 +677,13 @@ export async function handleSetupVaultPost(req: Request, deps: SetupWizardDeps):
       const msg = err instanceof Error ? err.message : String(err);
       registry.update(op.id, { status: "failed", error: msg }, `install failed: ${msg}`);
     });
+  } else {
+    // No registry wired (test-only path; production always passes one).
+    // Log a visible warning so future mis-wirings are debuggable —
+    // silent swallow here would make the wizard appear to hang.
+    console.warn(
+      "[setup-wizard] handleSetupVaultPost called with no operations registry — install will NOT run. Wire deps.registry in the dispatcher.",
+    );
   }
   return redirect(`/admin/setup?op=${encodeURIComponent(op.id)}`);
 }
@@ -669,9 +717,10 @@ function validateAccountFields(input: {
  */
 function firstVaultName(manifestPath: string): string {
   const manifest = readManifest(manifestPath);
-  const entry = manifest.services.find(
-    (s) => CURATED_MODULES.includes("vault") && s.name === specFor("vault").manifestName,
-  );
+  // Match on the canonical vault manifestName from the curated spec.
+  // (`CURATED_MODULES.includes("vault")` was a dead guard — vault is a
+  // tuple-literal member, so the conjunct is always true.)
+  const entry = manifest.services.find((s) => s.name === specFor("vault").manifestName);
   if (!entry) return "default";
   // services.json entries store the mount path (e.g. `/vault/default`).
   // Strip the canonical prefix to surface the display name.
@@ -711,12 +760,16 @@ function renderBadRequestPage(title: string, message: string): string {
 }
 
 /**
- * Fallback op id when no registry is wired (CLI-mode, no supervisor) —
- * the wizard's UX still needs *something* to redirect to so the page
- * doesn't hang. The redirect's `op` query then resolves to "no op
- * found," which renders the bare step-3 form again. Production callers
- * always pass a registry; this branch is exercised only by tests that
- * deliberately omit it.
+ * Fallback op id when no registry is wired — the wizard's UX still
+ * needs *something* to redirect to so the page doesn't hang. The
+ * redirect's `op` query then resolves to "no op found," which renders
+ * the bare step-3 form again. Production callers always pass a
+ * registry (the dispatcher in `hub-server.ts` plugs in
+ * `getDefaultOperationsRegistry()`); this branch is exercised only by
+ * tests that deliberately omit it. `handleSetupVaultPost` logs a
+ * `console.warn` when it takes this branch so a real-world
+ * mis-wiring surfaces in the operator's logs instead of silently
+ * swallowing the install.
  */
 function cryptoRandomId(): string {
   return `op-${Math.random().toString(36).slice(2, 10)}`;

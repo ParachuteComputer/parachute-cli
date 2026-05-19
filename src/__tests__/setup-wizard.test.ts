@@ -653,6 +653,75 @@ describe("handleSetupVaultPost", () => {
       db.close();
     }
   });
+
+  test("idempotent — second POST while supervisor is running doesn't fire a second `bun add` (N2)", async () => {
+    // Reviewer-flagged race: two concurrent POSTs before either seeds
+    // services.json both pass `state.hasVault === false` and each fire
+    // `runInstall` → each fires `bun add -g`. The wizard mirrors the
+    // `handleInstall` guard pattern: if the supervisor already has a
+    // live (starting/running/restarting) state for vault, mark the new
+    // op succeeded synchronously and skip the second install.
+    const db = openHubDb(hubDbPath(h.dir));
+    try {
+      const user = await createUser(db, "owner", "pw");
+      const { createSession, SESSION_COOKIE_NAME: SC } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const get = handleSetupGet(req("/admin/setup"), {
+        db,
+        manifestPath: h.manifestPath,
+        configDir: h.dir,
+        issuer: "https://hub.example",
+        registry: getDefaultOperationsRegistry(),
+      });
+      const csrf = setCookie(get, CSRF_COOKIE_NAME) ?? "";
+      // Real supervisor with the never-exits spawn stub from makeSupervisor.
+      // Pre-spawn vault so `supervisor.get("vault").status === "starting"`
+      // by the time the wizard's POST runs.
+      const supervisor = makeSupervisor();
+      await supervisor.start({ short: "vault", cmd: ["bun", "noop"] });
+      const runCalls: string[][] = [];
+      const stubbedRun = async (cmd: readonly string[]) => {
+        runCalls.push([...cmd]);
+        return 0;
+      };
+      const post = await handleSetupVaultPost(
+        req("/admin/setup/vault", {
+          method: "POST",
+          body: new URLSearchParams({
+            [CSRF_FIELD_NAME]: csrf,
+          }).toString(),
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: `${CSRF_COOKIE_NAME}=${csrf}; ${SC}=${session.id}`,
+          },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          supervisor,
+          registry: getDefaultOperationsRegistry(),
+          run: stubbedRun,
+        },
+      );
+      expect(post.status).toBe(303);
+      const location = post.headers.get("location") ?? "";
+      expect(location).toMatch(/^\/admin\/setup\?op=/);
+      // Yield enough for any background runInstall promise to fire if
+      // the guard failed. Then assert: no `bun add` was invoked, and
+      // the op went straight to `succeeded` with the canonical
+      // "already supervised" log line.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(runCalls.length).toBe(0);
+      const opId = new URL(location, "http://x").searchParams.get("op") ?? "";
+      const op = getDefaultOperationsRegistry().get(opId);
+      expect(op?.status).toBe("succeeded");
+      expect(op?.log.join("\n")).toContain("already supervised");
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // --- end-to-end through hubFetch -----------------------------------------
