@@ -355,9 +355,13 @@ function renderVaultOpStep(props: {
     ? `<p class="error-banner">${escapeHtml(operation.error)}</p>`
     : "";
   // Auto-refresh every 2s until terminal. When succeeded we redirect via
-  // a tiny refresh-to-/admin/setup so the wizard re-derives state and
-  // renders step 4. When failed we leave the operator on this screen so
-  // they can read the log.
+  // a tiny refresh-to-/admin/setup?just_finished=1 so the wizard
+  // re-renders the success screen one more time (with the MCP install
+  // command + vault name) before subsequent bare GETs 301 to /login.
+  // Without the `?just_finished=1` query, the success state derives as
+  // "complete" + GET 301s, and the operator never sees the done page.
+  // When failed we leave the operator on this screen so they can read
+  // the log.
   const refresh = terminal ? undefined : 2;
   const body = `
     <div class="card">
@@ -379,7 +383,7 @@ function renderVaultOpStep(props: {
       </section>
       ${
         operation.status === "succeeded"
-          ? '<meta http-equiv="refresh" content="1; url=/admin/setup" />'
+          ? '<meta http-equiv="refresh" content="1; url=/admin/setup?just_finished=1" />'
           : ""
       }
     </div>`;

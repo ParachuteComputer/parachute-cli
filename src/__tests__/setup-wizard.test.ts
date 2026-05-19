@@ -311,6 +311,33 @@ describe("handleSetupGet", () => {
       db.close();
     }
   });
+
+  test("succeeded-op page refreshes to /admin/setup?just_finished=1 (fold A)", async () => {
+    // Regression — without the `?just_finished=1` query the bare
+    // /admin/setup state derives as "done" and 301s to /login, so the
+    // operator never sees the success screen with the MCP install
+    // command. The refresh-meta must carry the query through.
+    const db = openHubDb(hubDbPath(h.dir));
+    try {
+      await createUser(db, "owner", "pw");
+      const reg = getDefaultOperationsRegistry();
+      const op = reg.create("install", "vault");
+      reg.update(op.id, { status: "succeeded" }, "vault installed + spawned");
+      const res = handleSetupGet(req(`/admin/setup?op=${op.id}`), {
+        db,
+        manifestPath: h.manifestPath,
+        configDir: h.dir,
+        issuer: "https://hub.example",
+        registry: reg,
+      });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Vault ready");
+      expect(html).toContain('url=/admin/setup?just_finished=1');
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // --- POST /admin/setup/account -------------------------------------------
