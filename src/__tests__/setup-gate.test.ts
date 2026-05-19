@@ -130,12 +130,28 @@ describe("setup gate (no admin yet)", () => {
     }
   });
 
-  test("/ passes through the gate (renders discovery page)", async () => {
+  // Bug 2 (rc.5 → rc.6) regression: on a fresh hub, GET `/` should
+  // funnel straight to the wizard rather than render the static
+  // portal — the operator otherwise has to manually navigate to
+  // `/admin/setup`. The portal pre-setup carries no usable signal
+  // (no installed services to discover, no admin to sign in as).
+  test("/ 302s to /admin/setup when no admin exists (fresh-hub funnel)", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
       const res = await hubFetch(h.dir, { getDb: () => db })(req("/"));
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/admin/setup");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("/hub.html 302s to /admin/setup when no admin exists", async () => {
+    const db = openHubDb(hubDbPath(h.dir));
+    try {
+      const res = await hubFetch(h.dir, { getDb: () => db })(req("/hub.html"));
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/admin/setup");
     } finally {
       db.close();
     }

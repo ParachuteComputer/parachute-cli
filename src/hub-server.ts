@@ -1013,14 +1013,34 @@ export function hubFetch(
       return new Response("not found", { status: 404 });
     }
 
+    // Fresh-hub redirect: on a hub with no admin row yet, the discovery
+    // page (`/`, `/hub.html`) funnels straight to the wizard. The static
+    // portal isn't useful pre-setup — nothing's installed, the
+    // "Signed in" affordance has no session to surface — and the
+    // operator landing on `/` in a browser otherwise has to manually
+    // type `/admin/setup` to escape. 302 (not 301) so the redirect
+    // disappears the moment the wizard finishes.
+    //
+    // Sits before the JSON-shaped 503 gate below because `/` is an
+    // HTML surface — a JSON 503 there would render as raw text in the
+    // operator's browser tab. The 503 gate handles API + admin SPA +
+    // OAuth callers that branch on the structured body.
+    if (getDb && (pathname === "/" || pathname === "/hub.html") && userCount(getDb()) === 0) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "/admin/setup" },
+      });
+    }
+
     // Pre-admin lockout. When the hub has booted with no admin row (the
     // fresh-container case before PARACHUTE_INITIAL_ADMIN_* is set or
     // /admin/setup is walked), every operator-facing surface that requires
     // identity is meaningless — auth flows can't validate, the SPA can't
     // mint a host-admin token, OAuth can't issue codes. Route those to a
     // 503 that points at /admin/setup. Health, well-known, /admin/setup
-    // itself, and the static discovery page (/) ran above and are
-    // unaffected; OAuth + admin + api endpoints fall here.
+    // itself, OAuth third-party endpoints, and content proxies pass
+    // through; the fresh-hub `/` and `/hub.html` redirect above handled
+    // the discovery-page case.
     //
     // `shouldGateForSetup` runs first so non-gated paths (well-known, /,
     // /health, /admin/setup) never touch getDb — keeping the

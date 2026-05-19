@@ -74,10 +74,16 @@ describe("hubFetch routing", () => {
     // The dynamic path takes over from the static disk file the moment a
     // DB is configured. With no session cookie, we still render — just
     // with the "Sign in" affordance.
+    //
+    // hub#259 rc.6: requires an admin row to bypass the fresh-hub
+    // funnel redirect to /admin/setup (Bug 2 fix). Seed one so this
+    // test continues to exercise the signed-out-but-setup-done branch.
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
       try {
+        const { createUser } = await import("../users.ts");
+        await createUser(db, "owner", "pw");
         const res = await hubFetch(h.dir, { getDb: () => db })(req("/"));
         expect(res.status).toBe(200);
         expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -1083,7 +1089,7 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("pre-admin lockout: /login is gated, /admin/setup + /health + well-known stay open", async () => {
+  test("pre-admin lockout: /login is gated, /admin/setup + /health + well-known stay open, / funnels to /admin/setup", async () => {
     const h = makeHarness();
     try {
       writeFileSync(join(h.dir, "hub.html"), "<html>discovery</html>");
@@ -1100,9 +1106,11 @@ describe("hubFetch routing", () => {
         // /health open
         const healthRes = await handler(req("/health"));
         expect(healthRes.status).toBe(200);
-        // / open
+        // / funnels to the wizard (hub#259 rc.6 fix for Bug 2 — the
+        // static portal pre-setup is useless; redirect to setup).
         const rootRes = await handler(req("/"));
-        expect(rootRes.status).toBe(200);
+        expect(rootRes.status).toBe(302);
+        expect(rootRes.headers.get("location")).toBe("/admin/setup");
         // /.well-known/parachute.json open
         const wkRes = await handler(req("/.well-known/parachute.json"));
         expect(wkRes.status).toBe(200);
