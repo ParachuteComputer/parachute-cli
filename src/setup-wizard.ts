@@ -281,8 +281,6 @@ export function renderAccountStep(props: RenderAccountStepProps): string {
 
 export interface RenderVaultStepProps {
   csrfToken: string;
-  /** Pre-filled vault-name field — defaults to "default" on first render. */
-  defaultName: string;
   errorMessage?: string;
   /**
    * When an install op is in progress, render the polling shape: no
@@ -297,14 +295,24 @@ export interface RenderVaultStepProps {
 }
 
 export function renderVaultStep(props: RenderVaultStepProps): string {
-  const { csrfToken, defaultName, errorMessage, operation } = props;
+  const { csrfToken, errorMessage, operation } = props;
   if (operation) return renderVaultOpStep({ operation });
   const error = errorMessage ? `<p class="error-banner">${escapeHtml(errorMessage)}</p>` : "";
+  // hub#259 / hub#263: the first vault is hard-named "default" for now.
+  // The CLI threads `--vault-name` through `parachute-vault init`, which
+  // the wizard's container-mode `runInstall` doesn't run. Wiring the
+  // operator's typed name end-to-end requires either a new `init` step
+  // in `runInstall` or upstream changes in @openparachute/vault so it
+  // reads `PARACHUTE_VAULT_NAME` (or services.json paths) on first
+  // boot. Both are bigger than fits in this PR — tracked in hub#263.
+  // For now: show what's actually being created, no form field, no
+  // UX lie. The operator renames via the admin UI once the wizard
+  // hands them off.
   const body = `
     <div class="card">
       <div class="card-header">
         ${header("vault")}
-        <h1>Name your first vault</h1>
+        <h1>Create your first vault</h1>
         <p class="subtitle">A vault is the per-workspace SQLite store + MCP
           surface Claude reads and writes through. You can have many vaults
           on one hub; this is just the first.</p>
@@ -312,34 +320,32 @@ export function renderVaultStep(props: RenderVaultStepProps): string {
       <section class="explainer">
         <h2>Why this step</h2>
         <p>The wizard provisions a vault module at the path
-          <code>/vault/&lt;name&gt;</code> and issues you an operator token —
+          <code>/vault/default</code> and issues you an operator token —
           the same shape <code>parachute install vault</code> produces from
           the CLI. We're doing both in one click.</p>
         <h2>What's next</h2>
         <p>You'll land on a success screen with copy-paste MCP install
-          instructions for Claude Code and a link to the admin UI for
-          everything else.</p>
+          instructions for Claude Code and a link to the admin UI, where
+          you can rename or add additional vaults.</p>
       </section>
       <section class="preview">
         <p class="preview-label">About to create</p>
         <div class="preview-card">
           <span class="preview-key">vault:</span>
-          <span class="preview-val" id="preview-vault-name">${escapeHtml(defaultName)}</span>
+          <span class="preview-val" id="preview-vault-name">default</span>
           <span class="preview-fine">— admin: you, MCP-ready for Claude Code</span>
         </div>
+        <p class="preview-fine">
+          The vault is named <code>default</code> on first boot. Custom
+          names on the wizard are tracked in
+          <a href="https://github.com/ParachuteComputer/parachute-hub/issues/263">hub#263</a> —
+          for now, rename or add vaults from the admin UI after setup.
+        </p>
       </section>
       ${error}
       <form method="POST" action="/admin/setup/vault" class="auth-form">
         ${renderCsrfHiddenInput(csrfToken)}
-        <label class="field">
-          <span class="field-label">Vault name</span>
-          <input type="text" name="vault_name" autocomplete="off"
-            autofocus required minlength="1" maxlength="64"
-            pattern="[a-z0-9][a-z0-9-]*" title="lowercase letters, digits, hyphens"
-            value="${escapeAttr(defaultName)}" />
-          <span class="field-hint">lowercase letters, digits, hyphens — used in the URL path</span>
-        </label>
-        <button type="submit" class="btn btn-primary">Create vault & finish</button>
+        <button type="submit" class="btn btn-primary" autofocus>Create vault & finish</button>
       </form>
     </div>`;
   return baseDocument("Set up your Parachute hub — vault", body);
@@ -486,7 +492,6 @@ export function handleSetupGet(req: Request, deps: SetupWizardDeps): Response {
         return new Response(
           renderVaultStep({
             csrfToken: csrf.token,
-            defaultName: "default",
             operation: {
               id: op.id,
               status: op.status,
@@ -498,7 +503,7 @@ export function handleSetupGet(req: Request, deps: SetupWizardDeps): Response {
         );
       }
     }
-    return new Response(renderVaultStep({ csrfToken: csrf.token, defaultName: "default" }), {
+    return new Response(renderVaultStep({ csrfToken: csrf.token }), {
       status: 200,
       headers: extraHeaders,
     });
@@ -604,29 +609,16 @@ export async function handleSetupVaultPost(req: Request, deps: SetupWizardDeps):
   const state = deriveWizardState(deps);
   if (state.hasVault) return redirect("/admin/setup?just_finished=1");
 
-  const csrfToken = typeof formCsrf === "string" ? formCsrf : "";
-  const vaultName = String(form.get("vault_name") ?? "").trim();
-  const nameErr = validateVaultName(vaultName);
-  if (nameErr) {
-    return htmlResponse(
-      renderVaultStep({ csrfToken, defaultName: vaultName || "default", errorMessage: nameErr }),
-      400,
-    );
-  }
-
-  // Kick off the install via the shared internal runner. The wizard's
-  // first vault always uses the curated `vault` short — the user-chosen
-  // `vault_name` lands in the per-vault config on first boot (the vault
-  // module reads `PARACHUTE_VAULT_NAME` or similar from its own
-  // services.json entry — out of scope for this PR; for now the
-  // module's own default applies and the operator can rename via the
-  // admin UI).
-  //
-  // TODO(hub#263): thread `vaultName` into the install so the operator's
-  // chosen name lands in the vault's services.json entry on first
-  // provision. The current install path uses the spec's `seedEntry()`
-  // default name. The wizard accepts the field today so the UX is in
-  // place when the threading lands.
+  // The first vault is hard-named "default" for now (hub#263). The CLI
+  // threads `--vault-name` through `parachute-vault init`; the wizard's
+  // container-mode `runInstall` doesn't run `init` (just `bun add` +
+  // seed services.json + supervisor.start), and the upstream vault
+  // module's `server.ts` auto-creates a "default" vault on first boot
+  // regardless of the seeded services.json paths. Wiring an
+  // operator-typed name end-to-end requires either a new init step or
+  // upstream changes in @openparachute/vault — both bigger than fit
+  // here. Form has no name field now; the operator renames via the
+  // admin UI post-setup.
   const registry = deps.registry;
   const op = registry
     ? registry.create("install", FIRST_VAULT_SHORT)
@@ -666,16 +658,6 @@ function validateAccountFields(input: {
   }
   if (input.password !== input.confirm) {
     return "Passwords do not match.";
-  }
-  return undefined;
-}
-
-function validateVaultName(name: string): string | undefined {
-  if (name.length < 1 || name.length > 64) {
-    return "Vault name must be 1–64 characters.";
-  }
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-    return "Vault name must start with a lowercase letter or digit and use only lowercase letters, digits, and hyphens.";
   }
   return undefined;
 }

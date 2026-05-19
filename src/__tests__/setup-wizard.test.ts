@@ -199,7 +199,7 @@ describe("handleSetupGet", () => {
     }
   });
 
-  test("renders the vault form once admin exists", async () => {
+  test("renders the vault form once admin exists (fold B: shows 'default' as static)", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
       await createUser(db, "owner", "pw");
@@ -213,7 +213,12 @@ describe("handleSetupGet", () => {
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('action="/admin/setup/vault"');
-      expect(html).toContain('value="default"');
+      // The vault name is hard-bound to "default" pending hub#263 — the
+      // form has no name input, just a submit button + a preview card
+      // showing the canonical name + the follow-up issue link.
+      expect(html).toContain('id="preview-vault-name">default<');
+      expect(html).not.toContain('name="vault_name"');
+      expect(html).toContain("hub#263");
     } finally {
       db.close();
     }
@@ -333,7 +338,7 @@ describe("handleSetupGet", () => {
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain("Vault ready");
-      expect(html).toContain('url=/admin/setup?just_finished=1');
+      expect(html).toContain("url=/admin/setup?just_finished=1");
     } finally {
       db.close();
     }
@@ -525,7 +530,7 @@ describe("handleSetupVaultPost", () => {
       const post = await handleSetupVaultPost(
         req("/admin/setup/vault", {
           method: "POST",
-          body: new URLSearchParams({ vault_name: "default" }).toString(),
+          body: new URLSearchParams({}).toString(),
           headers: { "content-type": "application/x-www-form-urlencoded" },
         }),
         {
@@ -560,7 +565,6 @@ describe("handleSetupVaultPost", () => {
         req("/admin/setup/vault", {
           method: "POST",
           body: new URLSearchParams({
-            vault_name: "default",
             [CSRF_FIELD_NAME]: csrf,
           }).toString(),
           headers: {
@@ -614,7 +618,6 @@ describe("handleSetupVaultPost", () => {
         req("/admin/setup/vault", {
           method: "POST",
           body: new URLSearchParams({
-            vault_name: "default",
             [CSRF_FIELD_NAME]: csrf,
           }).toString(),
           headers: {
@@ -646,49 +649,6 @@ describe("handleSetupVaultPost", () => {
       // the freshly-created session non-expired. Asserting a positive
       // number flags a future migration that removes the constant.
       expect(SESSION_TTL_MS).toBeGreaterThan(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("rejects an invalid vault name", async () => {
-    const db = openHubDb(hubDbPath(h.dir));
-    try {
-      const user = await createUser(db, "owner", "pw");
-      const { createSession, SESSION_COOKIE_NAME: SC } = await import("../sessions.ts");
-      const session = createSession(db, { userId: user.id });
-      const get = handleSetupGet(req("/admin/setup"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
-      const csrf = setCookie(get, CSRF_COOKIE_NAME) ?? "";
-      const post = await handleSetupVaultPost(
-        req("/admin/setup/vault", {
-          method: "POST",
-          body: new URLSearchParams({
-            vault_name: "Bad Name!",
-            [CSRF_FIELD_NAME]: csrf,
-          }).toString(),
-          headers: {
-            "content-type": "application/x-www-form-urlencoded",
-            cookie: `${CSRF_COOKIE_NAME}=${csrf}; ${SC}=${session.id}`,
-          },
-        }),
-        {
-          db,
-          manifestPath: h.manifestPath,
-          configDir: h.dir,
-          issuer: "https://hub.example",
-          supervisor: makeSupervisor(),
-          registry: getDefaultOperationsRegistry(),
-        },
-      );
-      expect(post.status).toBe(400);
-      const html = await post.text();
-      expect(html).toContain("lowercase");
     } finally {
       db.close();
     }
