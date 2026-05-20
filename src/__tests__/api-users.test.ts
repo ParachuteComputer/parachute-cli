@@ -300,30 +300,41 @@ describe("handleCreateUser", () => {
     expect(elapsed).toBeLessThan(200);
   });
 
-  test("409 username_taken with case-insensitive match against existing rows", async () => {
+  test("409 username_taken on exact-duplicate POST", async () => {
     const { bearer } = await makeAdminBearer();
     await post(bearer, {
       username: "alice",
       password: "alice-strong-passphrase",
     });
-    // Lowercase rejection — exact match.
-    let res = await post(bearer, {
+    const res = await post(bearer, {
       username: "alice",
       password: "alice-strong-passphrase",
     });
     expect(res.status).toBe(409);
-    let body = (await res.json()) as { error: string };
+    const body = (await res.json()) as { error: string };
     expect(body.error).toBe("username_taken");
-    // Mixed-case rejection — the validator pins lowercase anyway, so
-    // the case-insensitive check only matters if a legacy row was hand-
-    // inserted with capitals. We verify the lookup is case-folding by
-    // bypassing the validator with the lowercase exact form.
-    res = await post(bearer, {
+  });
+
+  test("409 username_taken shadows a hand-inserted mixed-case legacy row (CI path)", async () => {
+    // Insert a mixed-case row directly — bypasses the validator's
+    // lowercase-only gate so we can prove the CI shadowing check
+    // (`getUserByUsernameCI` / `COLLATE NOCASE`) actually fires. The
+    // exact-duplicate test above can't exercise this path because the
+    // validator rejects "Alice" with `invalid_username` (format) long
+    // before the CI lookup runs.
+    const stamp = "2026-05-20T00:00:00.000Z";
+    harness.db
+      .prepare(
+        "INSERT INTO users (id, username, password_hash, created_at, updated_at, password_changed, assigned_vault) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run("legacy-id", "Alice", "$argon2id$fake", stamp, stamp, 1, null);
+    const { bearer } = await makeAdminBearer();
+    const res = await post(bearer, {
       username: "alice",
       password: "alice-strong-passphrase",
     });
     expect(res.status).toBe(409);
-    body = (await res.json()) as { error: string };
+    const body = (await res.json()) as { error: string };
     expect(body.error).toBe("username_taken");
   });
 

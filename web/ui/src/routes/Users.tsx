@@ -335,20 +335,36 @@ function ListRendered({
                 </td>
                 <td>
                   {isConfirming ? null : (
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={isFirstAdmin || isDeleting}
-                      title={
-                        isFirstAdmin
-                          ? "First admin can't be deleted (would self-lock the hub)"
-                          : undefined
-                      }
-                      onClick={() => setDeleteSt({ kind: "confirming", user: u })}
-                      aria-label={`Delete ${u.username}`}
-                    >
-                      {isDeleting ? "Deleting…" : "Delete"}
-                    </button>
+                    <>
+                      {/*
+                        Screen-reader description for the disabled
+                        first-admin Delete button. `title` is
+                        unreliable on disabled buttons in assistive
+                        tech; `aria-describedby` to a visually-hidden
+                        node is the canonical WAI-ARIA shape. We keep
+                        `title` too for sighted hover users.
+                      */}
+                      {isFirstAdmin && (
+                        <span id={`first-admin-tooltip-${u.id}`} className="sr-only">
+                          First admin can't be deleted (would self-lock the hub)
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={isFirstAdmin || isDeleting}
+                        title={
+                          isFirstAdmin
+                            ? "First admin can't be deleted (would self-lock the hub)"
+                            : undefined
+                        }
+                        aria-describedby={isFirstAdmin ? `first-admin-tooltip-${u.id}` : undefined}
+                        onClick={() => setDeleteSt({ kind: "confirming", user: u })}
+                        aria-label={`Delete ${u.username}`}
+                      >
+                        {isDeleting ? "Deleting…" : "Delete"}
+                      </button>
+                    </>
                   )}
                   {isConfirming && (
                     <dialog

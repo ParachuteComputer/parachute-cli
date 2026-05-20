@@ -74,8 +74,11 @@ describe("Users — list rendering", () => {
     await waitFor(() => expect(screen.getByText("operator")).toBeInTheDocument());
     expect(screen.getByText("alice")).toBeInTheDocument();
     expect(screen.getByText("home")).toBeInTheDocument();
-    // First admin badge on the earliest row.
-    expect(screen.getByText(/first admin/i)).toBeInTheDocument();
+    // First admin badge on the earliest row. (The sr-only describedby
+    // span also contains "first admin" text — scope to the visible
+    // badge specifically by its short label rather than matching any
+    // "first admin" occurrence anywhere in the DOM.)
+    expect(screen.getByText("first admin")).toBeInTheDocument();
     // assigned_vault: null renders as em-dash.
     expect(screen.getByText("—")).toBeInTheDocument();
     // password_changed: false renders the "pending first login" label.
@@ -100,9 +103,19 @@ describe("Users — first-admin protection", () => {
     const operatorBtn = await screen.findByRole("button", { name: /delete operator/i });
     expect(operatorBtn).toBeDisabled();
     expect(operatorBtn).toHaveAttribute("title", expect.stringMatching(/first admin/i));
-    // Non-first user Delete is enabled.
+    // a11y: aria-describedby points at a visually-hidden span carrying
+    // the explanation. `title` on a disabled button is unreliable for
+    // assistive tech, so the describedby is the load-bearing surface.
+    const describedById = operatorBtn.getAttribute("aria-describedby");
+    expect(describedById).toMatch(/^first-admin-tooltip-/);
+    const tooltipSpan = describedById ? document.getElementById(describedById) : null;
+    expect(tooltipSpan).not.toBeNull();
+    expect(tooltipSpan?.className).toContain("sr-only");
+    expect(tooltipSpan?.textContent).toMatch(/first admin can't be deleted/i);
+    // Non-first user Delete is enabled and carries no describedby.
     const aliceBtn = screen.getByRole("button", { name: /delete alice/i });
     expect(aliceBtn).not.toBeDisabled();
+    expect(aliceBtn).not.toHaveAttribute("aria-describedby");
   });
 });
 

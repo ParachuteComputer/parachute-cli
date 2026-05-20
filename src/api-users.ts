@@ -96,6 +96,12 @@ function toWire(u: User): UserWireShape {
  * both code paths must agree on which vault names a user could be
  * pinned to so the OAuth issuer (PR 4) can validate stored
  * `assigned_vault` values against the same set.
+ *
+ * TODO(hub PR4): consolidate with oauth-handlers.ts:listVaultNames
+ * when PR 4 lands. PR 4 already touches oauth-handlers.ts to wire the
+ * `vault_scope` claim, which is the natural seam to lift this helper
+ * to a shared module (well-known.ts is the likely landing site since
+ * it already owns `isVaultEntry` + `vaultInstanceNameFor`).
  */
 function listVaultNames(manifestPath: string): string[] {
   const manifest = readManifest(manifestPath);
@@ -212,7 +218,7 @@ async function parseCreateBody(req: Request): Promise<ParseOk | ParseErr> {
       ok: false,
       status: 413,
       error: "password_too_long",
-      description: `password length must be ≤ ${PASSWORD_MAX_LEN} characters (got ${password.length})`,
+      description: `password length must be ≤ ${PASSWORD_MAX_LEN} characters`,
     };
   }
   // `assigned_vault` is optional — omitted (undefined) or explicit null
