@@ -30,6 +30,26 @@ Smoke (against `bun src/hub-server.ts --port 11939 --issuer https://parachute.ta
 
 Follow-up (filed by orchestrator): admin-configurable CORS allowlist on `/api/*` + module content routes (`/vault/*`, etc.). The wildcard posture isn't appropriate for those — they need per-operator origin allowlisting. Out of scope for this PR.
 
+## [0.5.10-rc.16] - 2026-05-20
+
+Multi-user Phase 1 — PR 5 of 5: scope-guard `vault_scope` enforcement (hub#285, design [`parachute.computer/design/2026-05-20-multi-user-phase-1.md`](https://parachute.computer/design/2026-05-20-multi-user-phase-1/)). PR 4 (rc.15) wired hub to mint `vault_scope: [<assigned_vault>]` on every JWT; PR 5 adds the consumer-side surface so resource servers (vault first; scribe + notes don't need it) can refuse cross-vault access as defense-in-depth.
+
+Workspace bump only — hub itself is unchanged; the substance lives in `packages/scope-guard/`:
+
+- `@openparachute/scope-guard` 0.2.1 → 0.3.0-rc.1 (minor bump because `HubJwtClaims` gains a required field). New surfaces:
+  - **`HubJwtClaims.vaultScope: string[]`** — parsed from the `vault_scope` claim. Non-empty for non-admin users (Phase 1: single-element list naming `assigned_vault`); empty `[]` for admin users, pre-PR-4 tokens, and any malformed value. All "no pin" shapes collapse to `[]` so consumers don't distinguish absent from empty.
+  - **`enforceVaultScope(claims, requestVaultName) → boolean`** — opt-in helper. Returns true if `vaultScope` is `[]` (admin/unpinned) OR contains the target vault name; false otherwise. Consumers translate `false` to a 403 with `error: "vault_scope_mismatch"`.
+
+Defense-in-depth, not the primary gate. PR 4's `narrowVaultScopes` already produces tokens whose `scope` claim names the exact assigned vault (`vault:<assigned>:<verb>`), and vault's existing scope-string check is the primary control. `vault_scope` is the second layer for the case where a token-mint bug or third-party RS not enforcing the vocabulary correctly produces a scope string naming the wrong vault — the check kicks in before any vault data is touched.
+
+Consumer adoption: **vault** wires `enforceVaultScope` into `authenticateHubJwt` in a follow-up after this release publishes; **scribe** + **notes** + **parachute-agent** are no-touch (scopes aren't vault-named today).
+
+Token-shape compatibility: pre-PR-4 tokens lack the `vault_scope` claim entirely. The validate path surfaces those as `vaultScope: []` — admin-equivalent for vault-pin purposes. Without this back-compat, every existing operator-token would start 403-ing the moment vault wires in `enforceVaultScope`.
+
+Gate: hub `bun test ./src` → **1575 pass / 0 fail** (unchanged). scope-guard `bun test packages/scope-guard/src` → **99 pass / 0 fail / 177 expects** (+5 `vault_scope` claim-parsing cases on validate, +3 `enforceVaultScope` shape cases on the helper, +1 on-wire-null fail-open case from the post-merge reviewer-nit fold). typecheck + biome clean.
+
+(Entry backfilled retroactively in rc.17 — the merge for hub#285 didn't include a hub-side CHANGELOG block since the substance was scope-guard's own package. Adding it here so the hub CHANGELOG sequence is unbroken.)
+
 ## [0.5.10-rc.15] - 2026-05-20
 
 Multi-user Phase 1 — PR 4 of 5: OAuth vault_scope claim + consent-picker lock (hub#252, design [`parachute.computer/design/2026-05-20-multi-user-phase-1.md`](https://parachute.computer/design/2026-05-20-multi-user-phase-1/)). Builds on PR 3 (rc.14) which shipped the force-change-password flow. This release wires the *OAuth issuer* side: hub-minted tokens now carry a `vault_scope` claim derived from the user's `assigned_vault`, the consent picker is locked-and-displayed for non-admin users, and the server-side defense refuses mints whose picked vault disagrees with the user's assignment.

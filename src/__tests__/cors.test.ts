@@ -206,6 +206,37 @@ describe("hubFetch CORS on /oauth/*", () => {
     }
   });
 
+  test("GET /oauth/authorize response carries Access-Control-Allow-Origin: * (the sync-handler branch)", async () => {
+    // The other oauth handlers are async (`Promise<Response>`); only
+    // `handleAuthorizeGet` is sync. Folding `applyCorsHeaders` over a sync
+    // return is exercised here so a future refactor that breaks the
+    // sync-vs-async distinction (e.g. dropping the wrapper, double-wrapping,
+    // accidentally awaiting a non-Promise into a hang) is caught.
+    //
+    // 400 branch — missing required PKCE params triggers the htmlError
+    // path inside parseAuthorizeFormParams. Cleanest no-DB-seeding fixture
+    // since the params fail validation before the client lookup runs.
+    const h = makeHarness();
+    try {
+      const db = openHubDb(hubDbPath(h.dir));
+      try {
+        const res = await hubFetch(h.dir, { getDb: () => db, issuer: ISSUER })(
+          new Request(
+            `${ISSUER}/oauth/authorize?client_id=test&redirect_uri=https://example.com/cb&response_type=code&state=foo`,
+            { method: "GET", headers: { origin: "https://example.com" } },
+          ),
+        );
+        expect(res.status).toBe(400);
+        expect(res.headers.get("access-control-allow-origin")).toBe("*");
+        expect(res.headers.get("access-control-allow-credentials")).toBe("false");
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test("OPTIONS preflight on /oauth/token returns 204 + CORS", async () => {
     const h = makeHarness();
     try {

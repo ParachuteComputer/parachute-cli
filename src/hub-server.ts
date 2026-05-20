@@ -1283,7 +1283,9 @@ export function hubFetch(
     if (pathname === "/oauth/authorize") {
       if (!getDb) return applyCorsHeaders(dbNotConfigured());
       if (req.method === "GET") {
-        return applyCorsHeaders(await handleAuthorizeGet(getDb(), req, oauthDeps(req)));
+        // handleAuthorizeGet is sync (returns Response, not Promise<Response>).
+        // handleAuthorizePost is async — keep the await on POST only.
+        return applyCorsHeaders(handleAuthorizeGet(getDb(), req, oauthDeps(req)));
       }
       if (req.method === "POST") {
         return applyCorsHeaders(await handleAuthorizePost(getDb(), req, oauthDeps(req)));
