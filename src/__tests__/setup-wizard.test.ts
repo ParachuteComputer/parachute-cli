@@ -343,7 +343,7 @@ describe("handleSetupGet", () => {
   test("renders the success page once with ?just_finished=1 query", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -359,13 +359,21 @@ describe("handleSetupGet", () => {
         h.manifestPath,
       );
       setSetting(db, "setup_expose_mode", "localhost");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      // hub#274 security fold: done-screen GET is session-gated.
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain("You're set up");
@@ -385,7 +393,7 @@ describe("handleSetupGet", () => {
   test("success page reachable tile reflects the tailnet expose mode (hub#268 Item 2)", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -401,13 +409,20 @@ describe("handleSetupGet", () => {
         h.manifestPath,
       );
       setSetting(db, "setup_expose_mode", "tailnet");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain("tailscale serve --bg --https=1939");
@@ -419,7 +434,7 @@ describe("handleSetupGet", () => {
   test("success page reachable tile reflects the public expose mode (hub#268 Item 2)", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -435,13 +450,20 @@ describe("handleSetupGet", () => {
         h.manifestPath,
       );
       setSetting(db, "setup_expose_mode", "public");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain("PARACHUTE_HUB_ORIGIN");
@@ -1280,7 +1302,7 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
   test("done screen renders the MCP command with a Bearer header when a minted token exists", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1297,13 +1319,20 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
       );
       setSetting(db, "setup_expose_mode", "localhost");
       setSetting(db, "setup_minted_token", "test-jwt-token-abc");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain("--header &quot;Authorization: Bearer test-jwt-token-abc&quot;");
@@ -1320,7 +1349,7 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
   test("done screen falls back to bare MCP command + admin/tokens hint when no minted token", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1336,13 +1365,20 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
         h.manifestPath,
       );
       setSetting(db, "setup_expose_mode", "localhost");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       const html = await res.text();
       expect(html).toContain("claude mcp add --transport http parachute-default");
       // The fallback explanatory text mentions `pvt_...` as a placeholder
@@ -1360,7 +1396,7 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
   test("minted token is consumed after first render — refresh shows the fallback shape", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1377,6 +1413,8 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
       );
       setSetting(db, "setup_expose_mode", "localhost");
       setSetting(db, "setup_minted_token", "test-token-xyz");
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
       const deps = {
         db,
         manifestPath: h.manifestPath,
@@ -1384,14 +1422,67 @@ describe("done screen auto-minted token (hub#272 Item A)", () => {
         issuer: "https://hub.example",
         registry: getDefaultOperationsRegistry(),
       };
-      const first = handleSetupGet(req("/admin/setup?just_finished=1"), deps);
+      const sessionedReq = () =>
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        });
+      const first = handleSetupGet(sessionedReq(), deps);
       const firstHtml = await first.text();
       expect(firstHtml).toContain("test-token-xyz");
-      const second = handleSetupGet(req("/admin/setup?just_finished=1"), deps);
+      const second = handleSetupGet(sessionedReq(), deps);
       const secondHtml = await second.text();
       expect(secondHtml).not.toContain("test-token-xyz");
       // The MCP command tile has no Copy button on the fallback shape.
       expect(secondHtml).not.toContain('id="mcp-cmd"');
+    } finally {
+      db.close();
+    }
+  });
+
+  test("GET /admin/setup?just_finished=1 without a session does NOT consume the minted token (hub#274 security fold)", async () => {
+    // Regression — without the session gate, any HTTP client racing the
+    // operator's browser between the expose POST (which mints + stores)
+    // and the done GET (which reads + consumes) walks off with a
+    // full-scope operator JWT. The gate sends sessionless GETs to
+    // /login + leaves the row in place so the operator's subsequent
+    // legitimate GET still surfaces the token.
+    const db = openHubDb(hubDbPath(h.dir));
+    try {
+      await createUser(db, "owner", "pw");
+      writeManifest(
+        {
+          services: [
+            {
+              name: "parachute-vault",
+              version: "0.1.0",
+              port: 1940,
+              paths: ["/vault/default"],
+              health: "/health",
+            },
+          ],
+        },
+        h.manifestPath,
+      );
+      setSetting(db, "setup_expose_mode", "localhost");
+      setSetting(db, "setup_minted_token", "test-secret-token-must-not-leak");
+      // No session cookie on this request — simulating a drive-by GET
+      // from an attacker or a stale bookmark in a different browser
+      // tab that doesn't carry the wizard's session.
+      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
+        db,
+        manifestPath: h.manifestPath,
+        configDir: h.dir,
+        issuer: "https://hub.example",
+        registry: getDefaultOperationsRegistry(),
+      });
+      // The gate redirects to /login (302) rather than rendering the
+      // done screen. Body must NOT contain the token.
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/login");
+      // The setup_minted_token row is STILL present — the unauthed GET
+      // didn't consume it, so the legitimate operator's session-bearing
+      // GET will still see the token on the done screen.
+      expect(getSetting(db, "setup_minted_token")).toBe("test-secret-token-must-not-leak");
     } finally {
       db.close();
     }
@@ -1411,7 +1502,7 @@ describe("done screen install tiles (hub#272 Item B)", () => {
   test("done screen renders Install Notes + Install Scribe tiles when neither is installed", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1427,13 +1518,20 @@ describe("done screen install tiles (hub#272 Item B)", () => {
         h.manifestPath,
       );
       setSetting(db, "setup_expose_mode", "localhost");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       const html = await res.text();
       expect(html).toContain("What's next?");
       expect(html).toContain("Install Notes");
@@ -1448,7 +1546,7 @@ describe("done screen install tiles (hub#272 Item B)", () => {
   test("tile shows 'Already installed' when a curated module is in services.json", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1471,13 +1569,20 @@ describe("done screen install tiles (hub#272 Item B)", () => {
         h.manifestPath,
       );
       setSetting(db, "setup_expose_mode", "localhost");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       const html = await res.text();
       expect(html).toContain("Already installed");
       expect(html).toContain('action="/admin/setup/install/scribe"');
@@ -1489,7 +1594,7 @@ describe("done screen install tiles (hub#272 Item B)", () => {
   test("done screen renders op-poll panel when ?op_notes=<id> matches a registry op", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1508,13 +1613,20 @@ describe("done screen install tiles (hub#272 Item B)", () => {
       const reg = getDefaultOperationsRegistry();
       const op = reg.create("install", "notes");
       reg.update(op.id, { status: "running" }, "running bun add -g @openparachute/notes@latest");
-      const res = handleSetupGet(req(`/admin/setup?just_finished=1&op_notes=${op.id}`), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: reg,
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req(`/admin/setup?just_finished=1&op_notes=${op.id}`, {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: reg,
+        },
+      );
       const html = await res.text();
       expect(html).toContain("status: running");
       expect(html).toContain("running bun add");
@@ -1924,7 +2036,7 @@ describe("typed vault name (hub#267)", () => {
   test("done screen surfaces the typed name in the MCP command", async () => {
     const db = openHubDb(hubDbPath(h.dir));
     try {
-      await createUser(db, "owner", "pw");
+      const user = await createUser(db, "owner", "pw");
       writeManifest(
         {
           services: [
@@ -1941,13 +2053,20 @@ describe("typed vault name (hub#267)", () => {
       );
       setSetting(db, "setup_expose_mode", "localhost");
       setSetting(db, "setup_vault_name", "my-personal-vault");
-      const res = handleSetupGet(req("/admin/setup?just_finished=1"), {
-        db,
-        manifestPath: h.manifestPath,
-        configDir: h.dir,
-        issuer: "https://hub.example",
-        registry: getDefaultOperationsRegistry(),
-      });
+      const { createSession } = await import("../sessions.ts");
+      const session = createSession(db, { userId: user.id });
+      const res = handleSetupGet(
+        req("/admin/setup?just_finished=1", {
+          headers: { cookie: `${SESSION_COOKIE_NAME}=${session.id}` },
+        }),
+        {
+          db,
+          manifestPath: h.manifestPath,
+          configDir: h.dir,
+          issuer: "https://hub.example",
+          registry: getDefaultOperationsRegistry(),
+        },
+      );
       const html = await res.text();
       expect(html).toContain("parachute-my-personal-vault");
       expect(html).toContain("/vault/my-personal-vault/mcp");

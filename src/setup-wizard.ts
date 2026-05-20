@@ -844,6 +844,39 @@ export function handleSetupGet(req: Request, deps: SetupWizardDeps): Response {
   // request from step 2.
   if (state.hasAdmin && state.hasVault && state.hasExposeMode) {
     if (url.searchParams.get("just_finished") === "1") {
+      // hub#274 security fold: session-gate this branch. The
+      // `?just_finished=1` GET reads + consumes `setup_minted_token`
+      // (full-scope operator JWT) below; without a session check, any
+      // HTTP client that races the operator's browser between the
+      // expose POST (which writes the row) and the done GET (which
+      // reads it) walks off with admin-scope creds. The dispatcher
+      // in `hub-server.ts`'s `shouldGateForSetup` lets `/admin/setup*`
+      // through the pre-admin lockout, and that path stays open
+      // post-setup — so this gate has to live here, not at the
+      // dispatcher layer.
+      //
+      // A legitimate operator carrying the session cookie minted on
+      // the account POST sails through. A drive-by GET without the
+      // cookie 302s to /login: if it's a stale bookmark in the
+      // operator's other tab, they sign in + the row is already
+      // consumed by the legitimate done-GET (the single-use shape
+      // guarantees they see the fallback shape, never the secret).
+      // If it's an attacker, they can't pass /login without the
+      // password.
+      const session = findActiveSession(deps.db, req);
+      if (!session) {
+        // Preserve the CSRF set-cookie header on the 302 — same shape as
+        // every other branch of this handler. Without it, a freshly
+        // assigned CSRF token would be lost across the redirect, and
+        // form posts from a sign-in-then-come-back flow would 400 on
+        // their first attempt.
+        const redirectHeaders: Record<string, string> = { location: "/login" };
+        if (csrf.setCookie) redirectHeaders["set-cookie"] = csrf.setCookie;
+        return new Response(null, {
+          status: 302,
+          headers: redirectHeaders,
+        });
+      }
       const stored = getSetting(deps.db, "setup_expose_mode");
       const exposeMode = isSetupExposeMode(stored) ? stored : undefined;
       // hub#272 Item A: read + consume the single-use minted-token row.
@@ -1109,6 +1142,11 @@ export async function handleSetupVaultPost(req: Request, deps: SetupWizardDeps):
     // field blank — vault's `resolveFirstBootVaultName` defaults to
     // `default` on absent env vars, so this preserves the prior
     // behaviour for the empty-input case.
+    //
+    // If the operator typed "default" explicitly, treat the same as
+    // blank — vault's first-boot defaults to "default" anyway, so
+    // skipping the env override is correct (the comparison below
+    // catches both blank-trimmed-to-DEFAULT and typed-"default").
     const spawnEnv: Record<string, string> = {};
     if (vaultName !== DEFAULT_VAULT_NAME) {
       spawnEnv.PARACHUTE_VAULT_NAME = vaultName;
