@@ -233,6 +233,142 @@ describe("handleAuthorizeGet", () => {
       );
       const res = handleAuthorizeGet(db, req, { issuer: ISSUER });
       expect(res.status).toBe(400);
+      const body = await res.text();
+      expect(body).toContain("Unknown application");
+      // Cross-origin redirect_uri → no recovery affordance. The page must
+      // not include the inline JS reset block; we can't safely interact
+      // with a third-party SPA's storage from this page.
+      expect(body).not.toContain("unknown-client-reset");
+      expect(body).not.toContain("lens:dcr:");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("unknown client_id with self-origin redirect_uri renders recovery affordance (hub#fresh-machine-connect)", async () => {
+    // The canonical fresh-machine-stale-localStorage repro: notes' SPA
+    // is mounted at the hub's own origin, holds a cached client_id from
+    // a previous hub.db, and lands on /oauth/authorize with the dangling
+    // id. Hub recognizes the redirect_uri as one of its bound origins and
+    // surfaces a one-click recovery: the inline JS clears the SPA's DCR
+    // localStorage cache (any `lens:dcr:*` key) and navigates to the
+    // redirect_uri's pathname for a fresh DCR pass.
+    const { db, cleanup } = await makeDb();
+    try {
+      const { challenge } = makePkce();
+      const selfRedirect = `${ISSUER}/notes/oauth/callback`;
+      const req = new Request(
+        authorizeUrl({
+          client_id: "stale-dangling-id",
+          redirect_uri: selfRedirect,
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+      );
+      const res = handleAuthorizeGet(db, req, {
+        issuer: ISSUER,
+        hubBoundOrigins: () => [ISSUER],
+      });
+      expect(res.status).toBe(400);
+      const body = await res.text();
+      expect(body).toContain("Unknown application");
+      expect(body).toContain("stale-dangling-id");
+      // Recovery affordance is present.
+      expect(body).toContain("unknown-client-reset");
+      // The reset target is the redirect_uri's pathname only (not the
+      // full URL — we never surface a cross-origin redirect even when
+      // redirect_uri claims to be ours).
+      expect(body).toContain('data-target="/notes/oauth/callback"');
+      // The inline JS clears the SPA's known DCR cache prefix.
+      expect(body).toContain("lens:dcr:");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("unknown client_id with redirect_uri on unbound origin falls back to static error", async () => {
+    // hubBoundOrigins lists only the canonical hub origin; a redirect_uri
+    // pointing somewhere else (third-party SPA, attacker probe) MUST NOT
+    // surface the recovery JS — that JS only makes sense for SPAs we
+    // ourselves host.
+    const { db, cleanup } = await makeDb();
+    try {
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: "stale-id",
+          redirect_uri: "https://attacker.example/cb",
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+      );
+      const res = handleAuthorizeGet(db, req, {
+        issuer: ISSUER,
+        hubBoundOrigins: () => [ISSUER],
+      });
+      expect(res.status).toBe(400);
+      const body = await res.text();
+      expect(body).toContain("Unknown application");
+      expect(body).not.toContain("unknown-client-reset");
+      expect(body).not.toContain("lens:dcr:");
+      expect(body).not.toContain("attacker.example");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("unknown client_id with malformed redirect_uri falls back to static error", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: "stale-id",
+          // Validated as non-empty by parseAuthorizeFormParams but not
+          // URL-parsed there; the unknown-client renderer must handle
+          // its own parsing safely.
+          redirect_uri: "not-a-valid-url",
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+      );
+      const res = handleAuthorizeGet(db, req, {
+        issuer: ISSUER,
+        hubBoundOrigins: () => [ISSUER],
+      });
+      expect(res.status).toBe(400);
+      const body = await res.text();
+      expect(body).toContain("Unknown application");
+      expect(body).not.toContain("unknown-client-reset");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("unknown client_id falls back to static error when hubBoundOrigins is unset", async () => {
+    // Pre-#245 callers don't thread hubBoundOrigins; the gate falls back
+    // to `[issuer]` so a single-origin hub still surfaces the recovery
+    // affordance for its own redirect_uris. Verify that path.
+    const { db, cleanup } = await makeDb();
+    try {
+      const { challenge } = makePkce();
+      const req = new Request(
+        authorizeUrl({
+          client_id: "stale-id",
+          redirect_uri: `${ISSUER}/notes/oauth/callback`,
+          response_type: "code",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        }),
+      );
+      // No hubBoundOrigins → falls back to [issuer], which still matches.
+      const res = handleAuthorizeGet(db, req, { issuer: ISSUER });
+      expect(res.status).toBe(400);
+      const body = await res.text();
+      expect(body).toContain("unknown-client-reset");
     } finally {
       cleanup();
     }

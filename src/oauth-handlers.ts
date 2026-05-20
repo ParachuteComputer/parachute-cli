@@ -62,6 +62,7 @@ import {
   renderConsent,
   renderError,
   renderLogin,
+  renderUnknownClient,
 } from "./oauth-ui.ts";
 import { isSameOriginRequest } from "./origin-check.ts";
 import { isHttpsRequest } from "./request-protocol.ts";
@@ -489,6 +490,70 @@ function pendingClientResponse(
  * strict spec-shaped handling. The extra fields are spec-permitted
  * extensions ("other parameters").
  */
+/**
+ * Render the "Unknown application" page surfaced by /oauth/authorize when
+ * `getClient(db, clientId)` returns null. Promotes the recovery affordance
+ * (a "Reset connection" button that clears `lens:dcr:*` localStorage on the
+ * hub's own origin) when the request's redirect_uri points at one of the
+ * hub's bound origins — that's the Notes-mounted-at-hub-origin case where
+ * we can safely run inline JS against the SPA's storage.
+ *
+ * Root-cause shape (rc.11 fresh-machine connect bug): an operator who wipes
+ * `~/.parachute/hub.db` between testing iterations strands their browser's
+ * cached client_id, and the SPA has no signal to clear it without
+ * operator action. The hub-side fix is to give the operator one click on
+ * the error page. See `renderUnknownClient` in oauth-ui.ts for the full
+ * design + the localStorage key the snippet clears.
+ *
+ * Cross-origin SPA redirect_uris fall back to the static error variant —
+ * we can't reach a third-party SPA's storage from this page. Malformed
+ * redirect_uris likewise fall back (we never trust an unparsed URL).
+ */
+function unknownClientResponse(
+  clientId: string,
+  redirectUri: string | null,
+  deps: OAuthDeps,
+): Response {
+  const selfOriginRedirectPath = resolveSelfOriginRedirectPath(redirectUri, deps);
+  return htmlResponse(
+    renderUnknownClient({
+      clientId,
+      selfOriginRedirectPath,
+    }),
+    400,
+  );
+}
+
+/**
+ * Parse a redirect_uri and return its pathname iff its origin is one the
+ * hub serves itself (any entry in `hubBoundOrigins`). Returns null when
+ * the URL is missing, malformed, or points at a non-hub origin — the
+ * caller falls back to a static error in those cases. The pathname is
+ * what the "Reset connection" button navigates to after clearing the
+ * SPA's cached client_id; e.g. for `http://localhost:1939/notes/oauth/callback`
+ * we return `/notes/oauth/callback`. The SPA then routes that internally
+ * (Notes' /oauth/callback handler harmlessly errors on missing code +
+ * state, and the user gets dropped onto the connect screen for a fresh
+ * DCR — that's the recovery path).
+ *
+ * Pathname-only (not the full URL) is deliberate: same-origin navigation
+ * is trivially safe, and we don't want to surface a redirect that
+ * leaves the hub's origin even when the redirect_uri claims it. If a
+ * future SPA needs different recovery semantics, this is the seam.
+ */
+function resolveSelfOriginRedirectPath(redirectUri: string | null, deps: OAuthDeps): string | null {
+  if (!redirectUri) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    return null;
+  }
+  const bound = resolveBoundOrigins(deps);
+  if (!bound.includes(parsed.origin)) return null;
+  return parsed.pathname || "/";
+}
+
 function pendingClientJson(clientId: string, issuer: string): Response {
   const base = issuer.replace(/\/$/, "");
   return jsonResponse(
@@ -588,8 +653,12 @@ export function handleAuthorizeGet(db: Database, req: Request, deps: OAuthDeps):
   const client = getClient(db, parsed.clientId);
   if (!client) {
     // Can't safely redirect — we don't trust the redirect_uri until we've
-    // matched it against a registered client. Render an HTML error.
-    return htmlError("Unknown application", "This client_id is not registered with this hub.", 400);
+    // matched it against a registered client. Render an HTML error that
+    // promotes a one-click recovery when the redirect_uri points at one
+    // of our own origins (the canonical fresh-machine repro: an operator
+    // wiped hub.db, the SPA still holds the old client_id in
+    // localStorage, the recovery is "clear that key and reload the SPA").
+    return unknownClientResponse(parsed.clientId, parsed.redirectUri, deps);
   }
   if (client.status !== "approved") {
     return pendingClientResponse(db, req, client, url, deps);
@@ -784,7 +853,12 @@ async function handleConsentSubmit(
   }
   const client = getClient(db, params.clientId);
   if (!client) {
-    return htmlError("Unknown application", "This client_id is not registered with this hub.", 400);
+    // Same shape as the GET handler — see the comment there. Reaching
+    // this branch on the consent POST means the client_id was deleted
+    // between render and submit (vanishingly rare) or the form was
+    // hand-crafted; the recovery affordance is still the right answer
+    // for both cases.
+    return unknownClientResponse(params.clientId, params.redirectUri, deps);
   }
   if (client.status !== "approved") {
     // Defensive: consent only renders for approved clients, so a non-approved
