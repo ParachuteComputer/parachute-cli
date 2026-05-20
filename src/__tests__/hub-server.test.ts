@@ -165,6 +165,29 @@ describe("hubFetch routing", () => {
     }
   });
 
+  test("/.well-known/parachute.json sets cache-control: no-store (hub#268 Item 1)", async () => {
+    // The discovery page (/) fetches this doc and renders Service tiles
+    // from it. Without no-store, the browser HTTP cache returns the
+    // stale services list the next time the operator clicks back to /
+    // after installing a module via /admin/modules. The doc is built
+    // per-request anyway, so giving up cacheability has no real cost.
+    const h = makeHarness();
+    try {
+      writeManifest({ services: [] }, h.manifestPath);
+      const getRes = await hubFetch(h.dir, { manifestPath: h.manifestPath })(
+        req("/.well-known/parachute.json"),
+      );
+      expect(getRes.headers.get("cache-control")).toBe("no-store");
+      // Preflight gets the same header (same corsHeaders object).
+      const optRes = await hubFetch(h.dir, { manifestPath: h.manifestPath })(
+        req("/.well-known/parachute.json", { method: "OPTIONS" }),
+      );
+      expect(optRes.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test("OPTIONS preflight on /.well-known/parachute.json returns 204 + CORS", async () => {
     const h = makeHarness();
     try {
