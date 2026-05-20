@@ -81,6 +81,17 @@ export interface SupervisorOpts {
    */
   readonly restartDelayMs?: number;
   /**
+   * Max time to wait for a child to exit after SIGTERM before
+   * escalating to SIGKILL, in ms. Default 5000 — long enough for a
+   * well-behaved module to flush its log buffer + drop its listeners,
+   * short enough that a wedged child doesn't keep `stop()` (and the
+   * container shutdown path that calls it) hanging indefinitely.
+   *
+   * Tests pass a short timeout (1–10ms) to exercise the SIGKILL
+   * escalation path without real waiting.
+   */
+  readonly killTimeoutMs?: number;
+  /**
    * Where prefixed child output goes. Default `process.stdout.write`.
    * Tests inject a collector so they can assert on the multiplexed
    * stream without spelunking stdout.
@@ -123,6 +134,7 @@ export interface SupervisedProc {
 const DEFAULT_MAX_RESTARTS = 3;
 const DEFAULT_RESTART_WINDOW_MS = 60_000;
 const DEFAULT_RESTART_DELAY_MS = 500;
+const DEFAULT_KILL_TIMEOUT_MS = 5_000;
 
 /**
  * Per-module supervisor. Owns the spawn → watch → restart loop.
@@ -143,6 +155,7 @@ export class Supervisor {
       maxRestarts: opts.maxRestarts ?? DEFAULT_MAX_RESTARTS,
       restartWindowMs: opts.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS,
       restartDelayMs: opts.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS,
+      killTimeoutMs: opts.killTimeoutMs ?? DEFAULT_KILL_TIMEOUT_MS,
       output: opts.output ?? ((line) => process.stdout.write(line)),
       spawnFn: opts.spawnFn ?? defaultSpawnFn,
       now: opts.now ?? Date.now,
@@ -177,19 +190,64 @@ export class Supervisor {
   }
 
   /**
-   * Stop a supervised module. Sends SIGTERM, marks the state
-   * `stopped`, and detaches the exit watcher so a normal termination
-   * isn't seen as a crash. Idempotent on already-stopped modules.
+   * Stop a supervised module. Sends SIGTERM, awaits the child's exit
+   * (so the log-pump drains the final flush before our stdout closes),
+   * and escalates to SIGKILL if the child doesn't exit within
+   * `killTimeoutMs`. Marks the state `stopped` and detaches the exit
+   * watcher so a normal termination isn't seen as a crash. Idempotent
+   * on already-stopped modules.
+   *
+   * The await matters in two places:
+   *   - Container shutdown (hub PID 1 receiving SIGTERM from Render):
+   *     without it, children's final log lines never make it through
+   *     hub's stdout pipe before the platform reaps the pod.
+   *   - `restart()`: a fresh spawn that races a still-listening prior
+   *     PID will fail with EADDRINUSE.
+   *
+   * The SIGKILL escalation handles a wedged module (e.g. a broken
+   * native binding ignoring SIGTERM). Without it, `stop()` would hang
+   * forever and a re-deploy would leak the orphaned child until the
+   * container itself was recycled.
    */
   async stop(short: string): Promise<ModuleState | undefined> {
     const entry = this.modules.get(short);
     if (!entry) return undefined;
     entry.stopRequested = true;
-    if (entry.proc) {
+    const proc = entry.proc;
+    if (proc) {
       try {
-        entry.proc.kill("SIGTERM");
+        proc.kill("SIGTERM");
       } catch {
         // Process may already be dead — fall through.
+      }
+      // Race the child's exit against the kill timeout. If the timer
+      // wins, escalate to SIGKILL. Either way we end up awaiting the
+      // exit promise so the log pump drains.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), this.opts.killTimeoutMs);
+      });
+      try {
+        const winner = await Promise.race([proc.exited.then(() => "exited" as const), timeout]);
+        if (winner === "timeout") {
+          this.opts.output(
+            `[supervisor] ${entry.req.short} did not exit ${this.opts.killTimeoutMs}ms after SIGTERM — escalating to SIGKILL.\n`,
+          );
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // Process may already be dead between the timeout firing
+            // and us reaching kill() — fall through to the await.
+          }
+          try {
+            await proc.exited;
+            // SIGKILL cannot be caught; OS reaps the child promptly.
+          } catch {
+            // exited rejection is non-fatal — we're stopping anyway.
+          }
+        }
+      } finally {
+        clearTimeout(timer!);
       }
     }
     entry.state = { ...entry.state, status: "stopped" };
@@ -217,16 +275,10 @@ export class Supervisor {
     if (!entry) return undefined;
     const req = entry.req;
     entry.state = { ...entry.state, status: "restarting" };
+    // stop() now awaits the prior process's exit (with SIGKILL
+    // escalation) before returning, so the fresh spawn below doesn't
+    // race on EADDRINUSE — no separate await needed here.
     await this.stop(short);
-    // Wait for the prior process to actually exit so the new spawn
-    // doesn't race on EADDRINUSE.
-    if (entry.proc) {
-      try {
-        await entry.proc.exited;
-      } catch {
-        // exited promise rejection is non-fatal — we're stopping anyway.
-      }
-    }
     // Drop the entry so `start` treats this as a clean spawn.
     this.modules.delete(short);
     return this.start(req);

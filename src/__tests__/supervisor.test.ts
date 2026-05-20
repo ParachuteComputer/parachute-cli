@@ -248,16 +248,90 @@ describe("Supervisor.stop", () => {
     });
     await sup.start({ short: "vault", cmd: ["bun", "vault.ts"] });
 
-    await sup.stop("vault");
+    // stop() now awaits proc.exited (with SIGKILL escalation on
+    // timeout) — kick it off, observe the SIGTERM landed, then
+    // resolve exited so the await completes.
+    const stopPromise = sup.stop("vault");
     expect(proc.killed).toBe(true);
     expect(proc.killSignal).toBe("SIGTERM");
 
     proc.closeStreams();
     proc.resolveExit(0);
-    await tick();
+    await stopPromise;
 
     // No second spawn — stop is an intentional exit.
     expect(spawner.calls).toHaveLength(1);
+    expect(sup.get("vault")?.status).toBe("stopped");
+  });
+
+  test("escalates to SIGKILL when child ignores SIGTERM past killTimeoutMs", async () => {
+    // Child that refuses to exit on SIGTERM. The fake records every
+    // signal it receives; the supervisor should send SIGTERM,
+    // observe no exit, then send SIGKILL after the timeout.
+    const proc = makeFakeProc(101);
+    const signals: (NodeJS.Signals | number | undefined)[] = [];
+    proc.kill = (signal) => {
+      signals.push(signal);
+      // Only SIGKILL actually terminates this fake child — SIGTERM
+      // gets logged and ignored, simulating the wedged-module shape.
+      if (signal === "SIGKILL") proc.resolveExit(null);
+    };
+    const spawner = makeQueueSpawner();
+    spawner.enqueue(proc);
+    const outputs: string[] = [];
+    const sup = new Supervisor({
+      spawnFn: spawner.spawn,
+      restartDelayMs: 0,
+      sleep: () => Promise.resolve(),
+      killTimeoutMs: 5, // Short timeout so the test doesn't pause for 5s.
+      output: (line) => outputs.push(line),
+    });
+    await sup.start({ short: "vault", cmd: ["bun", "vault.ts"] });
+
+    proc.closeStreams();
+    await sup.stop("vault");
+
+    // SIGTERM first, then SIGKILL after the timeout.
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(outputs.some((l) => l.includes("escalating to SIGKILL"))).toBe(true);
+    expect(sup.get("vault")?.status).toBe("stopped");
+  });
+
+  test("stop awaits child exit before returning (no SIGKILL needed)", async () => {
+    // Well-behaved child: exits ~10ms after SIGTERM. stop() should
+    // return only after the exit promise resolves, not immediately
+    // post-SIGTERM. This is the log-flush guarantee that motivated
+    // the await in the first place (hub#263).
+    const proc = makeFakeProc(101);
+    proc.kill = (signal) => {
+      signals.push(signal);
+      // Simulate the child taking a few ms to flush + exit.
+      setTimeout(() => proc.resolveExit(0), 5);
+    };
+    const signals: (NodeJS.Signals | number | undefined)[] = [];
+    const spawner = makeQueueSpawner();
+    spawner.enqueue(proc);
+    const sup = new Supervisor({
+      spawnFn: spawner.spawn,
+      restartDelayMs: 0,
+      sleep: () => Promise.resolve(),
+      killTimeoutMs: 1000, // Plenty of headroom for the 5ms simulated exit.
+    });
+    await sup.start({ short: "vault", cmd: ["bun", "vault.ts"] });
+
+    proc.closeStreams();
+    let exitObservedBeforeReturn = false;
+    void proc.exited.then(() => {
+      exitObservedBeforeReturn = true;
+    });
+    await sup.stop("vault");
+
+    // The exited-resolver awaited the same promise stop() did; if
+    // stop returned without awaiting, this flag could still be false.
+    // (Both promise chains fire from the same resolveExit call.
+    // Microtask ordering guarantees they both run before await returns.)
+    expect(exitObservedBeforeReturn).toBe(true);
+    expect(signals).toEqual(["SIGTERM"]);
     expect(sup.get("vault")?.status).toBe("stopped");
   });
 });
