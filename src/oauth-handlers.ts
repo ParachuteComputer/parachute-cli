@@ -966,7 +966,7 @@ async function handleConsentSubmit(
     if (assignedVault !== null && pickedVault !== assignedVault) {
       return htmlError(
         "Vault assignment mismatch",
-        `vault_scope_mismatch: the picked vault "${pickedVault}" does not match your assigned vault "${assignedVault}". Ask the hub admin to update your assignment, or pick "${assignedVault}".`,
+        `vault_scope_mismatch: the picked vault "${pickedVault}" does not match your vault assignment. Ask the hub admin to update your assignment, or pick the vault shown on the consent screen.`,
         400,
       );
     }
@@ -997,7 +997,7 @@ async function handleConsentSubmit(
     if (mismatched.length > 0) {
       return htmlError(
         "Vault assignment mismatch",
-        `vault_scope_mismatch: requested scopes ${mismatched.join(", ")} target a vault other than your assigned vault "${assignedVault}".`,
+        `vault_scope_mismatch: requested scopes ${mismatched.join(", ")} target a vault other than your vault assignment.`,
         400,
       );
     }

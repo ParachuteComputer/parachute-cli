@@ -4802,7 +4802,12 @@ describe("handleAuthorizePost — multi-user assigned vault defense (PR 4)", () 
       expect(res.status).toBe(400);
       const html = await res.text();
       expect(html).toContain("vault_scope_mismatch");
-      expect(html).toContain("default");
+      // Echo back the picked-but-rejected vault (HTML-escaped), but DON'T
+      // leak the assigned one (post-N1 nit-fold). "your vault assignment"
+      // is the soft phrase replacing the prior `your assigned vault "..."`.
+      expect(html).toContain("&quot;other&quot;");
+      expect(html).toContain("your vault assignment");
+      expect(html).not.toContain("&quot;default&quot;");
     } finally {
       cleanup();
     }
@@ -4978,6 +4983,126 @@ describe("handleAuthorizePost — multi-user assigned vault defense (PR 4)", () 
       const refreshBody = (await refreshRes.json()) as { access_token: string };
       const refreshedValidated = await validateAccessToken(db, refreshBody.access_token, ISSUER);
       expect(refreshedValidated.payload.vault_scope).toEqual(["default"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Reviewer nit N3 (PR #283): the previous test only verified that
+  // `vault_scope` SURVIVES refresh — it didn't prove the claim is re-derived
+  // mid-session if an admin changes the user's `assigned_vault`. This test
+  // pins the actual "re-derived at refresh time" invariant by mutating the
+  // assignment between mint and refresh, then asserting the new token
+  // carries the post-mutation value. The `scope` claim itself stays
+  // narrowed to the original vault (it was set at consent time and stored
+  // on the refresh-token row); only the informational `vault_scope` claim
+  // tracks the live row.
+  test("refresh flow picks up a mid-session assigned_vault change", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const bob = await createUser(db, "bob", "pw", { assignedVault: "vault-a" });
+      const session = createSession(db, { userId: bob.id });
+      const reg = registerClient(db, { redirectUris: ["https://app.example/cb"] });
+      const { verifier, challenge } = makePkce();
+
+      // Manifest fixture: both vault-a (initial assignment) and vault-b
+      // (post-admin-update assignment) are registered. PR 4 doesn't ship
+      // a PATCH endpoint, so we use the same direct UPDATE the design
+      // anticipates an admin path would call.
+      const twoVaultManifest: ServicesManifest = {
+        services: [
+          {
+            name: "parachute-vault",
+            port: 1940,
+            paths: ["/vault/vault-a", "/vault/vault-b"],
+            health: "/health",
+            version: "0.3.0",
+          },
+        ],
+      };
+
+      // Step 1: initial OAuth dance + token mint. Asserts vault_scope=["vault-a"].
+      const consentForm = new URLSearchParams({
+        __action: "consent",
+        __csrf: TEST_CSRF,
+        approve: "yes",
+        client_id: reg.client.clientId,
+        redirect_uri: "https://app.example/cb",
+        response_type: "code",
+        scope: "vault:read",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        vault_pick: "vault-a",
+      });
+      const consentRes = await handleAuthorizePost(
+        db,
+        new Request(`${ISSUER}/oauth/authorize`, {
+          method: "POST",
+          body: consentForm,
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: `${CSRF_COOKIE}; ${buildSessionCookie(session.id, 86400)}`,
+          },
+        }),
+        { issuer: ISSUER, loadServicesManifest: () => twoVaultManifest },
+      );
+      const code = new URL(consentRes.headers.get("location") ?? "").searchParams.get("code");
+      const tokenRes = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: code ?? "",
+            client_id: reg.client.clientId,
+            redirect_uri: "https://app.example/cb",
+            code_verifier: verifier,
+          }),
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: () => twoVaultManifest },
+      );
+      const tokenBody = (await tokenRes.json()) as {
+        access_token: string;
+        refresh_token: string;
+      };
+      const initial = await validateAccessToken(db, tokenBody.access_token, ISSUER);
+      expect(initial.payload.vault_scope).toEqual(["vault-a"]);
+      expect(initial.payload.scope).toBe("vault:vault-a:read");
+
+      // Step 2: admin updates bob's assigned_vault to vault-b. Direct UPDATE
+      // because Phase 1 has no PATCH endpoint; same effect a future admin
+      // path would have. The refresh path reads the live row at mint time
+      // (`vaultScopeForUser`), so the next refresh should pick up the new
+      // value.
+      db.prepare("UPDATE users SET assigned_vault = ? WHERE id = ?").run("vault-b", bob.id);
+
+      // Step 3: refresh the token. vault_scope should be ["vault-b"] (the
+      // new live value); the `scope` claim stays narrowed to the original
+      // vault (auth-code grant snapshotted it onto the refresh-token row).
+      const refreshRes = await handleToken(
+        db,
+        new Request(`${ISSUER}/oauth/token`, {
+          method: "POST",
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: tokenBody.refresh_token,
+            client_id: reg.client.clientId,
+          }),
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+        }),
+        { issuer: ISSUER, loadServicesManifest: () => twoVaultManifest },
+      );
+      expect(refreshRes.status).toBe(200);
+      const refreshBody = (await refreshRes.json()) as { access_token: string };
+      const refreshed = await validateAccessToken(db, refreshBody.access_token, ISSUER);
+      expect(refreshed.payload.vault_scope).toEqual(["vault-b"]);
+      // The `scope` claim is still bound to the original consent — the
+      // refresh-token row carries `vault:vault-a:read` and the rotation
+      // preserves it. PR 5 will be the side that enforces "your access
+      // tokens for the old vault stop working when the assignment moves";
+      // PR 4 just emits the informational claim correctly.
+      expect(refreshed.payload.scope).toBe("vault:vault-a:read");
     } finally {
       cleanup();
     }
