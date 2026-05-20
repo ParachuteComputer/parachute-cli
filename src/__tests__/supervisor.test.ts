@@ -328,7 +328,8 @@ describe("Supervisor.stop", () => {
 
     // The exited-resolver awaited the same promise stop() did; if
     // stop returned without awaiting, this flag could still be false.
-    // (Both promise chains fire from the same resolveExit call.)
+    // (Both promise chains fire from the same resolveExit call.
+    // Microtask ordering guarantees they both run before await returns.)
     expect(exitObservedBeforeReturn).toBe(true);
     expect(signals).toEqual(["SIGTERM"]);
     expect(sup.get("vault")?.status).toBe("stopped");

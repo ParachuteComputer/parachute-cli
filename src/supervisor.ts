@@ -241,12 +241,13 @@ export class Supervisor {
           }
           try {
             await proc.exited;
+            // SIGKILL cannot be caught; OS reaps the child promptly.
           } catch {
             // exited rejection is non-fatal — we're stopping anyway.
           }
         }
       } finally {
-        if (timer !== undefined) clearTimeout(timer);
+        clearTimeout(timer!);
       }
     }
     entry.state = { ...entry.state, status: "stopped" };
