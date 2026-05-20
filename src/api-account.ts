@@ -46,6 +46,7 @@
  * trade-off discussion in §security/force-change-password.
  */
 import type { Database } from "bun:sqlite";
+import { hash as argonHash } from "@node-rs/argon2";
 import { type ChangePasswordMode, renderChangePassword } from "./account-change-password-ui.ts";
 import { renderAdminError } from "./admin-login-ui.ts";
 import { CSRF_FIELD_NAME, ensureCsrfToken, verifyCsrfToken } from "./csrf.ts";
@@ -53,8 +54,8 @@ import { isHttpsRequest } from "./request-protocol.ts";
 import { findActiveSession } from "./sessions.ts";
 import {
   PASSWORD_MAX_LEN,
+  UserNotFoundError,
   getUserById,
-  setPassword,
   validatePassword,
   verifyPassword,
 } from "./users.ts";
@@ -164,16 +165,23 @@ export function handleAccountChangePasswordGet(req: Request, deps: ApiAccountDep
  * §scope-section ordering):
  *   1. Session (else 401 — no body to validate without an identity).
  *   2. CSRF (else 400 — same wire shape as `/login` POST CSRF failure).
- *   3. `new_password.length > PASSWORD_MAX_LEN` → 413 BEFORE argon2id
- *      touches it. Defensive against CPU-DoS through a megabyte body.
- *   4. `validatePassword(new_password)` → 400 `invalid_password`
+ *   3. Required-field presence (else 400).
+ *   4. `current_password.length > PASSWORD_MAX_LEN` → 413 BEFORE argon2id
+ *      verify touches it. Session-gated, so the CPU-DoS surface is
+ *      narrower than the unauthenticated `/login` POST, but the cap is
+ *      cheap insurance against a megabyte-current-password submission
+ *      (PR-3 fold N1).
+ *   5. `new_password.length > PASSWORD_MAX_LEN` → 413 BEFORE argon2id
+ *      hash touches it.
+ *   6. `validatePassword(new_password)` → 400 `invalid_password`
  *      (12-char floor; same validator the create-user path uses).
- *   5. `new_password !== confirm` → 400 `password_mismatch`.
- *   6. `verifyPassword(user, current_password)` → 401 `invalid_credentials`.
- *      Runs argon2id so order matters — 5 happens first to avoid burning
+ *   7. `new_password !== confirm` → 400 `password_mismatch`.
+ *   8. `verifyPassword(user, current_password)` → 401 `invalid_credentials`.
+ *      Runs argon2id so order matters — 7 happens first to avoid burning
  *      a hash on an obviously-broken input.
- *   7. `new_password === current_password` → 400 `password_unchanged`.
- *   8. `setPassword` + `markPasswordChanged` → 302 → next.
+ *   9. `new_password === current_password` → 400 `password_unchanged`.
+ *  10. Hash new + atomic UPDATE (password_hash + password_changed=1 +
+ *      updated_at) in one transaction (PR-3 fold N2) → 302 → next.
  *
  * Re-render shape on validation failure: the page comes back with an
  * inline error banner (matching `/login`'s POST failure shape), HTTP
@@ -239,6 +247,26 @@ export async function handleAccountChangePasswordPost(
         errorMessage: "All three fields are required.",
       }),
       400,
+    );
+  }
+
+  // Cap `currentPassword` length BEFORE argon2id verify touches it. The
+  // session-authenticated caller would otherwise be able to submit a
+  // megabyte body and force a full argon2id hash on arbitrary input
+  // (CPU-DoS shape — same flavor as the unauthenticated /api/users POST
+  // mitigates with the new-password cap below, but session-gated here
+  // since change-password sits behind /login). Same 413 + shape as the
+  // new-password cap; same `PASSWORD_MAX_LEN` constant.
+  if (currentPassword.length > PASSWORD_MAX_LEN) {
+    return htmlResponse(
+      renderChangePassword({
+        mode,
+        csrfToken,
+        username: user.username,
+        next,
+        errorMessage: `Current password must be ≤ ${PASSWORD_MAX_LEN} characters.`,
+      }),
+      413,
     );
   }
 
@@ -325,28 +353,57 @@ export async function handleAccountChangePasswordPost(
     );
   }
 
-  // Persist new hash + flip the changed flag. Two statements (could be
-  // a single UPDATE; kept separate so `setPassword`'s contract — "just
-  // updates the hash" — stays clean and the `markPasswordChanged`
-  // helper is reusable from the admin-reset path if Phase 2 ever wants
-  // to call it independently).
+  // Persist new hash + flip the changed flag, atomically.
+  //
+  // Hash OUTSIDE the transaction. `db.transaction()` on bun:sqlite is
+  // sync — argon2id's async hash promise inside the closure would
+  // silently break atomicity (same constraint the OAuth token-rotate
+  // path documents in oauth-handlers.ts). Hash first, then run both
+  // UPDATEs inside the tx so a mid-write process crash can't land us
+  // with a fresh hash but a stale flag (benign in this direction — one
+  // extra force-redirect on next login — but trivially avoidable).
   const now = deps.now ?? (() => new Date());
-  await setPassword(deps.db, user.id, newPassword, now);
-  markPasswordChanged(deps.db, user.id, now);
+  const passwordHash = await argonHash(newPassword);
+  const stamp = now().toISOString();
+  try {
+    deps.db.transaction(() => {
+      const result = deps.db
+        .prepare(
+          "UPDATE users SET password_hash = ?, password_changed = 1, updated_at = ? WHERE id = ?",
+        )
+        .run(passwordHash, stamp, user.id);
+      if (result.changes === 0) throw new UserNotFoundError(user.id);
+    })();
+  } catch (err) {
+    // The user row vanished between the session-resolve check above and
+    // the UPDATE. Surface as 401 + "account not found" — same shape as
+    // the stale-session-id branch at the top of this handler.
+    if (err instanceof UserNotFoundError) {
+      return htmlResponse(
+        renderAdminError({
+          title: "Account not found",
+          message: "The signed-in account no longer exists. Please sign in again.",
+        }),
+        401,
+      );
+    }
+    throw err;
+  }
 
+  // Ops-visibility headers (no downstream consumer): surface password-
+  // change events to hub log grep / monitoring without changing the
+  // response body. Safe to remove if not in use. `x-parachute-password-
+  // changed: 1` is the event marker; `x-secure-context` records whether
+  // the request arrived over HTTPS (matches the cookie's `Secure`
+  // attribute decision so a log line at the same path tells the
+  // operator the transport posture without re-checking the cookie).
+  // No new session cookie set — the existing one stays valid. The user
+  // remains signed in, just with a fresh hash. (Other devices' sessions
+  // also stay valid; Phase 2 adds "sign out everywhere" per the
+  // design's session-invalidation discussion.)
   return redirect(next, {
-    // No new session cookie — the existing one stays valid. The user
-    // remains signed in, just with a fresh hash. (Other devices'
-    // sessions also stay valid; Phase 2 adds "sign out everywhere"
-    // per the design's session-invalidation discussion.)
     "x-parachute-password-changed": "1",
-    // For tests + ops visibility; not load-bearing.
     "cache-control": "no-store",
-    // Force the new HTTPS-or-HTTP CSRF cookie to remain — no-op if not
-    // present, but mirrors the `/login` POST's posture of not stomping
-    // on session/CSRF cookies on the success redirect.
-    // (Intentionally not setting set-cookie — the existing cookies
-    // ride through.)
     "x-secure-context": isHttpsRequest(req) ? "https" : "http",
   });
 }
@@ -355,11 +412,23 @@ export async function handleAccountChangePasswordPost(
  * Flip `users.password_changed` from 0 to 1 for the given user.
  * Idempotent — running against an already-`true` row is a no-op.
  *
- * Lives here (not in `users.ts`) because the only call sites are the
- * change-password POST handler and the admin-reset-password path (PR 4
- * may add the latter; today there is no reset). When that second call
- * site exists, lift this into `users.ts` next to `setPassword` for
- * shared use.
+ * **Not used by the change-password POST itself** — that path inlines
+ * the password_changed=1 flip into the same UPDATE that writes the new
+ * hash, so the two writes commit atomically inside one transaction
+ * (folds N2 of PR #281). This standalone helper is retained for two
+ * call sites that don't co-occur with a hash rewrite:
+ *
+ *   1. Test scaffolding that flips the bit without rotating the hash.
+ *   2. Phase 2's admin-reset path, where the operator-side rewrite of
+ *      the hash flips `password_changed` back to 0 (so the user is
+ *      forced through change-password on next login) — there's no
+ *      `markPasswordChanged` call on that flow, but a future
+ *      "skip-force-change for this re-issued password" flow would
+ *      want it.
+ *
+ * Lives here (not in `users.ts`) because the only current call site is
+ * the test scaffolding; lift into `users.ts` next to `setPassword` when
+ * Phase 2 grows a production caller.
  */
 export function markPasswordChanged(
   db: Database,

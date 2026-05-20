@@ -330,6 +330,38 @@ describe("POST /account/change-password", () => {
     expect(elapsed).toBeLessThan(200);
   });
 
+  test("current_password too long (> PASSWORD_MAX_LEN) → 413, fires before argonVerify (PR-3 fold N1)", async () => {
+    // Fold N1: a session-authenticated caller could otherwise submit a
+    // huge `current_password` and burn argon2id verify cycles on
+    // arbitrary input. The cap should reject before verifyPassword
+    // touches the body — pin with elapsed-time floor < 200ms.
+    const { cookie } = await sessionCookieFor(harness.db, "newbie", "old-default-pw", {
+      passwordChanged: false,
+    });
+    const huge = "x".repeat(5000);
+    const { body, headers } = formBody({
+      [CSRF_FIELD_NAME]: TEST_CSRF,
+      current_password: huge,
+      new_password: "user-chosen-strong-passphrase",
+      new_password_confirm: "user-chosen-strong-passphrase",
+    });
+    const req = new Request("http://hub.test/account/change-password", {
+      method: "POST",
+      headers: { ...headers, cookie },
+      body,
+    });
+    const t0 = Date.now();
+    const res = await handleAccountChangePasswordPost(req, { db: harness.db });
+    const elapsed = Date.now() - t0;
+    expect(res.status).toBe(413);
+    const html = await res.text();
+    expect(html).toContain("Current password must be");
+    // Pin: cap-and-reject < 200ms even on a noisy runner. An argon2id
+    // verify of the (correct length but mistyped) current password would
+    // push elapsed into the hundreds of ms.
+    expect(elapsed).toBeLessThan(200);
+  });
+
   test("new !== confirm → 400 password_mismatch", async () => {
     const { cookie } = await sessionCookieFor(harness.db, "newbie", "old-default-pw");
     const { body, headers } = formBody({

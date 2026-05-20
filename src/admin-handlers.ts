@@ -23,7 +23,7 @@ import {
   deleteSession,
   parseSessionCookie,
 } from "./sessions.ts";
-import { type User, getUserByUsername, verifyPassword } from "./users.ts";
+import { PASSWORD_MAX_LEN, type User, getUserByUsername, verifyPassword } from "./users.ts";
 
 function htmlResponse(body: string, status = 200, extra: Record<string, string> = {}): Response {
   return new Response(body, {
@@ -150,6 +150,22 @@ export async function handleAdminLoginPost(
     return htmlResponse(
       renderAdminLogin({ next, csrfToken, errorMessage: "Username and password are required." }),
       400,
+    );
+  }
+  // Cap incoming password length BEFORE getUserByUsername / argon2id
+  // verify touches it. An unauthenticated POST submitting a megabyte
+  // password would otherwise force a full argon2id hash on arbitrary
+  // input — CPU-DoS shape. 413 fires before any DB or hash work; same
+  // `PASSWORD_MAX_LEN` constant `/api/users` and `/account/change-
+  // password` use (PR-3 fold N1: applied uniformly across the auth
+  // surface family).
+  if (password.length > PASSWORD_MAX_LEN) {
+    return htmlResponse(
+      renderAdminError({
+        title: "Password too long",
+        message: `Password must be ≤ ${PASSWORD_MAX_LEN} characters.`,
+      }),
+      413,
     );
   }
   const user = getUserByUsername(db, username);

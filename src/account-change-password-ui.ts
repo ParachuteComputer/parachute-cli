@@ -100,9 +100,12 @@ export interface RenderChangePasswordProps {
   next: string;
   /** Inline error to surface above the form after a failed POST. */
   errorMessage?: string;
+  // NOTE: unused in Phase 1 (POST always redirects on success). Reserved
+  // for Phase 2 self-service profile flow that may rotate-in-place and
+  // re-render with a success banner.
   /** Render a success banner — used by the rotate flow when the user
    *  re-renders the form after a successful change (Phase 2; for now
-   *  the POST 200 path returns a JSON ok and the handler redirects). */
+   *  the POST success path always redirects so this never fires). */
   successMessage?: string;
 }
 

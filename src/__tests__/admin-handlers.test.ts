@@ -316,6 +316,31 @@ describe("handleAdminLoginPost", () => {
     expect(denied.status).toBe(429);
     expect(await denied.text()).toContain("Too many login attempts");
   });
+
+  test("password too long (> PASSWORD_MAX_LEN) → 413, fires before argonVerify (PR-3 fold N1)", async () => {
+    // Fold N1: an unauthenticated POST submitting a megabyte password
+    // would otherwise burn a full argon2id verify on arbitrary input.
+    // The cap fires before getUserByUsername / verifyPassword — pin with
+    // an elapsed-time floor of 200ms.
+    await createUser(harness.db, "admin", "correct-pw", { passwordChanged: true });
+    const huge = "z".repeat(5000);
+    const { body, headers } = formBody({
+      [CSRF_FIELD_NAME]: TEST_CSRF,
+      username: "admin",
+      password: huge,
+      next: "/admin/vaults",
+    });
+    const req = new Request("http://hub.test/login", {
+      method: "POST",
+      headers: { ...headers, cookie: CSRF_COOKIE },
+      body,
+    });
+    const t0 = Date.now();
+    const res = await handleAdminLoginPost(harness.db, req);
+    const elapsed = Date.now() - t0;
+    expect(res.status).toBe(413);
+    expect(elapsed).toBeLessThan(200);
+  });
 });
 
 describe("loginRedirectTarget — force-change-password (multi-user PR 3)", () => {
