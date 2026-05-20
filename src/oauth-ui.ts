@@ -344,6 +344,118 @@ export function renderError(props: ErrorViewProps): string {
   return baseDocument(props.title, body);
 }
 
+export interface UnknownClientViewProps {
+  /** The unknown client_id the request carried. Surfaced verbatim for debugging. */
+  clientId: string;
+  /**
+   * The redirect_uri the request carried, when present + parseable as
+   * `<one-of-our-bound-origins>/<path>`. Triggers the inline "Reset
+   * connection" affordance: the page emits a tiny JS snippet that clears
+   * the requesting SPA's DCR localStorage cache (any key prefixed
+   * `lens:dcr:`) on our own origin, then navigates to the redirect_uri's
+   * mount path so the SPA picks up a fresh DCR.
+   *
+   * Set to `null` when the redirect_uri is missing, malformed, or points
+   * at an origin we don't serve — those reach a third-party SPA we can't
+   * safely interact with from our DOM and we fall back to the static
+   * error variant.
+   */
+  selfOriginRedirectPath: string | null;
+}
+
+/**
+ * "Unknown application" page rendered when `/oauth/authorize` receives a
+ * `client_id` that's not in the hub's `clients` table. The single most-
+ * reported cause is a stale localStorage entry on the SPA side: the
+ * operator wiped `~/.parachute/hub.db` between testing iterations, but the
+ * browser still holds the old hub's DCR-cached client_id and keeps using
+ * it. The hub's behaviour is correct (reject unknown client_id, never
+ * grant an authorize request against an unregistered client) but the
+ * operator is stranded — they need to clear the SPA's cache and the SPA
+ * has no signal to do that on its own.
+ *
+ * Recovery affordance: when the redirect_uri points at an origin the hub
+ * itself serves (any entry in `hubBoundOrigins`), the page renders a
+ * "Reset connection" button. The button runs an inline JS snippet that
+ * clears every `lens:dcr:*` key from localStorage on the hub's own origin
+ * — since Notes (and any future Parachute SPA) is mounted at the hub's
+ * origin, they share localStorage with this error page — then navigates
+ * back to the redirect_uri's mount path. The SPA loads fresh, finds no
+ * cached client_id, and runs a brand-new DCR against the current hub.
+ *
+ * `lens:dcr:` is intentionally hardcoded: Notes' storage layer uses that
+ * prefix (see `parachute-notes/src/lib/vault/storage.ts`'s `DCR_PREFIX`).
+ * Future SPAs that follow the same hub-origin-mounted shape would need
+ * their prefix added here, or we extend the snippet to clear any key
+ * matching `.*:dcr:.*`. Today it's just Notes.
+ *
+ * No JS used outside the optional reset button — the static parts stay
+ * form-free + accessible to readers/screen-readers without script.
+ */
+export function renderUnknownClient(props: UnknownClientViewProps): string {
+  const safeClientId = escapeHtml(props.clientId);
+  const resetSection =
+    props.selfOriginRedirectPath !== null
+      ? `
+      <p>Most often this means the app's local connection state was saved
+        against a previous installation of this hub. Resetting the
+        connection clears the stale state and lets the app register
+        afresh.</p>
+      <div class="unknown-client-actions">
+        <button type="button" class="btn btn-primary" id="unknown-client-reset"
+          data-target="${escapeHtml(props.selfOriginRedirectPath)}">Reset connection &amp; reload</button>
+      </div>
+      <p class="fine">If the button doesn't help, clear site data for this
+        hub in your browser and reload the app.</p>
+      <script>
+        (function () {
+          var btn = document.getElementById('unknown-client-reset');
+          if (!btn) return;
+          btn.addEventListener('click', function () {
+            try {
+              // Notes (and other Parachute SPAs mounted at this hub's
+              // origin) cache DCR client_ids under the 'lens:dcr:' key
+              // prefix. Clear them all — a stale entry against a wiped
+              // hub.db is the canonical cause of this error.
+              var keys = [];
+              for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && k.indexOf('lens:dcr:') === 0) keys.push(k);
+              }
+              keys.forEach(function (k) { localStorage.removeItem(k); });
+            } catch (e) {
+              // localStorage may be unavailable (private mode, sandbox).
+              // The redirect still happens — the SPA will try DCR again
+              // and either succeed or surface its own diagnostic.
+            }
+            var target = btn.dataset.target || '/';
+            window.location.assign(target);
+          });
+        })();
+      </script>`
+      : `
+      <p class="error-help">
+        If you reached this from a third-party app, the app's OAuth
+        configuration may be wrong. You can safely close this window.
+      </p>`;
+  const body = `
+    <div class="card">
+      <div class="card-header">
+        <div class="brand">
+          <span class="brand-mark">⌬</span>
+          <span class="brand-name">Parachute</span>
+        </div>
+        <h1 class="error-title">Unknown application</h1>
+        <p class="subtitle">
+          This <code>client_id</code> is not registered with this hub:
+          <code>${safeClientId}</code>.
+        </p>
+      </div>
+      ${resetSection}
+    </div>`;
+  return baseDocument("Unknown application", body);
+}
+
 function renderScopeRow(scope: string): string {
   const explanation = explainScope(scope);
   if (!explanation) {
@@ -560,6 +672,16 @@ const STYLES = `
     border-top: 1px solid ${PALETTE.borderLight};
     color: ${PALETTE.fgMuted};
     font-size: 0.88rem;
+  }
+  .unknown-client-actions {
+    margin: 1.25rem 0 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .fine {
+    color: ${PALETTE.fgMuted};
+    font-size: 0.85rem;
   }
 
   .scopes { margin: 0 0 1.5rem; }

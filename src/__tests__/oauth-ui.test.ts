@@ -6,6 +6,7 @@ import {
   renderError,
   renderHiddenInputs,
   renderLogin,
+  renderUnknownClient,
 } from "../oauth-ui.ts";
 
 const PARAMS: AuthorizeFormParams = {
@@ -229,6 +230,48 @@ describe("renderError", () => {
     expect(html).not.toContain("<script>1</script>");
     expect(html).not.toContain('"><img>');
     expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("renderUnknownClient", () => {
+  test("escapes the client_id into the page", () => {
+    const html = renderUnknownClient({
+      clientId: "<img src=x>",
+      selfOriginRedirectPath: null,
+    });
+    expect(html).toContain("&lt;img src=x&gt;");
+    expect(html).not.toContain("<img src=x>");
+  });
+
+  test("renders the recovery button when selfOriginRedirectPath is set", () => {
+    const html = renderUnknownClient({
+      clientId: "stale-id",
+      selfOriginRedirectPath: "/notes/oauth/callback",
+    });
+    expect(html).toContain('id="unknown-client-reset"');
+    expect(html).toContain('data-target="/notes/oauth/callback"');
+    // The inline JS clears the Notes-side DCR cache prefix.
+    expect(html).toContain("'lens:dcr:'");
+  });
+
+  test("escapes selfOriginRedirectPath into the data-target attribute", () => {
+    const html = renderUnknownClient({
+      clientId: "id",
+      selfOriginRedirectPath: '/x"><script>alert(1)</script>',
+    });
+    expect(html).not.toContain("><script>alert(1)</script>");
+    expect(html).toContain("&quot;");
+  });
+
+  test("omits the recovery button when selfOriginRedirectPath is null", () => {
+    const html = renderUnknownClient({
+      clientId: "stale-id",
+      selfOriginRedirectPath: null,
+    });
+    expect(html).not.toContain('id="unknown-client-reset"');
+    expect(html).not.toContain("'lens:dcr:'");
+    // Static fallback help text still surfaces.
+    expect(html).toContain("close this window");
   });
 });
 
