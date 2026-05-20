@@ -93,14 +93,26 @@ interface SignOpts {
   omitKid?: boolean;
   kid?: string;
   /**
-   * When provided, sets the `vault_scope` claim. Empty array, undefined
-   * "absent claim entirely" (the value the option lookup uses to decide
-   * whether to include the claim), and explicit `null` are all distinct —
-   * tests need each shape to exercise the absent / empty / malformed
-   * paths the validate code handles.
+   * Typed seam for the `vault_scope` claim. Two non-array values are
+   * load-bearing here:
+   *
+   *   - `undefined` (the field omitted) → claim emitted as `[]` (default
+   *     mint-shape hub uses post-PR-4, including for admins).
+   *   - `"OMIT_CLAIM"` → claim NOT emitted at all (pre-PR-4 wire shape;
+   *     surfaces at scope-guard as `[]` for back-compat).
+   *
+   * Explicit `null` IS allowed by the type but the `??` fallback in the
+   * helper collapses it to `[]` — same as the default. The on-wire null
+   * path (a literal JSON `null` value in the JWT payload) is exercised
+   * via `vaultScopeRaw: null` instead, which bypasses the typed seam.
    */
   vaultScope?: string[] | null | "OMIT_CLAIM";
-  /** Force a malformed (non-array) `vault_scope` claim for the malformed path test. */
+  /**
+   * Force a raw value into the `vault_scope` claim, bypassing the typed
+   * `vaultScope` seam. Used to exercise the malformed-input paths the
+   * validate code normalizes to `[]`: non-array string / number /
+   * JSON-null, plus mixed arrays with non-string entries.
+   */
   vaultScopeRaw?: unknown;
 }
 
@@ -646,6 +658,12 @@ describe("createScopeGuard — vault_scope claim surfacing", () => {
     // hub never mints, (b) the scope-string check upstream is the
     // primary gate anyway. Throwing here would translate a typo into a
     // 401 instead of a clean 403 from the scope-string layer.
+    //
+    // Three shapes: string-on-wire, number-on-wire, JSON-null-on-wire.
+    // The `null` case uses `vaultScopeRaw` (not `vaultScope`) because
+    // the `signJwt` typed seam routes `null` through `?? []` — that
+    // path tests the option-API ergonomics, this path tests the actual
+    // JWT-payload-with-null-value the validate code receives.
     const guard = makeGuard();
     const tokenStr = await signJwt(kp, {
       iss: fixture.origin,
@@ -660,6 +678,13 @@ describe("createScopeGuard — vault_scope claim surfacing", () => {
     });
     const claimsNum = await guard.validateHubJwt(tokenNum);
     expect(claimsNum.vaultScope).toEqual([]);
+
+    const tokenNull = await signJwt(kp, {
+      iss: fixture.origin,
+      vaultScopeRaw: null,
+    });
+    const claimsNull = await guard.validateHubJwt(tokenNull);
+    expect(claimsNull.vaultScope).toEqual([]);
 
     guard.resetJwksCache();
   });

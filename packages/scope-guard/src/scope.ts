@@ -92,6 +92,18 @@ function decompose(scope: string): Decomposed | null {
  * `validateHubJwt` returns claims, *before* dispatching to the per-vault
  * handler. See `parachute-vault/src/auth.ts`'s `authenticateHubJwt` for
  * the canonical wire-up.
+ *
+ * Caller responsibility: validate `requestVaultName` is a non-empty,
+ * defined string before calling. The type signature is strict, but
+ * TypeScript can't catch a runtime `undefined` or empty string slipping
+ * through a `URL.pathname.split("/")` result or a config-derived value
+ * that wasn't checked. Passing such a value returns `false` against any
+ * non-empty `vaultScope` (secure-by-default: refuse when the target is
+ * missing), which the consumer then translates to a
+ * `vault_scope_mismatch` 403. Callers that derive `requestVaultName`
+ * from request shape should reject the request upstream with a 4xx that
+ * names the missing-target problem, rather than letting it surface here
+ * as a pin mismatch.
  */
 export function enforceVaultScope(
   claims: { vaultScope: string[] },
