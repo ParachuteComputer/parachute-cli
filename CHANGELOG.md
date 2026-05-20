@@ -2,6 +2,34 @@
 
 All notable changes to `@openparachute/hub` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) loosely; versions follow [SemVer](https://semver.org/) with the pre-1.0 RC governance described in [`parachute-patterns/patterns/governance.md`](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/governance.md).
 
+## [0.5.10-rc.17] - 2026-05-20
+
+CORS support on the public OAuth surface so third-party SPAs can talk to a self-hosted hub from a foreign origin. Caught when Aaron's Gitcoin Brain UI at `https://unforced-dev.github.io` tried to OAuth-register with his hub at `https://parachute.taildf9ce2.ts.net`: the browser's preflight on `POST /oauth/register` got back a 405 without CORS headers and blocked the actual request, breaking the entire third-party-SPA story. OAuth Dynamic Client Registration (RFC 7591) is *designed* for cross-origin use — arbitrary SPAs register → authorize → exchange tokens — so wildcard CORS on the OAuth endpoints is the correct posture, not a workaround.
+
+Backend surface:
+
+- **New `src/cors.ts`** — single-source-of-truth for the CORS posture. Exports `CORS_RESPONSE_HEADERS` (the headers folded onto actual responses), `CORS_PREFLIGHT_HEADERS` (superset for OPTIONS preflights), `isCorsAllowedRoute(pathname)` (predicate matching `/oauth/*`), `corsPreflightResponse()` (204 + preflight headers), and `applyCorsHeaders(response)` (folds the response headers onto an existing Response). File-level comment lays out the matrix, the `Allow-Origin: *` + `Allow-Credentials: false` rationale, and per-header justification (Authorization + Content-Type + X-Requested-With in `Allow-Headers`; `Max-Age: 86400` for a 24h preflight cache; WWW-Authenticate in `Expose-Headers` so cross-origin SPAs can read RFC 6750 error responses).
+- **`src/hub-server.ts`** — two changes:
+  - Pre-dispatch OPTIONS preflight handler at the top of `hubFetch` (after the 301 redirects, before `/health`): `if (req.method === "OPTIONS" && isCorsAllowedRoute(pathname)) return corsPreflightResponse()`. This intercepts before the per-route handlers, so an OPTIONS to `/oauth/register` doesn't hit the POST-only handler's 405 branch — preflight is a CORS-protocol artifact, not a "real" request to the endpoint.
+  - Each `/oauth/*` route block (`/oauth/authorize`, `/oauth/authorize/approve`, `/oauth/token`, `/oauth/register`, `/oauth/revoke`) wraps its returns in `applyCorsHeaders(...)` so error branches (405 method-not-allowed, 503 db-not-configured) carry CORS too. Without that, the SPA can't read the error body — the browser shows it as an opaque network failure.
+
+Scope discipline:
+
+- **In-scope**: `/oauth/*` only. The four `/.well-known/*` documents (oauth-authorization-server, parachute.json, jwks.json, parachute-revocation.json) are *also* cross-origin endpoints but already carry their own inline CORS handling (narrower `Allow-Methods: GET, OPTIONS` since they're read-only) and predate this module. `isCorsAllowedRoute` intentionally excludes them so there's one CORS posture per route family — see the comment in `src/cors.ts`.
+- **Out-of-scope (still same-origin-only, no CORS headers)**: `/api/*` (admin Bearer surface), `/admin/*` (SPA shell), `/login` / `/logout` / `/account/*` (interactive session pages), `/vault/*` and other module content proxies. Those *do* consult cookies / minted bearers tied to the operator's hub origin; opening them cross-origin would unwire CSRF defenses for no third-party benefit. Tests in `src/__tests__/cors.test.ts` pin both directions: every `/oauth/*` route gets CORS, every listed out-of-scope route does not.
+
+Why wildcard origin (`*`) and not an allowlist: these endpoints are public by design. The OAuth protocol (RFC 6749) plus DCR (RFC 7591) put the access-control gate inside the protocol — PKCE, redirect_uri matching, the operator-driven approval flow in #74/#199 — not at the network layer. Wildcard origin is the canonical posture for OAuth authorization servers (Okta, Auth0, Keycloak); narrowing at this layer breaks legitimate third-party SPAs without preventing any attack the protocol doesn't already cover. Wildcard is safe with `Allow-Credentials: false` because none of these endpoints consult cookies — bearer tokens travel in the Authorization header, which credentials:false + origin:* allows.
+
+Gate: `bun test ./src` — **1595 pass / 0 fail / 31295 expects across 84 files** (+20 over rc.16 baseline 1575). typecheck + biome clean (root).
+
+Smoke (against `bun src/hub-server.ts --port 11939 --issuer https://parachute.taildf9ce2.ts.net`):
+
+- `OPTIONS /oauth/register` with `Origin: https://unforced-dev.github.io` → `HTTP/1.1 204 No Content` + `Access-Control-Allow-Origin: *` + `Access-Control-Allow-Methods: GET, POST, OPTIONS` + `Access-Control-Allow-Headers: Authorization, Content-Type, X-Requested-With` + `Access-Control-Max-Age: 86400`. (Was: 405 with no CORS headers — the original bug.)
+- `POST /oauth/register` with `Origin: https://unforced-dev.github.io` and a valid DCR body → `HTTP/1.1 201 Created` + `Access-Control-Allow-Origin: *` + the new client row in the response body.
+- `OPTIONS /api/me` and `OPTIONS /login` from the same third-party origin → no `Access-Control-Allow-Origin` header in the response (scope discipline preserved).
+
+Follow-up (filed by orchestrator): admin-configurable CORS allowlist on `/api/*` + module content routes (`/vault/*`, etc.). The wildcard posture isn't appropriate for those — they need per-operator origin allowlisting. Out of scope for this PR.
+
 ## [0.5.10-rc.15] - 2026-05-20
 
 Multi-user Phase 1 — PR 4 of 5: OAuth vault_scope claim + consent-picker lock (hub#252, design [`parachute.computer/design/2026-05-20-multi-user-phase-1.md`](https://parachute.computer/design/2026-05-20-multi-user-phase-1/)). Builds on PR 3 (rc.14) which shipped the force-change-password flow. This release wires the *OAuth issuer* side: hub-minted tokens now carry a `vault_scope` claim derived from the user's `assigned_vault`, the consent picker is locked-and-displayed for non-admin users, and the server-side defense refuses mints whose picked vault disagrees with the user's assignment.
