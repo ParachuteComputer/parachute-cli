@@ -415,6 +415,71 @@ describe("POST /api/modules/:short/upgrade", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(calls).toContainEqual(["bun", "add", "-g", "@openparachute/vault@latest"]);
   });
+
+  test("fails with 'try install first' when module is installed but never supervised", async () => {
+    // Module has a services.json row (e.g. seeded by `parachute install`
+    // pre-supervisor era) but the supervisor never spawned it.
+    // `bun add -g` succeeds, then `supervisor.restart()` returns
+    // undefined because there's no entry in the Map. The operation
+    // should land in `failed` with the canonical "try install first"
+    // message rather than silently succeed (hub#265).
+    writeManifest(h.manifestPath, [
+      {
+        name: "parachute-vault",
+        port: 1940,
+        paths: ["/vault/default"],
+        health: "/vault/default/health",
+        version: "0.4.5",
+      },
+    ]);
+    const { supervisor, spawns } = makeIdleSupervisor();
+    // Intentionally do NOT call supervisor.start(...) — that's the
+    // path under test.
+
+    const { run, calls } = alwaysOkRun();
+    const bearer = await mintBearer(h, [API_MODULES_OPS_REQUIRED_SCOPE]);
+    const deps = {
+      db: h.db,
+      issuer: ISSUER,
+      manifestPath: h.manifestPath,
+      configDir: h.dir,
+      supervisor,
+      run,
+    };
+    const res = await handleUpgrade(
+      postReq("/api/modules/vault/upgrade", { authorization: `Bearer ${bearer}` }),
+      "vault",
+      deps,
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { operation_id: string };
+    // Give the async runUpgrade chain a tick to settle.
+    await new Promise((r) => setTimeout(r, 10));
+
+    // bun add was still attempted (it's the first step).
+    expect(calls).toContainEqual(["bun", "add", "-g", "@openparachute/vault@latest"]);
+    // No supervisor spawn ever happened — confirms the missing
+    // supervisor entry is what we exercised, not some other branch.
+    expect(spawns).toEqual([]);
+
+    // Poll the operation: status `failed`, message points the
+    // operator at the install path.
+    const opRes = await handleOperationGet(
+      getReq(`/api/modules/operations/${body.operation_id}`, {
+        authorization: `Bearer ${bearer}`,
+      }),
+      body.operation_id,
+      deps,
+    );
+    const op = (await opRes.json()) as {
+      status: string;
+      error?: string;
+      log: string[];
+    };
+    expect(op.status).toBe("failed");
+    expect(op.error).toMatch(/supervisor restart found no module/);
+    expect(op.log.join(" ")).toMatch(/try install first/);
+  });
 });
 
 describe("POST /api/modules/:short/uninstall", () => {
