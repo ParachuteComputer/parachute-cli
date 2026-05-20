@@ -246,8 +246,9 @@ export function Modules() {
           : prev,
       );
     } catch (err) {
-      // Surface the failure inline at the top of the page. The existing
-      // error-state retry button drives the reload.
+      // On PUT failure, collapse to error state (matches existing
+      // catalog-fetch failure UX). The retry button reloads the whole
+      // catalog from scratch.
       const msg = err instanceof Error ? err.message : String(err);
       setCatalog({ kind: "error", message: `Failed to update channel — ${msg}` });
     }

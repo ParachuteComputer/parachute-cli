@@ -42,9 +42,10 @@
  *   /admin/vault-admin-token/<n>  (GET)        → per-vault bearer mint (cookie-gated)
  *   /api/me                       (GET)        → who-am-I (session+CSRF or hasSession:false)
  *   /api/modules                  (GET)        → curated + installed module catalog (host:auth)
+ *   /api/modules/channel          (PUT)        → operator channel toggle (host:admin)
  *   /api/modules/:short/install   (POST)       → bun add + spawn (async op)
  *   /api/modules/:short/restart   (POST)       → supervisor restart (sync)
- *   /api/modules/:short/upgrade   (POST)       → bun add @latest + restart (async op)
+ *   /api/modules/:short/upgrade   (POST)       → bun add @<channel> + restart (async op)
  *   /api/modules/:short/uninstall (POST)       → stop child + bun remove + drop row (sync)
  *   /api/modules/operations/:id   (GET)        → poll async op status
  *   /api/auth/mint-token          (POST)       → CLI/automation token mint (bearer)

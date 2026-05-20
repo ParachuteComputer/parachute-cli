@@ -561,7 +561,7 @@ export interface ModulesCatalog {
   supervisor_available: boolean;
   /**
    * Current module install channel (`latest` | `rc`). Drives the channel
-   * toggle at the top of the page (hub#275). The SPA POSTs back to
+   * toggle at the top of the page (hub#275). The SPA PUTs back to
    * `PUT /api/modules/channel` to change it.
    */
   module_install_channel: ModuleInstallChannel;
