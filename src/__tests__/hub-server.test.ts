@@ -1033,16 +1033,17 @@ describe("hubFetch routing", () => {
     }
   });
 
-  test("/admin/setup 301s to /login once admin + vault both exist (hub#259)", async () => {
+  test("/admin/setup 301s to /login once admin + vault + expose mode all exist (hub#259, hub#268)", async () => {
     const h = makeHarness();
     try {
       const db = openHubDb(hubDbPath(h.dir));
       try {
         await createUser(db, "owner", "pw");
-        // Seed the vault entry so the wizard's state derives as "done"
-        // and the GET 301s. Without this the wizard would still resume
-        // at the vault step.
+        // Seed the vault entry + expose-mode answer so the wizard's
+        // state derives as "done" and the GET 301s. Without expose
+        // (hub#268 Item 2) the wizard would resume on the expose step.
         const { writeManifest } = await import("../services-manifest.ts");
+        const { setSetting } = await import("../hub-settings.ts");
         const { join } = await import("node:path");
         writeManifest(
           {
@@ -1058,6 +1059,7 @@ describe("hubFetch routing", () => {
           },
           join(h.dir, "services.json"),
         );
+        setSetting(db, "setup_expose_mode", "localhost");
         const res = await hubFetch(h.dir, {
           getDb: () => db,
           manifestPath: join(h.dir, "services.json"),

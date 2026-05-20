@@ -149,6 +149,7 @@ import { findActiveSession } from "./sessions.ts";
 import {
   type SetupWizardDeps,
   handleSetupAccountPost,
+  handleSetupExposePost,
   handleSetupGet,
   handleSetupVaultPost,
 } from "./setup-wizard.ts";
@@ -1009,6 +1010,10 @@ export function hubFetch(
       if (pathname === "/admin/setup/vault") {
         if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
         return handleSetupVaultPost(req, wizardDeps);
+      }
+      if (pathname === "/admin/setup/expose") {
+        if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+        return handleSetupExposePost(req, wizardDeps);
       }
       return new Response("not found", { status: 404 });
     }
